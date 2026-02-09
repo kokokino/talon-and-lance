@@ -1,0 +1,13 @@
+{
+  "public": {
+    "appName": "Spoke App Skeleton",
+    "appId": "spoke_app_skeleton",
+    "hubUrl": "https://kokokino.com",
+    "requiredProducts": ["base-monthly"]
+  },
+  "private": {
+    "hubApiKey": "YOUR_SPOKE_API_KEY_HERE",
+    "hubApiUrl": "https://kokokino.com/api/spoke",
+    "hubPublicKey": "-----BEGIN PUBLIC KEY-----\nYOUR_HUB_PUBLIC_KEY_HERE\n-----END PUBLIC KEY-----"
+  }
+}
