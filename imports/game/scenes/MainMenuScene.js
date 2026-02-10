@@ -144,7 +144,7 @@ export class MainMenuScene {
       -Math.PI / 2.5,  // alpha — horizontal angle
       Math.PI / 3.0,    // beta — vertical angle (looking slightly down)
       6,                 // radius — close enough to frame characters well
-      new Vector3(-0.1, 0.5, 0), // target — centered on characters
+      new Vector3(-0.1, 1.0, 0), // target — raised to keep ostrich head in frame
       this.scene
     );
     // Lock radius and vertical angle, allow horizontal orbit
