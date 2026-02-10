@@ -18,6 +18,7 @@ import { Button } from '@babylonjs/gui/2D/controls/button';
 import { StackPanel } from '@babylonjs/gui/2D/controls/stackPanel';
 import { Control } from '@babylonjs/gui/2D/controls/control';
 import { Rectangle } from '@babylonjs/gui/2D/controls/rectangle';
+import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
 import { Meteor } from 'meteor/meteor';
 
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
@@ -204,6 +205,82 @@ export class MainMenuScene {
 
     this.lavaMaterial = lavaMat;
     this.lavaTexture = lavaTexture;
+
+    // Lava burst particle effects
+    this._createLavaBursts(lava);
+  }
+
+  _createLavaBursts(lavaMesh) {
+    this._lavaBurstTimer = 0;
+  }
+
+  /**
+   * Spawn a single lava burst at a random position on the lava surface.
+   */
+  _spawnLavaBurst() {
+    // Create a fresh particle texture per burst (shared textures get
+    // invalidated when disposeOnStop disposes the particle system)
+    const tex = new DynamicTexture('lavaBurstTex', 64, this.scene, false);
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 64, 64);
+    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gradient.addColorStop(0, 'rgba(255, 200, 50, 1)');
+    gradient.addColorStop(0.4, 'rgba(255, 100, 20, 0.8)');
+    gradient.addColorStop(1, 'rgba(200, 40, 0, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 64, 64);
+    tex.update(false);
+    tex.hasAlpha = true;
+
+    const ps = new ParticleSystem('lavaBurst', 30, this.scene);
+    ps.particleTexture = tex;
+
+    // Spawn anywhere on the visible lava field, but not under platforms
+    const platforms = [
+      { xMin: -2.8, xMax: 2.2, zMin: -1.8, zMax: 1.8 },   // Main platform (with margin)
+      { xMin: -4.9, xMax: -2.1, zMin: -3.3, zMax: -0.7 },  // Left BG platform (with margin)
+      { xMin: 1.7, xMax: 4.3, zMin: -2.6, zMax: -0.4 },    // Right BG platform (with margin)
+    ];
+    let x, z;
+    let attempts = 0;
+    do {
+      x = (Math.random() - 0.5) * 18;
+      z = (Math.random() - 0.5) * 18;
+      attempts++;
+    } while (
+      attempts < 20 &&
+      platforms.some(p => x >= p.xMin && x <= p.xMax && z >= p.zMin && z <= p.zMax)
+    );
+    ps.emitter = new Vector3(x, -2.3, z);
+
+    // Particles shoot upward
+    ps.direction1 = new Vector3(-0.5, 4, -0.5);
+    ps.direction2 = new Vector3(0.5, 8, 0.5);
+    ps.gravity = new Vector3(0, -6, 0);
+
+    // Size
+    ps.minSize = 0.12;
+    ps.maxSize = 0.35;
+
+    // Lifetime
+    ps.minLifeTime = 0.3;
+    ps.maxLifeTime = 0.8;
+
+    // Emission — short burst
+    ps.emitRate = 40;
+    ps.manualEmitCount = 12 + Math.floor(Math.random() * 10);
+
+    // Colors: bright yellow → orange → dark red
+    ps.color1 = new Color4(1.0, 0.8, 0.2, 1);
+    ps.color2 = new Color4(1.0, 0.4, 0.1, 1);
+    ps.colorDead = new Color4(0.5, 0.1, 0.0, 0);
+
+    // Blending
+    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
+
+    ps.targetStopDuration = 0.15;
+    ps.disposeOnStop = true;
+    ps.start();
   }
 
   /**
@@ -504,6 +581,15 @@ export class MainMenuScene {
       this.lavaUvOffset += dt * 0.02;
       this.lavaMaterial.diffuseTexture.uOffset = this.lavaUvOffset;
       this.lavaMaterial.diffuseTexture.vOffset = this.lavaUvOffset * 0.7;
+    }
+
+    // Lava burst spawning — random interval between 0.4s and 1.5s
+    if (this._lavaBurstTimer !== undefined) {
+      this._lavaBurstTimer -= dt;
+      if (this._lavaBurstTimer <= 0) {
+        this._spawnLavaBurst();
+        this._lavaBurstTimer = 0.4 + Math.random() * 1.1;
+      }
     }
   }
 }
