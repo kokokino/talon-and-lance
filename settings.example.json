@@ -1,7 +1,7 @@
 {
   "public": {
-    "appName": "Spoke App Skeleton",
-    "appId": "spoke_app_skeleton",
+    "appName": "Talon & Lance",
+    "appId": "talon_and_lance",
     "hubUrl": "https://kokokino.com",
     "requiredProducts": ["base-monthly"]
   },

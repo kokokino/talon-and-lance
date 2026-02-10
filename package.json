@@ -1,27 +1,30 @@
 {
-  "name": "spoke_app_skeleton",
+  "name": "talon-and-lance",
   "private": true,
   "engines": {
     "node": "22.x"
   },
   "scripts": {
     "start": "meteor run",
-    "dev": "meteor --port 3010 --settings settings.development.json",
+    "dev": "meteor --port 3030 --settings settings.development.json",
     "test": "meteor test --once --driver-package meteortesting:mocha",
     "test-app": "TEST_WATCH=1 meteor test --full-app --driver-package meteortesting:mocha",
     "visualize": "meteor --production --extra-packages bundle-visualizer",
-    "prod-deploy": "meteor deploy --settings settings.production.json spoke-app-skeleton.meteorapp.com"
+    "prod-deploy": "meteor deploy --settings settings.production.json talon-and-lance.meteorapp.com"
   },
   "dependencies": {
     "@babel/runtime": "^7.23.5",
+    "@geckos.io/client": "^3.0.2",
+    "@geckos.io/server": "^3.0.2",
+    "@meteorjs/rspack": "^1.0.0",
     "@picocss/pico": "^2.1.1",
+    "@rspack/core": "^1.7.1",
     "@swc/helpers": "^0.5.17",
     "jquery": "^3.7.1",
     "jsonwebtoken": "^9.0.3",
     "meteor-node-stubs": "^1.2.12",
     "mithril": "^2.3.8",
-    "@meteorjs/rspack": "^1.0.0",
-    "@rspack/core": "^1.7.1"
+    "peerjs": "^1.5.5"
   },
   "meteor": {
     "mainModule": {

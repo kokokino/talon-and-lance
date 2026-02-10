@@ -11,5 +11,27 @@ const { defineConfig } = require('@meteorjs/rspack');
  * Use these flags to adjust your build settings based on environment.
  */
 module.exports = defineConfig(Meteor => {
-  return {};
+  const config = {};
+
+  if (Meteor.isServer) {
+    config.module = {
+      rules: [
+        {
+          test: /\.node$/,
+          type: 'asset/resource',
+        },
+      ],
+    };
+    config.externals = [
+      function ({ request }, callback) {
+        // Externalize native node addons
+        if (/node-datachannel/.test(request)) {
+          return callback(null, 'commonjs ' + request);
+        }
+        callback();
+      },
+    ];
+  }
+
+  return config;
 });

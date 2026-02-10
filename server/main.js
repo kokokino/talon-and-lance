@@ -8,8 +8,15 @@ import './indexes.js';
 import './rateLimiting.js';
 import './migrations/0_steps.js';
 
+// Import game room methods and publications
+import './methods/roomMethods.js';
+import './publications/roomPublications.js';
+
+// Import geckos.io relay bridge
+import { initGeckosRelay } from './relay/geckosBridge.js';
+
 Meteor.startup(async () => {
-  console.log('Spoke App Skeleton started');
+  console.log('Talon & Lance started');
   
   // Verify required settings are present
   const settings = Meteor.settings;
@@ -25,4 +32,7 @@ Meteor.startup(async () => {
   if (!settings.private?.hubPublicKey) {
     console.warn('Warning: settings.private.hubPublicKey is not configured');
   }
+
+  // Initialize geckos.io relay for WebRTC fallback
+  initGeckosRelay();
 });

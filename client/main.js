@@ -16,6 +16,7 @@ import { SsoCallback } from '../imports/ui/pages/SsoCallback.js';
 
 // Import collections for subscriptions
 import '../imports/lib/collections/chatMessages.js';
+import '../imports/lib/collections/gameRooms.js';
 
 // Reactive wrapper for Mithril
 // This ensures Mithril redraws when Meteor reactive data changes
