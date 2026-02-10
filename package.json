@@ -14,6 +14,8 @@
   },
   "dependencies": {
     "@babel/runtime": "^7.23.5",
+    "@babylonjs/core": "^8.50.2",
+    "@babylonjs/gui": "^8.50.2",
     "@geckos.io/client": "^3.0.2",
     "@geckos.io/server": "^3.0.2",
     "@meteorjs/rspack": "^1.0.0",

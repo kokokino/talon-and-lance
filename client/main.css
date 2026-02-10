@@ -1,9 +1,23 @@
-/* Spoke App Skeleton Styles */
+/* Talon & Lance Styles */
 
 /* Ensure full height for app container */
 html, body {
   height: 100%;
   margin: 0;
+}
+
+/* Babylon canvas — centered with black letterbox background */
+body.babylon-active {
+  background: #000;
+  overflow: hidden;
+}
+
+#renderCanvas {
+  display: block;
+  outline: none;
+  touch-action: none;
+  position: absolute;
+  /* Size and position set dynamically by resize handler */
 }
 
 :root {

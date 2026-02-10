@@ -13,13 +13,13 @@ import { NotLoggedIn } from '../imports/ui/pages/NotLoggedIn.js';
 import { NoSubscription } from '../imports/ui/pages/NoSubscription.js';
 import { SessionExpired } from '../imports/ui/pages/SessionExpired.js';
 import { SsoCallback } from '../imports/ui/pages/SsoCallback.js';
+import { BabylonPage } from '../imports/ui/pages/BabylonPage.js';
 
 // Import collections for subscriptions
 import '../imports/lib/collections/chatMessages.js';
 import '../imports/lib/collections/gameRooms.js';
 
-// Reactive wrapper for Mithril
-// This ensures Mithril redraws when Meteor reactive data changes
+// Layout wrapper component (includes MeteorWrapper reactivity)
 const MeteorWrapper = {
   oninit() {
     this.computation = null;
@@ -42,7 +42,7 @@ const MeteorWrapper = {
   }
 };
 
-// Layout wrapper component
+// Layout wrapper for Mithril pages that wraps in MainLayout + MeteorWrapper
 const Layout = {
   view(vnode) {
     return m(MeteorWrapper, m(MainLayout, vnode.attrs, vnode.children));
@@ -60,14 +60,22 @@ function layoutRoute(component, attrs = {}) {
 
 // Initialize Mithril routing
 function initializeApp() {
-  // Create #app element if it doesn't exist
-  let root = document.getElementById('app');
-  
-  // Set up routes
+  const root = document.getElementById('app');
+
   m.route.prefix = '';
 
   m.route(root, '/', {
-    '/': layoutRoute(HomePage),
+    '/': {
+      render() {
+        if (Meteor.loggingIn()) {
+          return m('div.loading');
+        }
+        if (Meteor.userId()) {
+          return m(BabylonPage);
+        }
+        return m(Layout, m(HomePage));
+      }
+    },
     '/not-logged-in': layoutRoute(NotLoggedIn),
     '/no-subscription': layoutRoute(NoSubscription),
     '/session-expired': layoutRoute(SessionExpired),
@@ -81,5 +89,14 @@ function initializeApp() {
 
 // Initialize app when DOM is ready
 Meteor.startup(() => {
+  // Global reactivity bridge — ensures Mithril redraws on auth state changes
+  // This runs regardless of which route is active
+  Tracker.autorun(() => {
+    Meteor.user();
+    Meteor.userId();
+    Meteor.loggingIn();
+    m.redraw();
+  });
+
   initializeApp();
 });
