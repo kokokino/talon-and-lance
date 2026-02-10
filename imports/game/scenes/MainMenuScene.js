@@ -321,7 +321,7 @@ export class MainMenuScene {
     // Percentage-based GUI like the Babylon playground — scales cleanly
     const gui = AdvancedDynamicTexture.CreateFullscreenUI('menuUI');
     gui.idealWidth = 1280;
-    gui.renderScale = window.devicePixelRatio || 1;
+    gui.renderScale = 2;
 
     // Prevent post-processing from blurring the GUI layer
     if (gui.layer) {
@@ -377,6 +377,11 @@ export class MainMenuScene {
     btn.fontSize = 26;
     btn.fontFamily = 'monospace';
 
+    // Vertically center text in button
+    if (btn.textBlock) {
+      btn.textBlock.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    }
+
     if (disabled) {
       btn.background = '#2A2724';
       btn.color = '#9A9590';
@@ -384,11 +389,9 @@ export class MainMenuScene {
       btn.hoverCursor = 'default';
 
       btn.onPointerEnterObservable.add(() => {
-        btn.textBlock.text = 'Coming Soon';
         btn.background = '#352F2C';
       });
       btn.onPointerOutObservable.add(() => {
-        btn.textBlock.text = label;
         btn.background = '#2A2724';
       });
     } else {
