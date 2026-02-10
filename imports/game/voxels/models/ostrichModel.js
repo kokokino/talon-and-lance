@@ -65,12 +65,12 @@ export const ostrichModel = {
           [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
           [0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
         ],
-        // y=5 (top/back)
+        // y=5 (top/back — rear voxels cleared to avoid z-fighting with tail)
         [
           [0, 0, 0, 1, 1, 1, 1, 0, 0, 0],
           [0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
-          [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
-          [0, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+          [0, 0, 0, 1, 1, 1, 1, 1, 1, 0],
+          [0, 0, 0, 1, 1, 1, 1, 1, 1, 0],
           [0, 0, 1, 1, 1, 1, 1, 1, 0, 0],
           [0, 0, 0, 1, 1, 1, 1, 0, 0, 0],
         ],
@@ -224,19 +224,19 @@ export const ostrichModel = {
       // y=-7 → below body (leg is 8h, top at y=0 meets body bottom area)
       // z=-1 → slightly to left of center
       offset: [-1, -7, -1],
-      // 3w × 3d × 8h — proper bird leg anatomy
+      // 3w × 3d × 8h — rotated so toes point +X (bird forward), knee bends -X
       layers: [
-        // y=0 (toes — spreading forward)
+        // y=0 (toes — spreading forward toward +X)
         [
-          [5, 0, 5],
-          [4, 5, 4],
-          [4, 4, 4],
+          [4, 4, 5],
+          [4, 5, 0],
+          [4, 4, 5],
         ],
         // y=1 (foot base)
         [
           [0, 0, 0],
-          [0, 5, 0],
-          [0, 4, 0],
+          [4, 5, 0],
+          [0, 0, 0],
         ],
         // y=2 (thin shin)
         [
@@ -256,22 +256,22 @@ export const ostrichModel = {
           [0, 4, 0],
           [0, 0, 0],
         ],
-        // y=5 (backward knee joint — 2 voxels for bird-leg bend)
+        // y=5 (backward knee — bends toward -X)
         [
           [0, 0, 0],
-          [0, 5, 0],
-          [0, 5, 0],
+          [5, 5, 0],
+          [0, 0, 0],
         ],
         // y=6 (thigh)
         [
           [0, 0, 0],
-          [0, 5, 0],
-          [0, 4, 0],
+          [4, 5, 0],
+          [0, 0, 0],
         ],
         // y=7 (thigh top — connects to body)
         [
-          [0, 0, 0],
-          [5, 5, 5],
+          [0, 5, 0],
+          [5, 5, 0],
           [0, 5, 0],
         ],
       ],
@@ -281,19 +281,19 @@ export const ostrichModel = {
       parent: 'body',
       // Mirror of leftLeg at z=+1
       offset: [-1, -7, 1],
-      // 3w × 3d × 8h
+      // 3w × 3d × 8h — rotated so toes point +X (bird forward), knee bends -X
       layers: [
         // y=0 (toes)
         [
-          [5, 0, 5],
-          [4, 5, 4],
-          [4, 4, 4],
+          [4, 4, 5],
+          [4, 5, 0],
+          [4, 4, 5],
         ],
         // y=1 (foot base)
         [
           [0, 0, 0],
-          [0, 5, 0],
-          [0, 4, 0],
+          [4, 5, 0],
+          [0, 0, 0],
         ],
         // y=2 (thin shin)
         [
@@ -313,22 +313,22 @@ export const ostrichModel = {
           [0, 4, 0],
           [0, 0, 0],
         ],
-        // y=5 (backward knee joint)
+        // y=5 (backward knee)
         [
           [0, 0, 0],
-          [0, 5, 0],
-          [0, 5, 0],
+          [5, 5, 0],
+          [0, 0, 0],
         ],
         // y=6 (thigh)
         [
           [0, 0, 0],
-          [0, 5, 0],
-          [0, 4, 0],
+          [4, 5, 0],
+          [0, 0, 0],
         ],
         // y=7 (thigh top — connects to body)
         [
-          [0, 0, 0],
-          [5, 5, 5],
+          [0, 5, 0],
+          [5, 5, 0],
           [0, 5, 0],
         ],
       ],
@@ -337,8 +337,8 @@ export const ostrichModel = {
     tail: {
       parent: 'body',
       // Body centerX=4.5. Tail at x=-4 → near rear (-X edge at -4.5)
-      // y=4 → near top of body
-      offset: [-4, 4, 0],
+      // y=5 → at body top
+      offset: [-4, 5, 0],
       // 3w × 3d × 3h — tail feathers
       layers: [
         // y=0
