@@ -2,6 +2,8 @@
 // Approximately 6w × 4d × 18h total, blue/silver armor inspired by classic voxel knight
 // Coordinate system: layers[y][z][x] — y=0 is bottom of each part
 // Front face = z=0 (lowest z index, faces -Z direction)
+// Left/right named from character's own perspective (facing -Z):
+//   character's right = -X, character's left = +X
 
 export const knightModel = {
   palette: {
@@ -104,8 +106,8 @@ export const knightModel = {
 
     leftArm: {
       parent: 'torso',
-      offset: [-3, 3, 0],
-      // 2w × 2d × 5h — gauntlet with blue armor
+      offset: [3, 3, 0],
+      // 2w × 2d × 5h — gauntlet with blue armor (holds shield)
       layers: [
         // y=0 (hand)
         [
@@ -166,7 +168,7 @@ export const knightModel = {
 
     rightArm: {
       parent: 'torso',
-      offset: [3, 3, 0],
+      offset: [-3, 3, 0],
       // 2w × 2d × 5h — gauntlet with blue armor (holds lance)
       layers: [
         // y=0 (hand)
@@ -199,7 +201,7 @@ export const knightModel = {
 
     leftLeg: {
       parent: 'torso',
-      offset: [-1, -6, 0],
+      offset: [1, -6, 0],
       // 3w × 3d × 7h — armored boot with blue armor
       layers: [
         // y=0 (foot — armored boot)
@@ -249,7 +251,7 @@ export const knightModel = {
 
     rightLeg: {
       parent: 'torso',
-      offset: [1, -6, 0],
+      offset: [-1, -6, 0],
       // 3w × 3d × 7h — armored boot with blue armor
       layers: [
         // y=0 (foot — armored boot)

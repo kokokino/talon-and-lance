@@ -363,7 +363,7 @@ export class MainMenuScene {
       this.leftShoulderNode = new TransformNode('leftShoulder', this.scene);
       this.leftShoulderNode.parent = parts.torso.mesh;
       this.leftShoulderNode.position = new Vector3(
-        -3 * VOXEL_SIZE, 4 * VOXEL_SIZE, 0
+        3 * VOXEL_SIZE, 4 * VOXEL_SIZE, 0
       );
       parts.leftArm.mesh.parent = this.leftShoulderNode;
       parts.leftArm.mesh.position = new Vector3(0, -4 * VOXEL_SIZE, 0);
@@ -378,7 +378,7 @@ export class MainMenuScene {
       this.rightShoulderNode = new TransformNode('rightShoulder', this.scene);
       this.rightShoulderNode.parent = parts.torso.mesh;
       this.rightShoulderNode.position = new Vector3(
-        3 * VOXEL_SIZE, 4 * VOXEL_SIZE, 0
+        -3 * VOXEL_SIZE, 4 * VOXEL_SIZE, 0
       );
       parts.rightArm.mesh.parent = this.rightShoulderNode;
       parts.rightArm.mesh.position = new Vector3(0, -4 * VOXEL_SIZE, 0);
@@ -551,19 +551,19 @@ export class MainMenuScene {
       wingFlare = Math.sin(ruffleT * Math.PI) * 0.3;
     }
     if (parts.leftWing) {
-      parts.leftWing.mesh.rotation.z = -wingFlare;
+      parts.leftWing.mesh.rotation.z = wingFlare;
     }
     if (parts.rightWing) {
-      parts.rightWing.mesh.rotation.z = wingFlare;
+      parts.rightWing.mesh.rotation.z = -wingFlare;
     }
 
     // Legs: alternate subtle bend synced with body weight shift
     const legBend = Math.sin(t * (2 * Math.PI / 5)) * 0.03;
     if (parts.leftLeg) {
-      parts.leftLeg.mesh.rotation.x = legBend;
+      parts.leftLeg.mesh.rotation.x = -legBend;
     }
     if (parts.rightLeg) {
-      parts.rightLeg.mesh.rotation.x = -legBend;
+      parts.rightLeg.mesh.rotation.x = legBend;
     }
   }
 
