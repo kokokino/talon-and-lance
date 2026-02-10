@@ -23,38 +23,38 @@ export const knightModel = {
       layers: [
         // y=0 (waist)
         [
-          [0, 8, 5, 5, 8, 0],  // front — gold belt buckle
+          [0, 8, 7, 7, 8, 0],  // front — blue belt
           [8, 7, 7, 7, 7, 8],
           [8, 7, 7, 7, 7, 8],
           [0, 8, 8, 8, 8, 0],  // back — dark blue
         ],
         // y=1
         [
-          [0, 5, 7, 7, 5, 0],  // front — gold trim edges
+          [0, 7, 7, 7, 7, 0],  // front — blue trim
           [7, 7, 7, 7, 7, 7],
           [7, 7, 7, 7, 7, 7],
           [0, 8, 7, 7, 8, 0],  // back
         ],
-        // y=2 (chest — gold cross on front)
+        // y=2 (chest)
         [
-          [8, 7, 5, 5, 7, 8],  // front — gold cross center
+          [8, 7, 7, 7, 7, 8],  // front — blue chest
           [7, 7, 7, 7, 7, 7],
           [7, 7, 7, 7, 7, 7],
-          [8, 7, 1, 1, 7, 8],  // back — silver spine
+          [8, 7, 7, 7, 7, 8],  // back
         ],
         // y=3 (upper chest)
         [
-          [8, 7, 5, 5, 7, 8],  // front — gold cross continues
+          [8, 7, 7, 7, 7, 8],  // front — blue upper chest
           [7, 7, 7, 7, 7, 7],
           [7, 7, 7, 7, 7, 7],
-          [8, 7, 1, 1, 7, 8],  // back
+          [8, 7, 7, 7, 7, 8],  // back
         ],
         // y=4 (shoulders / pauldrons)
         [
-          [3, 5, 7, 7, 5, 3],  // front — gold shoulder trim
+          [3, 7, 7, 7, 7, 3],  // front — shoulder trim
           [0, 7, 7, 7, 7, 0],
           [0, 7, 7, 7, 7, 0],
-          [3, 5, 7, 7, 5, 3],  // back
+          [3, 7, 7, 7, 7, 3],  // back
         ],
       ],
     },
@@ -137,9 +137,9 @@ export const knightModel = {
 
     shield: {
       parent: 'leftArm',
-      // Outer face of left arm — flat shield
-      offset: [0, -1, -1],
-      // 4w × 1d × 5h — shield face with gold border
+      // Centered on fist — rotated in scene to face forward
+      offset: [0, -1, 2],
+      // 4w × 1d × 5h — solid gold shield
       layers: [
         // y=0 (bottom)
         [
@@ -147,11 +147,11 @@ export const knightModel = {
         ],
         // y=1
         [
-          [9, 5, 5, 9],
+          [9, 9, 9, 9],
         ],
-        // y=2 (center — gold boss)
+        // y=2 (center)
         [
-          [9, 5, 5, 9],
+          [9, 9, 9, 9],
         ],
         // y=3
         [
@@ -228,9 +228,9 @@ export const knightModel = {
         ],
         // y=4 (knee guard)
         [
-          [0, 5, 0],
-          [0, 5, 0],
-          [0, 5, 0],
+          [0, 7, 0],
+          [0, 7, 0],
+          [0, 7, 0],
         ],
         // y=5 (upper leg)
         [
@@ -278,9 +278,9 @@ export const knightModel = {
         ],
         // y=4 (knee guard)
         [
-          [0, 5, 0],
-          [0, 5, 0],
-          [0, 5, 0],
+          [0, 7, 0],
+          [0, 7, 0],
+          [0, 7, 0],
         ],
         // y=5 (upper leg)
         [

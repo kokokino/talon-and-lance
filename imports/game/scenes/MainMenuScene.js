@@ -20,6 +20,7 @@ import { Control } from '@babylonjs/gui/2D/controls/control';
 import { Rectangle } from '@babylonjs/gui/2D/controls/rectangle';
 import { Meteor } from 'meteor/meteor';
 
+import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { buildRig } from '../voxels/VoxelBuilder.js';
 import { knightModel } from '../voxels/models/knightModel.js';
 import { lanceModel } from '../voxels/models/lanceModel.js';
@@ -39,6 +40,10 @@ export class MainMenuScene {
     this.knightRig = null;
     this.lanceRig = null;
     this.ostrichRig = null;
+
+    // Shoulder pivot nodes for arm rotation
+    this.leftShoulderNode = null;
+    this.rightShoulderNode = null;
 
     // Lava references
     this.lavaMaterial = null;
@@ -272,16 +277,43 @@ export class MainMenuScene {
     this.knightRig = buildRig(this.scene, knightModel, VOXEL_SIZE);
     if (this.knightRig.root) {
       this.knightRig.root.position = new Vector3(-1.6, 0.29, 0.7);
-      this.knightRig.root.rotation.y = -0.6; // Rotate front (-Z face) toward camera (+X/-Z)
+      this.knightRig.root.rotation.y = -0.3; // Rotate front toward camera, lance away from ostrich
     }
 
-    // Build lance (single part rig)
+    // Create shoulder pivot nodes so arms rotate forward from the shoulder joint
+    const parts = this.knightRig.parts;
+    if (parts.leftArm && parts.torso) {
+      this.leftShoulderNode = new TransformNode('leftShoulder', this.scene);
+      this.leftShoulderNode.parent = parts.torso.mesh;
+      this.leftShoulderNode.position = new Vector3(
+        -3 * VOXEL_SIZE, 4 * VOXEL_SIZE, 0
+      );
+      parts.leftArm.mesh.parent = this.leftShoulderNode;
+      parts.leftArm.mesh.position = new Vector3(0, -4 * VOXEL_SIZE, 0);
+      this.leftShoulderNode.rotation.x = Math.PI / 2; // Point arm forward
+      // Rotate shield so its face points forward (compensate for arm rotation)
+      if (parts.shield) {
+        parts.shield.mesh.rotation.x = -Math.PI / 2;
+      }
+    }
+
+    if (parts.rightArm && parts.torso) {
+      this.rightShoulderNode = new TransformNode('rightShoulder', this.scene);
+      this.rightShoulderNode.parent = parts.torso.mesh;
+      this.rightShoulderNode.position = new Vector3(
+        3 * VOXEL_SIZE, 4 * VOXEL_SIZE, 0
+      );
+      parts.rightArm.mesh.parent = this.rightShoulderNode;
+      parts.rightArm.mesh.position = new Vector3(0, -4 * VOXEL_SIZE, 0);
+      this.rightShoulderNode.rotation.x = Math.PI / 2; // Point arm forward
+    }
+
+    // Build lance (single part rig) — held in right hand, pointed skyward
     this.lanceRig = buildRig(this.scene, lanceModel, VOXEL_SIZE);
-    if (this.lanceRig.root && this.knightRig.parts.rightArm) {
-      // Parent lance to knight's right arm
-      this.lanceRig.root.parent = this.knightRig.parts.rightArm.mesh;
-      this.lanceRig.root.position = new Vector3(0.05, -0.15, 0);
-      this.lanceRig.root.rotation.z = 0.6; // Tilted outward for dramatic pose
+    if (this.lanceRig.root && parts.rightArm) {
+      this.lanceRig.root.parent = parts.rightArm.mesh;
+      this.lanceRig.root.position = new Vector3(0, 0, 0);
+      this.lanceRig.root.rotation.x = Math.PI; // Flip so tip extends forward along arm
     }
   }
 
@@ -403,12 +435,12 @@ export class MainMenuScene {
       parts.head.mesh.rotation.x = Math.sin(t * (2 * Math.PI / 4)) * 0.03;
     }
 
-    // Arms: subtle sway — rotation.z ±0.02 rad, period ~3.5s
-    if (parts.leftArm) {
-      parts.leftArm.mesh.rotation.z = Math.sin(t * (2 * Math.PI / 3.5)) * 0.02;
+    // Arms: subtle sway via shoulder joints — rotation.z ±0.02 rad, period ~3.5s
+    if (this.leftShoulderNode) {
+      this.leftShoulderNode.rotation.z = Math.sin(t * (2 * Math.PI / 3.5)) * 0.02;
     }
-    if (parts.rightArm) {
-      parts.rightArm.mesh.rotation.z = Math.sin(t * (2 * Math.PI / 3.5) + 0.5) * 0.02;
+    if (this.rightShoulderNode) {
+      this.rightShoulderNode.rotation.z = Math.sin(t * (2 * Math.PI / 3.5) + 0.5) * 0.02;
     }
   }
 
