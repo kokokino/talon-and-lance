@@ -756,11 +756,11 @@ export class MainMenuScene {
 
     // Legs: alternate subtle bend synced with body weight shift
     const legBend = Math.sin(t * (2 * Math.PI / 5)) * 0.03;
-    if (parts.leftLeg) {
-      parts.leftLeg.mesh.rotation.x = -legBend;
+    if (parts.leftThigh) {
+      parts.leftThigh.mesh.rotation.x = -legBend;
     }
-    if (parts.rightLeg) {
-      parts.rightLeg.mesh.rotation.x = legBend;
+    if (parts.rightThigh) {
+      parts.rightThigh.mesh.rotation.x = legBend;
     }
   }
 
