@@ -15,6 +15,7 @@ import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTextur
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { AdvancedDynamicTexture } from '@babylonjs/gui/2D/advancedDynamicTexture';
 import { Button } from '@babylonjs/gui/2D/controls/button';
+import { TextBlock } from '@babylonjs/gui/2D/controls/textBlock';
 import { StackPanel } from '@babylonjs/gui/2D/controls/stackPanel';
 import { Control } from '@babylonjs/gui/2D/controls/control';
 import { Rectangle } from '@babylonjs/gui/2D/controls/rectangle';
@@ -26,6 +27,7 @@ import { buildRig } from '../voxels/VoxelBuilder.js';
 import { knightModel } from '../voxels/models/knightModel.js';
 import { lanceModel } from '../voxels/models/lanceModel.js';
 import { ostrichModel } from '../voxels/models/ostrichModel.js';
+import { KNIGHT_PALETTES, buildKnightPalette } from '../voxels/models/knightPalettes.js';
 
 const ASPECT = 16 / 9;
 const VOXEL_SIZE = 0.18;
@@ -52,6 +54,19 @@ export class MainMenuScene {
 
     // Resize handler reference for cleanup
     this._resizeHandler = null;
+
+    // Menu state machine
+    this._menuState = 'main';   // 'main' | 'modeSelect'
+    this._selectedMode = null;  // 'team' | 'pvp'
+    this._paletteIndex = 0;
+
+    // GUI references
+    this._gui = null;
+    this._mainBackdrop = null;
+    this._mainPanel = null;
+    this._modeBackdrop = null;
+    this._modePanel = null;
+    this._colorLabel = null;
   }
 
   /**
@@ -343,21 +358,67 @@ export class MainMenuScene {
 
   _createCharacters() {
     // Build ostrich rig — position so feet rest on platform
-    // Legs grew by 3 voxels, raise Y by 3 * 0.18 = 0.54
     this.ostrichRig = buildRig(this.scene, ostrichModel, VOXEL_SIZE);
     if (this.ostrichRig.root) {
       this.ostrichRig.root.position = new Vector3(0.5, 0.49, 0);
       this.ostrichRig.root.rotation.y = -0.3; // Face slightly toward camera
     }
 
-    // Build knight rig — position to the left of ostrich, facing camera
-    this.knightRig = buildRig(this.scene, knightModel, VOXEL_SIZE);
-    if (this.knightRig.root) {
-      this.knightRig.root.position = new Vector3(-1.6, 0.29, 0.7);
-      this.knightRig.root.rotation.y = -0.3; // Rotate front toward camera, lance away from ostrich
+    // Build knight + lance with current palette
+    this._buildKnight(this._paletteIndex);
+  }
+
+  /**
+   * Dispose and rebuild the knight + lance rigs with a new palette.
+   * Animation picks up new meshes automatically via this.knightRig.parts.
+   * @param {number} paletteIndex — 0–3
+   */
+  _buildKnight(paletteIndex) {
+    // --- Dispose existing lance ---
+    if (this.lanceRig) {
+      for (const part of Object.values(this.lanceRig.parts)) {
+        if (part.mesh) {
+          if (part.mesh.material) {
+            part.mesh.material.dispose();
+          }
+          part.mesh.dispose();
+        }
+      }
+      this.lanceRig = null;
     }
 
-    // Create shoulder pivot nodes so arms rotate forward from the shoulder joint
+    // --- Dispose shoulder transform nodes ---
+    if (this.leftShoulderNode) {
+      this.leftShoulderNode.dispose();
+      this.leftShoulderNode = null;
+    }
+    if (this.rightShoulderNode) {
+      this.rightShoulderNode.dispose();
+      this.rightShoulderNode = null;
+    }
+
+    // --- Dispose existing knight ---
+    if (this.knightRig) {
+      for (const part of Object.values(this.knightRig.parts)) {
+        if (part.mesh) {
+          if (part.mesh.material) {
+            part.mesh.material.dispose();
+          }
+          part.mesh.dispose();
+        }
+      }
+      this.knightRig = null;
+    }
+
+    // --- Build knight rig with merged palette ---
+    const mergedPalette = buildKnightPalette(paletteIndex);
+    this.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VOXEL_SIZE);
+    if (this.knightRig.root) {
+      this.knightRig.root.position = new Vector3(-1.6, 0.29, 0.7);
+      this.knightRig.root.rotation.y = -0.3;
+    }
+
+    // --- Create shoulder pivot nodes ---
     const parts = this.knightRig.parts;
     if (parts.leftArm && parts.torso) {
       this.leftShoulderNode = new TransformNode('leftShoulder', this.scene);
@@ -367,8 +428,7 @@ export class MainMenuScene {
       );
       parts.leftArm.mesh.parent = this.leftShoulderNode;
       parts.leftArm.mesh.position = new Vector3(0, -4 * VOXEL_SIZE, 0);
-      this.leftShoulderNode.rotation.x = Math.PI / 2; // Point arm forward
-      // Rotate shield so its face points forward (compensate for arm rotation)
+      this.leftShoulderNode.rotation.x = Math.PI / 2;
       if (parts.shield) {
         parts.shield.mesh.rotation.x = -Math.PI / 2;
       }
@@ -382,31 +442,37 @@ export class MainMenuScene {
       );
       parts.rightArm.mesh.parent = this.rightShoulderNode;
       parts.rightArm.mesh.position = new Vector3(0, -4 * VOXEL_SIZE, 0);
-      this.rightShoulderNode.rotation.x = Math.PI / 2; // Point arm forward
+      this.rightShoulderNode.rotation.x = Math.PI / 2;
     }
 
-    // Build lance (single part rig) — held in right hand, pointed skyward
+    // --- Build lance, parent to right arm ---
     this.lanceRig = buildRig(this.scene, lanceModel, VOXEL_SIZE);
     if (this.lanceRig.root && parts.rightArm) {
       this.lanceRig.root.parent = parts.rightArm.mesh;
       this.lanceRig.root.position = new Vector3(0, 0, 0);
-      this.lanceRig.root.rotation.x = Math.PI; // Flip so tip extends forward along arm
+      this.lanceRig.root.rotation.x = Math.PI;
     }
   }
 
   _createMenuButtons() {
-    // Percentage-based GUI like the Babylon playground — scales cleanly
     const gui = AdvancedDynamicTexture.CreateFullscreenUI('menuUI');
     gui.idealWidth = 1280;
     gui.renderScale = 2;
 
-    // Prevent post-processing from blurring the GUI layer
     if (gui.layer) {
       gui.layer.applyPostProcess = false;
     }
 
-    // Semi-transparent backdrop behind button stack
-    const backdrop = new Rectangle('menuBackdrop');
+    this._gui = gui;
+    this._createMainPanel(gui);
+    this._createModeSelectPanel(gui);
+    this._showMainMenu();
+  }
+
+  // ---- Main menu panel ----
+
+  _createMainPanel(gui) {
+    const backdrop = new Rectangle('mainBackdrop');
     backdrop.widthInPixels = 240;
     backdrop.heightInPixels = 210;
     backdrop.cornerRadius = 10;
@@ -416,17 +482,18 @@ export class MainMenuScene {
     backdrop.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
     backdrop.left = '-40px';
     gui.addControl(backdrop);
+    this._mainBackdrop = backdrop;
 
-    // Stack panel on the right side
-    const panel = new StackPanel('menuPanel');
+    const panel = new StackPanel('mainPanel');
     panel.widthInPixels = 220;
     panel.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
     panel.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
     panel.left = '-50px';
     panel.spacing = 10;
     gui.addControl(panel);
+    this._mainPanel = panel;
 
-    // Hub button — functional
+    // Hub button
     const hubBtn = this._createMenuButton('Hub', false);
     hubBtn.onPointerClickObservable.add(() => {
       const hubUrl = Meteor.settings.public?.hubUrl;
@@ -436,17 +503,114 @@ export class MainMenuScene {
     });
     panel.addControl(hubBtn);
 
-    // Team Play — disabled
-    const teamBtn = this._createMenuButton('Team Play', true);
+    // Team Play — opens mode select
+    const teamBtn = this._createMenuButton('Team Play', false);
+    teamBtn.onPointerClickObservable.add(() => {
+      this._selectedMode = 'team';
+      this._showModeSelect();
+    });
     panel.addControl(teamBtn);
 
-    // Player vs Player — disabled
-    const pvpBtn = this._createMenuButton('PvP Arena', true);
+    // PvP Arena — opens mode select
+    const pvpBtn = this._createMenuButton('PvP Arena', false);
+    pvpBtn.onPointerClickObservable.add(() => {
+      this._selectedMode = 'pvp';
+      this._showModeSelect();
+    });
     panel.addControl(pvpBtn);
   }
 
+  // ---- Mode select sub-menu ----
+
+  _createModeSelectPanel(gui) {
+    const backdrop = new Rectangle('modeBackdrop');
+    backdrop.widthInPixels = 240;
+    backdrop.heightInPixels = 280;
+    backdrop.cornerRadius = 10;
+    backdrop.thickness = 0;
+    backdrop.background = 'rgba(0, 0, 0, 0.5)';
+    backdrop.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+    backdrop.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    backdrop.left = '-40px';
+    gui.addControl(backdrop);
+    this._modeBackdrop = backdrop;
+
+    const panel = new StackPanel('modePanel');
+    panel.widthInPixels = 220;
+    panel.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+    panel.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    panel.left = '-50px';
+    panel.spacing = 10;
+    gui.addControl(panel);
+    this._modePanel = panel;
+
+    // Back button
+    const backBtn = this._createMenuButton('Back', false);
+    backBtn.onPointerClickObservable.add(() => {
+      this._showMainMenu();
+    });
+    panel.addControl(backBtn);
+
+    // Color selector row
+    const colorRow = new StackPanel('colorRow');
+    colorRow.isVertical = false;
+    colorRow.widthInPixels = 200;
+    colorRow.heightInPixels = 55;
+    panel.addControl(colorRow);
+
+    const leftArrow = this._createArrowButton('arrowLeft', '\u25C0');
+    leftArrow.onPointerClickObservable.add(() => {
+      this._cyclePalette(-1);
+    });
+    colorRow.addControl(leftArrow);
+
+    const colorLabel = new TextBlock('colorLabel', KNIGHT_PALETTES[this._paletteIndex].name);
+    colorLabel.widthInPixels = 110;
+    colorLabel.heightInPixels = 55;
+    colorLabel.fontSize = 22;
+    colorLabel.fontFamily = 'monospace';
+    colorLabel.color = '#FFD740';
+    colorLabel.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    colorLabel.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    colorRow.addControl(colorLabel);
+    this._colorLabel = colorLabel;
+
+    const rightArrow = this._createArrowButton('arrowRight', '\u25B6');
+    rightArrow.onPointerClickObservable.add(() => {
+      this._cyclePalette(1);
+    });
+    colorRow.addControl(rightArrow);
+
+    // Play button — disabled placeholder
+    const playBtn = this._createMenuButton('Play', true);
+    panel.addControl(playBtn);
+  }
+
+  // ---- Menu helpers ----
+
+  _showMainMenu() {
+    this._menuState = 'main';
+    this._mainBackdrop.isVisible = true;
+    this._mainPanel.isVisible = true;
+    this._modeBackdrop.isVisible = false;
+    this._modePanel.isVisible = false;
+  }
+
+  _showModeSelect() {
+    this._menuState = 'modeSelect';
+    this._mainBackdrop.isVisible = false;
+    this._mainPanel.isVisible = false;
+    this._modeBackdrop.isVisible = true;
+    this._modePanel.isVisible = true;
+  }
+
+  _cyclePalette(direction) {
+    this._paletteIndex = ((this._paletteIndex + direction) % 4 + 4) % 4;
+    this._colorLabel.text = KNIGHT_PALETTES[this._paletteIndex].name;
+    this._buildKnight(this._paletteIndex);
+  }
+
   _createMenuButton(label, disabled) {
-    // Use built-in label (2nd param) — playground style
     const btn = Button.CreateSimpleButton(`btn_${label}`, label);
     btn.widthInPixels = 200;
     btn.heightInPixels = 55;
@@ -454,7 +618,6 @@ export class MainMenuScene {
     btn.fontSize = 26;
     btn.fontFamily = 'monospace';
 
-    // Vertically center text in button
     if (btn.textBlock) {
       btn.textBlock.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
     }
@@ -485,6 +648,33 @@ export class MainMenuScene {
         btn.color = '#FFD740';
       });
     }
+
+    return btn;
+  }
+
+  _createArrowButton(name, label) {
+    const btn = Button.CreateSimpleButton(name, label);
+    btn.widthInPixels = 45;
+    btn.heightInPixels = 55;
+    btn.cornerRadius = 14;
+    btn.fontSize = 26;
+    btn.fontFamily = 'monospace';
+    btn.background = '#2A2520';
+    btn.color = '#FFD740';
+    btn.thickness = 2;
+
+    if (btn.textBlock) {
+      btn.textBlock.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    }
+
+    btn.onPointerEnterObservable.add(() => {
+      btn.background = '#3A3530';
+      btn.color = '#FFF176';
+    });
+    btn.onPointerOutObservable.add(() => {
+      btn.background = '#2A2520';
+      btn.color = '#FFD740';
+    });
 
     return btn;
   }
