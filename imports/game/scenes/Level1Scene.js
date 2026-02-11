@@ -296,16 +296,17 @@ export class Level1Scene {
 
   _setupKnightHipPivots(kParts, VS) {
     // Knight legs stick forward in riding pose.
-    // After knight is rotated -π/2 on Y for mounting, knight's local Z aligns
-    // with ostrich's forward direction (+X). So rotation.z on hip nodes swings
-    // legs in the sagittal plane as seen from the side camera.
+    // Knight root has rotation.y = -π/2, which maps:
+    //   local X → World +Z (depth), local Z → World -X (horizontal)
+    // So rotation.x on hip nodes swings legs in the world X-Y plane (visible
+    // from the side camera), with positive angles pushing legs forward (+X).
     if (kParts.leftLeg && kParts.torso) {
       this._leftHipNode = new TransformNode('knightLeftHip', this.scene);
       this._leftHipNode.parent = kParts.torso.mesh;
       this._leftHipNode.position = new Vector3(1 * VS, 0, 0);
       kParts.leftLeg.mesh.parent = this._leftHipNode;
       kParts.leftLeg.mesh.position = new Vector3(0, -6 * VS, 0);
-      this._leftHipNode.rotation.z = Math.PI / 2.5;
+      this._leftHipNode.rotation.x = Math.PI / 2.5;
     }
 
     if (kParts.rightLeg && kParts.torso) {
@@ -314,7 +315,7 @@ export class Level1Scene {
       this._rightHipNode.position = new Vector3(-1 * VS, 0, 0);
       kParts.rightLeg.mesh.parent = this._rightHipNode;
       kParts.rightLeg.mesh.position = new Vector3(0, -6 * VS, 0);
-      this._rightHipNode.rotation.z = Math.PI / 2.5;
+      this._rightHipNode.rotation.x = Math.PI / 2.5;
     }
   }
 
