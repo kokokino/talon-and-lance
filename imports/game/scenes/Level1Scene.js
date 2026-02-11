@@ -234,7 +234,7 @@ export class Level1Scene {
       this._knightRig.root.rotation.y = -Math.PI / 2;
       // Position knight so butt rests on ostrich's back (saddle area)
       this._knightMountY = 5 * VS;
-      this._knightRig.root.position = new Vector3(0, this._knightMountY, 0);
+      this._knightRig.root.position = new Vector3(-1 * VS, this._knightMountY, 0);
     }
 
     // --- Position ostrich root so toes rest on platform surface ---
