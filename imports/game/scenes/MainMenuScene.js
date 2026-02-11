@@ -2,6 +2,7 @@
 // over animated lava, with three menu buttons
 
 import { Engine } from '@babylonjs/core/Engines/engine';
+import { AbstractEngine } from '@babylonjs/core/Engines/abstractEngine';
 import { Scene } from '@babylonjs/core/scene';
 import { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
@@ -20,6 +21,8 @@ import { StackPanel } from '@babylonjs/gui/2D/controls/stackPanel';
 import { Control } from '@babylonjs/gui/2D/controls/control';
 import { Rectangle } from '@babylonjs/gui/2D/controls/rectangle';
 import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
+import { Sound } from '@babylonjs/core/Audio/sound';
+import '@babylonjs/core/Audio/audioSceneComponent';
 import { Meteor } from 'meteor/meteor';
 
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
@@ -31,6 +34,12 @@ import { KNIGHT_PALETTES, buildKnightPalette } from '../voxels/models/knightPale
 
 const ASPECT = 16 / 9;
 const VOXEL_SIZE = 0.18;
+
+const MENU_TRACKS = [
+  { name: 'Track 1', url: '/audio/menu-theme-1.mp3' },
+  { name: 'Track 2', url: '/audio/menu-theme-2.mp3' },
+  { name: 'Track 3', url: '/audio/menu-theme-3.mp3' },
+];
 
 export class MainMenuScene {
   constructor() {
@@ -60,6 +69,12 @@ export class MainMenuScene {
     this._selectedMode = null;  // 'team' | 'pvp'
     this._paletteIndex = parseInt(localStorage.getItem('talon-lance:paletteIndex'), 10) || 0;
 
+    // Music state
+    const storedTrack = parseInt(localStorage.getItem('talon-lance:trackIndex'), 10);
+    this._trackIndex = Number.isNaN(storedTrack) ? 1 : storedTrack;
+    this._menuMusic = null;
+    this._trackLabel = null;
+
     // GUI references
     this._gui = null;
     this._mainBackdrop = null;
@@ -75,7 +90,7 @@ export class MainMenuScene {
    */
   create(canvas) {
     this.canvas = canvas;
-    this.engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+    this.engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true, audioEngine: true });
     this.scene = new Scene(this.engine);
     this.scene.clearColor = new Color4(0.12, 0.10, 0.10, 1); // Deep charcoal
 
@@ -85,6 +100,7 @@ export class MainMenuScene {
     this._createPlatforms();
     this._createCharacters();
     this._createMenuButtons();
+    this._playTrack(this._trackIndex);
 
     // Animation callback
     this.scene.onBeforeRenderObservable.add(() => {
@@ -506,6 +522,7 @@ export class MainMenuScene {
     // Team Play — opens mode select
     const teamBtn = this._createMenuButton('Team Play', false);
     teamBtn.onPointerClickObservable.add(() => {
+      AbstractEngine.audioEngine?.unlock();
       this._selectedMode = 'team';
       this._showModeSelect();
     });
@@ -514,6 +531,7 @@ export class MainMenuScene {
     // PvP Arena — opens mode select
     const pvpBtn = this._createMenuButton('PvP Arena', false);
     pvpBtn.onPointerClickObservable.add(() => {
+      AbstractEngine.audioEngine?.unlock();
       this._selectedMode = 'pvp';
       this._showModeSelect();
     });
@@ -525,7 +543,7 @@ export class MainMenuScene {
   _createModeSelectPanel(gui) {
     const backdrop = new Rectangle('modeBackdrop');
     backdrop.widthInPixels = 240;
-    backdrop.heightInPixels = 280;
+    backdrop.heightInPixels = 350;
     backdrop.cornerRadius = 10;
     backdrop.thickness = 0;
     backdrop.background = 'rgba(0, 0, 0, 0.5)';
@@ -581,6 +599,36 @@ export class MainMenuScene {
     });
     colorRow.addControl(rightArrow);
 
+    // Track selector row
+    const trackRow = new StackPanel('trackRow');
+    trackRow.isVertical = false;
+    trackRow.widthInPixels = 180;
+    trackRow.heightInPixels = 55;
+    panel.addControl(trackRow);
+
+    const trackLeftArrow = this._createArrowButton('trackArrowLeft', '\u25C0');
+    trackLeftArrow.onPointerClickObservable.add(() => {
+      this._cycleTrack(-1);
+    });
+    trackRow.addControl(trackLeftArrow);
+
+    const trackLabel = new TextBlock('trackLabel', MENU_TRACKS[this._trackIndex].name);
+    trackLabel.widthInPixels = 100;
+    trackLabel.heightInPixels = 55;
+    trackLabel.fontSize = 22;
+    trackLabel.fontFamily = 'monospace';
+    trackLabel.color = '#FFD740';
+    trackLabel.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    trackLabel.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    trackRow.addControl(trackLabel);
+    this._trackLabel = trackLabel;
+
+    const trackRightArrow = this._createArrowButton('trackArrowRight', '\u25B6');
+    trackRightArrow.onPointerClickObservable.add(() => {
+      this._cycleTrack(1);
+    });
+    trackRow.addControl(trackRightArrow);
+
     // Play button — disabled placeholder
     const playBtn = this._createMenuButton('Play', true);
     panel.addControl(playBtn);
@@ -602,6 +650,29 @@ export class MainMenuScene {
     this._mainPanel.isVisible = false;
     this._modeBackdrop.isVisible = true;
     this._modePanel.isVisible = true;
+  }
+
+  _playTrack(index) {
+    if (this._menuMusic) {
+      try {
+        this._menuMusic.dispose();
+      } catch (_) {
+        // Sound.dispose() can throw if audio engine wasn't initialized
+      }
+      this._menuMusic = null;
+    }
+    this._menuMusic = new Sound('menuMusic', MENU_TRACKS[index].url, this.scene, null, {
+      loop: true,
+      autoplay: true,
+      volume: 0.5,
+    });
+  }
+
+  _cycleTrack(direction) {
+    this._trackIndex = ((this._trackIndex + direction) % 3 + 3) % 3;
+    localStorage.setItem('talon-lance:trackIndex', this._trackIndex);
+    this._trackLabel.text = MENU_TRACKS[this._trackIndex].name;
+    this._playTrack(this._trackIndex);
   }
 
   _cyclePalette(direction) {
