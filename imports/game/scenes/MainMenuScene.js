@@ -554,7 +554,7 @@ export class MainMenuScene {
     // Color selector row
     const colorRow = new StackPanel('colorRow');
     colorRow.isVertical = false;
-    colorRow.widthInPixels = 200;
+    colorRow.widthInPixels = 180;
     colorRow.heightInPixels = 55;
     panel.addControl(colorRow);
 
@@ -565,7 +565,7 @@ export class MainMenuScene {
     colorRow.addControl(leftArrow);
 
     const colorLabel = new TextBlock('colorLabel', KNIGHT_PALETTES[this._paletteIndex].name);
-    colorLabel.widthInPixels = 110;
+    colorLabel.widthInPixels = 100;
     colorLabel.heightInPixels = 55;
     colorLabel.fontSize = 22;
     colorLabel.fontFamily = 'monospace';
@@ -654,10 +654,10 @@ export class MainMenuScene {
 
   _createArrowButton(name, label) {
     const btn = Button.CreateSimpleButton(name, label);
-    btn.widthInPixels = 45;
+    btn.widthInPixels = 40;
     btn.heightInPixels = 55;
     btn.cornerRadius = 14;
-    btn.fontSize = 26;
+    btn.fontSize = 22;
     btn.fontFamily = 'monospace';
     btn.background = '#2A2520';
     btn.color = '#FFD740';
