@@ -12,6 +12,7 @@ import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 
+import { InputReader } from '../InputReader.js';
 import { buildRig } from '../voxels/VoxelBuilder.js';
 import { knightModel } from '../voxels/models/knightModel.js';
 import { lanceModel } from '../voxels/models/lanceModel.js';
@@ -28,6 +29,9 @@ const ORTHO_RIGHT = ORTHO_WIDTH / 2;
 // Movement
 const ACCELERATION = 2.0;   // units/sec^2
 const MAX_SPEED = 6.0;      // units/sec
+const FRICTION = 3.0;       // units/sec^2 — coast deceleration (no input)
+const SKID_DECEL = 8.0;     // units/sec^2 — deceleration when pressing opposite direction
+const TURN_DURATION = 0.25; // seconds for 180-degree turn rotation
 
 // Character half-width for wrap calculation (approximate from ostrich body ~10 voxels wide)
 const CHAR_HALF_WIDTH = 10 * VOXEL_SIZE / 2;
@@ -63,6 +67,12 @@ export class Level1Scene {
     // Movement state
     this._positionX = 0;
     this._velocityX = 0;
+    this._facingDir = 1;      // 1 = right, -1 = left
+    this._isTurning = false;
+    this._turnTimer = 0;
+    this._turnFrom = 0;       // rotation.y start (radians)
+    this._turnTo = 0;         // rotation.y end (radians)
+    this._inputReader = null;
 
     // Animation phase
     this._stridePhase = 0;
@@ -94,6 +104,10 @@ export class Level1Scene {
     this._createPlatform();
     this._createMountedCharacter();
 
+    // Input
+    this._inputReader = new InputReader();
+    this._inputReader.attach();
+
     // Animation callback
     this.scene.onBeforeRenderObservable.add(() => {
       const dt = engine.getDeltaTime() / 1000;
@@ -106,6 +120,10 @@ export class Level1Scene {
    * Does NOT dispose Engine, audio, or the Scene itself — BabylonPage handles that.
    */
   dispose() {
+    if (this._inputReader) {
+      this._inputReader.detach();
+      this._inputReader = null;
+    }
     this._ostrichRig = null;
     this._knightRig = null;
     this._lanceRig = null;
@@ -324,13 +342,51 @@ export class Level1Scene {
   _update(dt) {
     this._elapsed += dt;
 
-    // Accelerate to max speed
-    this._velocityX = Math.min(this._velocityX + ACCELERATION * dt, MAX_SPEED);
+    // Sample input
+    const input = this._inputReader ? this._inputReader.sample() : { left: false, right: false };
+    let inputDir = 0;
+    if (input.right && !input.left) {
+      inputDir = 1;
+    } else if (input.left && !input.right) {
+      inputDir = -1;
+    }
+
+    // Apply acceleration / skid / friction
+    if (inputDir !== 0) {
+      const movingOpposite = (this._velocityX > 0 && inputDir < 0) ||
+                             (this._velocityX < 0 && inputDir > 0);
+      if (movingOpposite) {
+        // Skid: pressing against current velocity
+        this._velocityX += inputDir * SKID_DECEL * dt;
+      } else {
+        // Accelerate in input direction
+        this._velocityX += inputDir * ACCELERATION * dt;
+      }
+    } else {
+      // No input: coast to stop
+      this._applyFriction(dt);
+    }
+
+    // Clamp velocity
+    this._velocityX = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, this._velocityX));
+
+    // Detect direction change (velocity crosses zero while input is held)
+    if (inputDir !== 0 && inputDir !== this._facingDir) {
+      // Check if velocity has crossed to the input side or reached zero
+      if ((inputDir > 0 && this._velocityX >= 0) ||
+          (inputDir < 0 && this._velocityX <= 0)) {
+        this._startTurn(inputDir);
+      }
+    }
+
+    // Update position
     this._positionX += this._velocityX * dt;
 
-    // Screen wrap
+    // Bidirectional screen wrap
     if (this._positionX > ORTHO_RIGHT + CHAR_HALF_WIDTH) {
       this._positionX = ORTHO_LEFT - CHAR_HALF_WIDTH;
+    } else if (this._positionX < ORTHO_LEFT - CHAR_HALF_WIDTH) {
+      this._positionX = ORTHO_RIGHT + CHAR_HALF_WIDTH;
     }
 
     // Update root position
@@ -338,12 +394,53 @@ export class Level1Scene {
       this._ostrichRig.root.position.x = this._positionX;
     }
 
-    // Animate running
+    // Turn animation + running animation
+    this._updateTurn(dt);
     this._animateRunning(dt);
   }
 
+  _applyFriction(dt) {
+    if (this._velocityX > 0) {
+      this._velocityX = Math.max(0, this._velocityX - FRICTION * dt);
+    } else if (this._velocityX < 0) {
+      this._velocityX = Math.min(0, this._velocityX + FRICTION * dt);
+    }
+  }
+
+  _startTurn(newFacingDir) {
+    this._facingDir = newFacingDir;
+    this._isTurning = true;
+    this._turnTimer = 0;
+    if (newFacingDir === -1) {
+      // Turning right → left
+      this._turnFrom = 0;
+      this._turnTo = Math.PI;
+    } else {
+      // Turning left → right
+      this._turnFrom = Math.PI;
+      this._turnTo = 0;
+    }
+  }
+
+  _updateTurn(dt) {
+    if (!this._isTurning || !this._ostrichRig?.root) {
+      return;
+    }
+
+    this._turnTimer += dt;
+    let t = this._turnTimer / TURN_DURATION;
+    if (t >= 1.0) {
+      t = 1.0;
+      this._isTurning = false;
+    }
+
+    // Cosine ease-in-out
+    const easedT = 0.5 - 0.5 * Math.cos(t * Math.PI);
+    this._ostrichRig.root.rotation.y = this._turnFrom + (this._turnTo - this._turnFrom) * easedT;
+  }
+
   _animateRunning(dt) {
-    const speedRatio = this._velocityX / MAX_SPEED;
+    const speedRatio = Math.abs(this._velocityX) / MAX_SPEED;
     const oParts = this._ostrichRig?.parts;
     const kParts = this._knightRig?.parts;
 
