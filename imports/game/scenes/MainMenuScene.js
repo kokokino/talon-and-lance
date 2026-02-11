@@ -58,7 +58,7 @@ export class MainMenuScene {
     // Menu state machine
     this._menuState = 'main';   // 'main' | 'modeSelect'
     this._selectedMode = null;  // 'team' | 'pvp'
-    this._paletteIndex = 0;
+    this._paletteIndex = parseInt(localStorage.getItem('talon-lance:paletteIndex'), 10) || 0;
 
     // GUI references
     this._gui = null;
@@ -606,6 +606,7 @@ export class MainMenuScene {
 
   _cyclePalette(direction) {
     this._paletteIndex = ((this._paletteIndex + direction) % 4 + 4) % 4;
+    localStorage.setItem('talon-lance:paletteIndex', this._paletteIndex);
     this._colorLabel.text = KNIGHT_PALETTES[this._paletteIndex].name;
     this._buildKnight(this._paletteIndex);
   }
