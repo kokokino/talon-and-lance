@@ -68,8 +68,9 @@ export class Level1Scene {
     this._stridePhase = 0;
     this._elapsed = 0;
 
-    // Base Y position for ostrich root (set during character creation)
+    // Base Y positions (set during character creation, used by animation bob)
     this._ostrichBaseY = 0;
+    this._knightMountY = 0;
 
     // Ortho bounds (Y computed from aspect ratio)
     this._orthoBottom = 0;
@@ -232,7 +233,8 @@ export class Level1Scene {
       this._knightRig.root.parent = oParts.body.mesh;
       this._knightRig.root.rotation.y = -Math.PI / 2;
       // Position knight so butt rests on ostrich's back (saddle area)
-      this._knightRig.root.position = new Vector3(0, 5 * VS, 0);
+      this._knightMountY = 5 * VS;
+      this._knightRig.root.position = new Vector3(0, this._knightMountY, 0);
     }
 
     // --- Position ostrich root so toes rest on platform surface ---
@@ -401,7 +403,7 @@ export class Level1Scene {
     // ---- Knight: subtle bounce + arm sway (inherits ostrich motion via parenting) ----
     if (kParts) {
       if (kParts.torso) {
-        kParts.torso.mesh.position.y = Math.abs(Math.sin(p * 2)) * 0.02 * amp;
+        kParts.torso.mesh.position.y = this._knightMountY + Math.abs(Math.sin(p * 2)) * 0.02 * amp;
       }
       if (kParts.head) {
         kParts.head.mesh.rotation.z = Math.sin(p) * 0.03 * amp;
