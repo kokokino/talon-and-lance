@@ -2,7 +2,6 @@
 // over animated lava, with three menu buttons
 
 import { Engine } from '@babylonjs/core/Engines/engine';
-import { AbstractEngine } from '@babylonjs/core/Engines/abstractEngine';
 import { Scene } from '@babylonjs/core/scene';
 import { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
@@ -21,8 +20,7 @@ import { StackPanel } from '@babylonjs/gui/2D/controls/stackPanel';
 import { Control } from '@babylonjs/gui/2D/controls/control';
 import { Rectangle } from '@babylonjs/gui/2D/controls/rectangle';
 import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
-import { Sound } from '@babylonjs/core/Audio/sound';
-import '@babylonjs/core/Audio/audioSceneComponent';
+import { CreateAudioEngineAsync, CreateStreamingSoundAsync } from '@babylonjs/core/AudioV2';
 import { Meteor } from 'meteor/meteor';
 
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
@@ -72,6 +70,7 @@ export class MainMenuScene {
     // Music state
     const storedTrack = parseInt(localStorage.getItem('talon-lance:trackIndex'), 10);
     this._trackIndex = Number.isNaN(storedTrack) ? 1 : storedTrack;
+    this._audioEngine = null;
     this._menuMusic = null;
     this._trackLabel = null;
 
@@ -90,7 +89,7 @@ export class MainMenuScene {
    */
   create(canvas) {
     this.canvas = canvas;
-    this.engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true, audioEngine: true });
+    this.engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
     this.scene = new Scene(this.engine);
     this.scene.clearColor = new Color4(0.12, 0.10, 0.10, 1); // Deep charcoal
 
@@ -100,7 +99,11 @@ export class MainMenuScene {
     this._createPlatforms();
     this._createCharacters();
     this._createMenuButtons();
-    this._playTrack(this._trackIndex);
+    (async () => {
+      this._audioEngine = await CreateAudioEngineAsync();
+      this._audioEngine.volume = 0.5;
+      await this._playTrack(this._trackIndex);
+    })();
 
     // Animation callback
     this.scene.onBeforeRenderObservable.add(() => {
@@ -128,6 +131,15 @@ export class MainMenuScene {
     if (this._resizeHandler) {
       window.removeEventListener('resize', this._resizeHandler);
       this._resizeHandler = null;
+    }
+    if (this._menuMusic) {
+      this._menuMusic.stop();
+      this._menuMusic.dispose();
+      this._menuMusic = null;
+    }
+    if (this._audioEngine) {
+      this._audioEngine.dispose();
+      this._audioEngine = null;
     }
     if (this.engine) {
       this.engine.stopRenderLoop();
@@ -522,7 +534,6 @@ export class MainMenuScene {
     // Team Play — opens mode select
     const teamBtn = this._createMenuButton('Team Play', false);
     teamBtn.onPointerClickObservable.add(() => {
-      AbstractEngine.audioEngine?.unlock();
       this._selectedMode = 'team';
       this._showModeSelect();
     });
@@ -531,7 +542,6 @@ export class MainMenuScene {
     // PvP Arena — opens mode select
     const pvpBtn = this._createMenuButton('PvP Arena', false);
     pvpBtn.onPointerClickObservable.add(() => {
-      AbstractEngine.audioEngine?.unlock();
       this._selectedMode = 'pvp';
       this._showModeSelect();
     });
@@ -652,27 +662,24 @@ export class MainMenuScene {
     this._modePanel.isVisible = true;
   }
 
-  _playTrack(index) {
+  async _playTrack(index) {
     if (this._menuMusic) {
-      try {
-        this._menuMusic.dispose();
-      } catch (_) {
-        // Sound.dispose() can throw if audio engine wasn't initialized
-      }
+      this._menuMusic.stop();
+      this._menuMusic.dispose();
       this._menuMusic = null;
     }
-    this._menuMusic = new Sound('menuMusic', MENU_TRACKS[index].url, this.scene, null, {
-      loop: true,
-      autoplay: true,
-      volume: 0.5,
-    });
+    this._menuMusic = await CreateStreamingSoundAsync(
+      'menuMusic',
+      MENU_TRACKS[index].url,
+      { loop: true, autoplay: true }
+    );
   }
 
-  _cycleTrack(direction) {
+  async _cycleTrack(direction) {
     this._trackIndex = ((this._trackIndex + direction) % 3 + 3) % 3;
     localStorage.setItem('talon-lance:trackIndex', this._trackIndex);
     this._trackLabel.text = MENU_TRACKS[this._trackIndex].name;
-    this._playTrack(this._trackIndex);
+    await this._playTrack(this._trackIndex);
   }
 
   _cyclePalette(direction) {
