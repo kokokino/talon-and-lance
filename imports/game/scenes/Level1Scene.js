@@ -68,6 +68,9 @@ export class Level1Scene {
     this._stridePhase = 0;
     this._elapsed = 0;
 
+    // Base Y position for ostrich root (set during character creation)
+    this._ostrichBaseY = 0;
+
     // Ortho bounds (Y computed from aspect ratio)
     this._orthoBottom = 0;
     this._orthoTop = 0;
@@ -229,7 +232,7 @@ export class Level1Scene {
       this._knightRig.root.parent = oParts.body.mesh;
       this._knightRig.root.rotation.y = -Math.PI / 2;
       // Position knight so butt rests on ostrich's back (saddle area)
-      this._knightRig.root.position = new Vector3(0, 4 * VS, 0);
+      this._knightRig.root.position = new Vector3(0, 5 * VS, 0);
     }
 
     // --- Position ostrich root so toes rest on platform surface ---
@@ -240,6 +243,7 @@ export class Level1Scene {
     const platformTop = this._platformY + 0.3;
     const ostrichRootY = platformTop + 7.5 * VS;
 
+    this._ostrichBaseY = ostrichRootY;
     if (this._ostrichRig.root) {
       this._ostrichRig.root.position = new Vector3(0, ostrichRootY, 0);
     }
@@ -345,7 +349,7 @@ export class Level1Scene {
     }
 
     // Stride frequency scales with speed (0 at rest, ~8 Hz at max)
-    const strideFreq = speedRatio * 8.0;
+    const strideFreq = speedRatio * 2.0;
     this._stridePhase += strideFreq * dt;
 
     const p = this._stridePhase * Math.PI * 2;
@@ -372,7 +376,7 @@ export class Level1Scene {
     // ---- Ostrich body: vertical bob at double stride frequency ----
     if (oParts.body) {
       const bobAmount = Math.abs(Math.sin(p * 2)) * 0.05 * amp;
-      oParts.body.mesh.position.y = bobAmount;
+      oParts.body.mesh.position.y = this._ostrichBaseY + bobAmount;
     }
 
     // ---- Ostrich neck: forward-back bob synced to stride ----
