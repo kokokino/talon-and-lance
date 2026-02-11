@@ -1,8 +1,7 @@
 // MainMenuScene — full menu scene with voxel knight+ostrich on stone platforms
 // over animated lava, with three menu buttons
+// Receives Engine/Scene/AudioManager from BabylonPage — does not own them.
 
-import { Engine } from '@babylonjs/core/Engines/engine';
-import { Scene } from '@babylonjs/core/scene';
 import { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
@@ -20,7 +19,6 @@ import { StackPanel } from '@babylonjs/gui/2D/controls/stackPanel';
 import { Control } from '@babylonjs/gui/2D/controls/control';
 import { Rectangle } from '@babylonjs/gui/2D/controls/rectangle';
 import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
-import { CreateAudioEngineAsync, CreateStreamingSoundAsync } from '@babylonjs/core/AudioV2';
 import { Meteor } from 'meteor/meteor';
 
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
@@ -30,17 +28,16 @@ import { lanceModel } from '../voxels/models/lanceModel.js';
 import { ostrichModel } from '../voxels/models/ostrichModel.js';
 import { KNIGHT_PALETTES, buildKnightPalette } from '../voxels/models/knightPalettes.js';
 
-const ASPECT = 16 / 9;
 const VOXEL_SIZE = 0.18;
 
-const MENU_TRACKS = [
-  { name: 'Track 1', url: '/audio/menu-theme-1.mp3' },
-  { name: 'Track 2', url: '/audio/menu-theme-2.mp3' },
-  { name: 'Track 3', url: '/audio/menu-theme-3.mp3' },
-];
-
 export class MainMenuScene {
-  constructor() {
+  /**
+   * @param {{ audioManager: AudioManager, paletteIndex: number, onPlay: function }} config
+   */
+  constructor({ audioManager, paletteIndex, onPlay }) {
+    this._audioManager = audioManager;
+    this._onPlay = onPlay;
+
     this.engine = null;
     this.scene = null;
     this.canvas = null;
@@ -59,20 +56,10 @@ export class MainMenuScene {
     this.lavaMaterial = null;
     this.lavaUvOffset = 0;
 
-    // Resize handler reference for cleanup
-    this._resizeHandler = null;
-
     // Menu state machine
     this._menuState = 'main';   // 'main' | 'modeSelect'
     this._selectedMode = null;  // 'team' | 'pvp'
-    this._paletteIndex = parseInt(localStorage.getItem('talon-lance:paletteIndex'), 10) || 0;
-
-    // Music state
-    const storedTrack = parseInt(localStorage.getItem('talon-lance:trackIndex'), 10);
-    this._trackIndex = Number.isNaN(storedTrack) ? 1 : storedTrack;
-    this._audioEngine = null;
-    this._menuMusic = null;
-    this._trackLabel = null;
+    this._paletteIndex = paletteIndex;
 
     // GUI references
     this._gui = null;
@@ -81,16 +68,19 @@ export class MainMenuScene {
     this._modeBackdrop = null;
     this._modePanel = null;
     this._colorLabel = null;
+    this._trackLabel = null;
   }
 
   /**
-   * Initialize engine, scene, all objects, and start render loop.
+   * Build all scene content into the provided Scene.
+   * @param {Scene} scene
+   * @param {Engine} engine
    * @param {HTMLCanvasElement} canvas
    */
-  create(canvas) {
+  create(scene, engine, canvas) {
+    this.scene = scene;
+    this.engine = engine;
     this.canvas = canvas;
-    this.engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
-    this.scene = new Scene(this.engine);
     this.scene.clearColor = new Color4(0.12, 0.10, 0.10, 1); // Deep charcoal
 
     this._setupCamera();
@@ -99,85 +89,33 @@ export class MainMenuScene {
     this._createPlatforms();
     this._createCharacters();
     this._createMenuButtons();
-    (async () => {
-      this._audioEngine = await CreateAudioEngineAsync();
-      this._audioEngine.volume = 0.5;
-      await this._playTrack(this._trackIndex);
-    })();
 
     // Animation callback
     this.scene.onBeforeRenderObservable.add(() => {
       const dt = this.engine.getDeltaTime() / 1000;
       this._updateAnimations(dt);
     });
-
-    // Start render loop
-    this.engine.runRenderLoop(() => {
-      this.scene.render();
-    });
-
-    // Resize handling
-    this._resizeHandler = () => {
-      this._resizeCanvas();
-    };
-    window.addEventListener('resize', this._resizeHandler);
-    this._resizeCanvas();
   }
 
   /**
-   * Stop render loop, dispose engine, clean up.
+   * Dispose scene-specific resources (meshes, materials, GUI, particles).
+   * Does NOT dispose Engine, audio, or the Scene itself — BabylonPage handles that.
    */
   dispose() {
-    if (this._resizeHandler) {
-      window.removeEventListener('resize', this._resizeHandler);
-      this._resizeHandler = null;
+    if (this._gui) {
+      this._gui.dispose();
+      this._gui = null;
     }
-    if (this._menuMusic) {
-      this._menuMusic.stop();
-      this._menuMusic.dispose();
-      this._menuMusic = null;
-    }
-    if (this._audioEngine) {
-      this._audioEngine.dispose();
-      this._audioEngine = null;
-    }
-    if (this.engine) {
-      this.engine.stopRenderLoop();
-      this.engine.dispose();
-      this.engine = null;
-    }
+    // Rigs and materials are tied to the Scene and will be disposed when
+    // BabylonPage disposes the Scene. Clear references to avoid stale access.
+    this.knightRig = null;
+    this.lanceRig = null;
+    this.ostrichRig = null;
+    this.leftShoulderNode = null;
+    this.rightShoulderNode = null;
+    this.lavaMaterial = null;
     this.scene = null;
-  }
-
-  /**
-   * Resize canvas to maintain 16:9 aspect ratio with letterboxing.
-   */
-  _resizeCanvas() {
-    if (!this.canvas || !this.engine) {
-      return;
-    }
-
-    const windowW = window.innerWidth;
-    const windowH = window.innerHeight;
-    let w, h;
-
-    if (windowW / windowH > ASPECT) {
-      // Window is wider than 16:9 — letterbox sides
-      h = windowH;
-      w = Math.floor(h * ASPECT);
-    } else {
-      // Window is taller than 16:9 — letterbox top/bottom
-      w = windowW;
-      h = Math.floor(w / ASPECT);
-    }
-
-    this.canvas.width = w;
-    this.canvas.height = h;
-    this.canvas.style.width = w + 'px';
-    this.canvas.style.height = h + 'px';
-    this.canvas.style.marginLeft = Math.floor((windowW - w) / 2) + 'px';
-    this.canvas.style.marginTop = Math.floor((windowH - h) / 2) + 'px';
-    this.engine.resize();
+    this.engine = null;
   }
 
   // ---- Setup methods ----
@@ -399,7 +337,7 @@ export class MainMenuScene {
   /**
    * Dispose and rebuild the knight + lance rigs with a new palette.
    * Animation picks up new meshes automatically via this.knightRig.parts.
-   * @param {number} paletteIndex — 0–3
+   * @param {number} paletteIndex — 0-3
    */
   _buildKnight(paletteIndex) {
     // --- Dispose existing lance ---
@@ -622,7 +560,7 @@ export class MainMenuScene {
     });
     trackRow.addControl(trackLeftArrow);
 
-    const trackLabel = new TextBlock('trackLabel', MENU_TRACKS[this._trackIndex].name);
+    const trackLabel = new TextBlock('trackLabel', this._audioManager.getTrackName());
     trackLabel.widthInPixels = 100;
     trackLabel.heightInPixels = 55;
     trackLabel.fontSize = 22;
@@ -639,8 +577,13 @@ export class MainMenuScene {
     });
     trackRow.addControl(trackRightArrow);
 
-    // Play button — disabled placeholder
-    const playBtn = this._createMenuButton('Play', true);
+    // Play button — enabled, triggers scene transition
+    const playBtn = this._createMenuButton('Play', false);
+    playBtn.onPointerClickObservable.add(() => {
+      if (this._onPlay) {
+        this._onPlay(this._paletteIndex);
+      }
+    });
     panel.addControl(playBtn);
   }
 
@@ -662,24 +605,9 @@ export class MainMenuScene {
     this._modePanel.isVisible = true;
   }
 
-  async _playTrack(index) {
-    if (this._menuMusic) {
-      this._menuMusic.stop();
-      this._menuMusic.dispose();
-      this._menuMusic = null;
-    }
-    this._menuMusic = await CreateStreamingSoundAsync(
-      'menuMusic',
-      MENU_TRACKS[index].url,
-      { loop: true, autoplay: true }
-    );
-  }
-
   async _cycleTrack(direction) {
-    this._trackIndex = ((this._trackIndex + direction) % 3 + 3) % 3;
-    localStorage.setItem('talon-lance:trackIndex', this._trackIndex);
-    this._trackLabel.text = MENU_TRACKS[this._trackIndex].name;
-    await this._playTrack(this._trackIndex);
+    await this._audioManager.cycleTrack(direction);
+    this._trackLabel.text = this._audioManager.getTrackName();
   }
 
   _cyclePalette(direction) {
@@ -774,17 +702,17 @@ export class MainMenuScene {
       return;
     }
 
-    // Torso: gentle breathing bob — Y oscillates ±0.02, period ~3s
+    // Torso: gentle breathing bob — Y oscillates +-0.02, period ~3s
     if (parts.torso) {
       parts.torso.mesh.position.y = Math.sin(t * (2 * Math.PI / 3)) * 0.02;
     }
 
-    // Head: slight independent nod — rotation.x ±0.03 rad, period ~4s
+    // Head: slight independent nod — rotation.x +-0.03 rad, period ~4s
     if (parts.head) {
       parts.head.mesh.rotation.x = Math.sin(t * (2 * Math.PI / 4)) * 0.03;
     }
 
-    // Arms: subtle sway via shoulder joints — rotation.z ±0.02 rad, period ~3.5s
+    // Arms: subtle sway via shoulder joints — rotation.z +-0.02 rad, period ~3.5s
     if (this.leftShoulderNode) {
       this.leftShoulderNode.rotation.z = Math.sin(t * (2 * Math.PI / 3.5)) * 0.02;
     }
@@ -800,12 +728,12 @@ export class MainMenuScene {
       return;
     }
 
-    // Body: weight shift — tilts rotation.z ±0.015 rad, period ~5s
+    // Body: weight shift — tilts rotation.z +-0.015 rad, period ~5s
     if (parts.body) {
       parts.body.mesh.rotation.z = Math.sin(t * (2 * Math.PI / 5)) * 0.015;
     }
 
-    // Neck+Head: bob up/down (rotation.x ±0.08, period ~2s) + look left/right (rotation.y ±0.15, period ~6s)
+    // Neck+Head: bob up/down (rotation.x +-0.08, period ~2s) + look left/right (rotation.y +-0.15, period ~6s)
     if (parts.neck) {
       parts.neck.mesh.rotation.x = Math.sin(t * (2 * Math.PI / 2)) * 0.08;
       parts.neck.mesh.rotation.y = Math.sin(t * (2 * Math.PI / 6)) * 0.15;
