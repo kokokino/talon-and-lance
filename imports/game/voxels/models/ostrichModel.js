@@ -152,8 +152,8 @@ export const ostrichModel = {
     leftWing: {
       parent: 'body',
       // Body centerZ=2.5. Wing at z=+3 → just past left edge (character's left = +Z)
-      // x=0 → centered on body. y=2 → slightly lower attachment for bigger wing.
-      offset: [0, 2, 3],
+      // x=0 → centered on body. y=-2 → lowered attachment for bigger wing.
+      offset: [0, 0, 3],
       // 7w × 2d × 5h — mirrored wing (z-rows swapped vs right)
       // centerX=3, centerZ=0.5
       layers: [
@@ -188,7 +188,7 @@ export const ostrichModel = {
     rightWing: {
       parent: 'body',
       // Mirror of leftWing at z=-3 (character's right = -Z)
-      offset: [0, 2, -3],
+      offset: [0, 0, -3],
       // 7w × 2d × 5h — wing with volume, tapers bottom to top
       // centerX=3, centerZ=0.5
       layers: [
