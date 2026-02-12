@@ -19,12 +19,13 @@ import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
 
 import { InputReader } from '../InputReader.js';
 import { SkyBackground } from './SkyBackground.js';
-import { buildRig } from '../voxels/VoxelBuilder.js';
+import { buildRig, buildPart } from '../voxels/VoxelBuilder.js';
 import { knightModel } from '../voxels/models/knightModel.js';
 import { lanceModel } from '../voxels/models/lanceModel.js';
 import { ostrichModel } from '../voxels/models/ostrichModel.js';
 import { buzzardModel } from '../voxels/models/buzzardModel.js';
 import { evilKnightModel } from '../voxels/models/evilKnightModel.js';
+import { eggModel } from '../voxels/models/eggModel.js';
 import { buildKnightPalette } from '../voxels/models/knightPalettes.js';
 import { buildEvilKnightPalette } from '../voxels/models/evilKnightPalettes.js';
 
@@ -36,10 +37,10 @@ const ORTHO_LEFT = -ORTHO_WIDTH / 2;
 const ORTHO_RIGHT = ORTHO_WIDTH / 2;
 
 // ---- Movement ----
-const ACCELERATION = 2.0;
-const MAX_SPEED = 5.0;
+const ACCELERATION = 4.0;
+const MAX_SPEED = 10.0;
 const FRICTION = 3.0;
-const SKID_DECEL = 8.0;
+const SKID_DECEL = 12.0;
 const TURN_DURATION = 0.25;
 
 const CHAR_HALF_WIDTH = 10 * VOXEL_SIZE / 2;
@@ -54,6 +55,13 @@ const AIR_FRICTION = 0.5;
 const FEET_OFFSET = 7.5 * VOXEL_SIZE;
 const HEAD_OFFSET = 10.5 * VOXEL_SIZE;
 const LEDGE_HEIGHT = 0.06;
+
+// ---- Joust collision ----
+const JOUST_HEIGHT_DEADZONE = 0.15;
+const JOUST_KNOCKBACK_X = 6.0;
+const JOUST_KNOCKBACK_Y = 3.0;
+const RESPAWN_DELAY = 2.0;
+const INVINCIBLE_DURATION = 5.0;
 
 // ---- Wing flap animation — ostrich (up/down rotation.x) ----
 const FLAP_DURATION = 0.25;
@@ -134,6 +142,11 @@ function createCharState(wingMode) {
     materializeDuration: MATERIALIZE_DURATION,
     materializeQuickEnd: false,
     materializeParticles: null,
+    // Death / respawn
+    dead: false,
+    respawnTimer: 0,
+    invincible: false,
+    invincibleTimer: 0,
   };
 }
 
@@ -162,6 +175,9 @@ export class Level1Scene {
 
     // Platform collision data (populated in _createPlatforms)
     this._platforms = [];
+
+    // Eggs (dropped on joust death)
+    this._eggs = [];
 
     // Sky background
     this._skyBackground = null;
@@ -229,6 +245,18 @@ export class Level1Scene {
       }
     }
     this._chars = [null, null];
+    // Dispose eggs
+    for (const egg of this._eggs) {
+      if (egg.rig.root) {
+        egg.rig.root.dispose();
+      }
+      for (const part of Object.values(egg.rig.parts)) {
+        if (part.mesh) {
+          part.mesh.dispose();
+        }
+      }
+    }
+    this._eggs = [];
     this._platforms = [];
     this._lavaMaterial = null;
     this._lavaTexture = null;
@@ -344,17 +372,18 @@ export class Level1Scene {
         continue;
       }
 
+      const padHeight = 4 * VOXEL_SIZE;
       const pad = MeshBuilder.CreateBox(`spawnPad_${sp.platformId}`, {
         width: 1.5,
-        height: 0.08,
+        height: padHeight,
         depth: 2,
       }, this.scene);
-      pad.position = new Vector3(sp.x, platform.top + 0.04, -0.02);
+      pad.position = new Vector3(sp.x, platform.top - padHeight / 2, -0.02);
 
       const mat = new StandardMaterial(`spawnPadMat_${sp.platformId}`, this.scene);
-      mat.diffuseColor = new Color3(0.55, 0.53, 0.50);
+      mat.diffuseColor = new Color3(0.82, 0.71, 0.55);
       mat.specularColor = new Color3(0.2, 0.2, 0.2);
-      mat.emissiveColor = new Color3(0.06, 0.06, 0.05);
+      mat.emissiveColor = new Color3(0.08, 0.07, 0.05);
       pad.material = mat;
     }
   }
@@ -539,20 +568,20 @@ export class Level1Scene {
     tex.update(false);
     tex.hasAlpha = true;
 
-    const ps = new ParticleSystem('materialize', 200, this.scene);
+    const ps = new ParticleSystem('materialize', 150, this.scene);
     ps.particleTexture = tex;
     ps.emitter = new Vector3(char.positionX, char.positionY, 0);
 
-    // Start with large emit box
-    ps.minEmitBox = new Vector3(-2, -2, -0.3);
-    ps.maxEmitBox = new Vector3(2, 2, 0.3);
+    // Start with character-sized emit box
+    ps.minEmitBox = new Vector3(-0.7, -0.7, -0.3);
+    ps.maxEmitBox = new Vector3(0.7, 0.7, 0.3);
 
     ps.direction1 = new Vector3(-0.5, -0.5, 0);
     ps.direction2 = new Vector3(0.5, 0.5, 0);
     ps.gravity = new Vector3(0, 0, 0);
 
     ps.minSize = 0.04;
-    ps.maxSize = 0.12;
+    ps.maxSize = 0.08;
     ps.minLifeTime = 0.3;
     ps.maxLifeTime = 0.8;
     ps.emitRate = 20;
@@ -580,14 +609,15 @@ export class Level1Scene {
     if (progress < 0.8) {
       // Phase 1: Particle swirl — character invisible
       const phase1Progress = progress / 0.8;
-      const boxSize = 2.0 - phase1Progress * 1.9;
+      const boxSizeX = 0.7 - phase1Progress * 0.6;
+      const boxSizeY = 1.0 - phase1Progress * 0.9;
 
       if (ps) {
-        ps.minEmitBox.x = -boxSize;
-        ps.minEmitBox.y = -boxSize;
-        ps.maxEmitBox.x = boxSize;
-        ps.maxEmitBox.y = boxSize;
-        ps.emitRate = 20 + phase1Progress * 180;
+        ps.minEmitBox.x = -boxSizeX;
+        ps.minEmitBox.y = -boxSizeY;
+        ps.maxEmitBox.x = boxSizeX;
+        ps.maxEmitBox.y = boxSizeY;
+        ps.emitRate = 20 + phase1Progress * 130;
       }
       this._setCharAlpha(char, 0);
     } else {
@@ -791,6 +821,15 @@ export class Level1Scene {
         continue;
       }
 
+      // Respawn timer for dead characters
+      if (char.dead) {
+        char.respawnTimer -= dt;
+        if (char.respawnTimer <= 0) {
+          this._respawnCharacter(char, i);
+        }
+        continue;
+      }
+
       // Materialization update (runs before physics)
       this._updateMaterialization(dt, char);
 
@@ -805,6 +844,17 @@ export class Level1Scene {
         continue;
       }
 
+      // Invincibility timer
+      if (char.invincible) {
+        char.invincibleTimer -= dt;
+        const hasInput = i === this._activeCharIdx &&
+          (input.left || input.right || input.flap);
+        if (hasInput || char.invincibleTimer <= 0) {
+          char.invincible = false;
+          char.invincibleTimer = 0;
+        }
+      }
+
       if (i === this._activeCharIdx) {
         this._updateCharWithInput(dt, char, input);
       } else {
@@ -813,6 +863,12 @@ export class Level1Scene {
 
       this._animateChar(dt, char);
     }
+
+    // Joust collision between characters (after positions updated)
+    this._checkJoustCollisions();
+
+    // Update eggs
+    this._updateEggs(dt);
   }
 
   _updateCharWithInput(dt, char, input) {
@@ -896,13 +952,14 @@ export class Level1Scene {
   // ---- Position, wrap, and collision ----
 
   _applyPositionAndWrap(dt, char) {
+    const prevX = char.positionX;
     const prevY = char.positionY;
 
     char.positionX += char.velocityX * dt;
     char.positionY += char.velocityY * dt;
 
     // Platform collision detection
-    this._checkPlatformCollisions(char, prevY);
+    this._checkPlatformCollisions(char, prevX, prevY);
 
     // Ceiling clamp
     if (char.positionY > this._orthoTop - HEAD_OFFSET - 0.1) {
@@ -936,7 +993,7 @@ export class Level1Scene {
     this._updateTurn(dt, char);
   }
 
-  _checkPlatformCollisions(char, prevY) {
+  _checkPlatformCollisions(char, prevX, prevY) {
     const feetY = char.positionY - FEET_OFFSET;
     const prevFeetY = prevY - FEET_OFFSET;
     const headY = char.positionY + HEAD_OFFSET;
@@ -981,6 +1038,97 @@ export class Level1Scene {
           break;
         }
       }
+    }
+
+    // Side collision: horizontal blocking against platform edges
+    const currentFeetY = char.positionY - FEET_OFFSET;
+    const currentHeadY = char.positionY + HEAD_OFFSET;
+    const prevCharLeft = prevX - CHAR_HALF_WIDTH;
+    const prevCharRight = prevX + CHAR_HALF_WIDTH;
+
+    for (const plat of this._platforms) {
+      // Vertical extent must overlap the platform body
+      if (currentFeetY >= plat.top || currentHeadY <= plat.bottom) {
+        continue;
+      }
+
+      // Moving right into left edge of platform
+      if (prevCharRight <= plat.left && charRight > plat.left) {
+        char.positionX = plat.left - CHAR_HALF_WIDTH;
+        char.velocityX = 0;
+      }
+      // Moving left into right edge of platform
+      if (prevCharLeft >= plat.right && charLeft < plat.right) {
+        char.positionX = plat.right + CHAR_HALF_WIDTH;
+        char.velocityX = 0;
+      }
+    }
+  }
+
+  _checkJoustCollisions() {
+    const charA = this._chars[0];
+    const charB = this._chars[1];
+
+    if (!charA || !charB) {
+      return;
+    }
+
+    // Skip if either is dead, materializing, or invincible
+    if (charA.dead || charB.dead) {
+      return;
+    }
+    if (charA.materializing || charB.materializing) {
+      return;
+    }
+    if (charA.invincible || charB.invincible) {
+      return;
+    }
+
+    // AABB overlap check
+    const aLeft = charA.positionX - CHAR_HALF_WIDTH;
+    const aRight = charA.positionX + CHAR_HALF_WIDTH;
+    const aFeet = charA.positionY - FEET_OFFSET;
+    const aHead = charA.positionY + HEAD_OFFSET;
+
+    const bLeft = charB.positionX - CHAR_HALF_WIDTH;
+    const bRight = charB.positionX + CHAR_HALF_WIDTH;
+    const bFeet = charB.positionY - FEET_OFFSET;
+    const bHead = charB.positionY + HEAD_OFFSET;
+
+    if (aRight < bLeft || aLeft > bRight || aHead < bFeet || aFeet > bHead) {
+      return;
+    }
+
+    // Collision detected — compare heights
+    const heightDiff = charA.positionY - charB.positionY;
+    const knockDir = charA.positionX < charB.positionX ? -1 : 1;
+
+    if (Math.abs(heightDiff) < JOUST_HEIGHT_DEADZONE) {
+      // Deadzone — both bounce apart, no winner
+      charA.velocityX = knockDir * -JOUST_KNOCKBACK_X;
+      charA.velocityY = JOUST_KNOCKBACK_Y;
+      charA.playerState = 'AIRBORNE';
+      charA.currentPlatform = null;
+
+      charB.velocityX = knockDir * JOUST_KNOCKBACK_X;
+      charB.velocityY = JOUST_KNOCKBACK_Y;
+      charB.playerState = 'AIRBORNE';
+      charB.currentPlatform = null;
+    } else {
+      // Higher character wins
+      const winner = heightDiff > 0 ? charA : charB;
+      const loser = heightDiff > 0 ? charB : charA;
+      const loserIdx = heightDiff > 0 ? 1 : 0;
+      const loserKnockDir = winner.positionX < loser.positionX ? 1 : -1;
+
+      // Winner gets knockback upward
+      winner.velocityY = JOUST_KNOCKBACK_Y;
+      winner.velocityX = loserKnockDir * -JOUST_KNOCKBACK_X * 0.3;
+      winner.playerState = 'AIRBORNE';
+      winner.currentPlatform = null;
+
+      // Loser dies
+      this._killCharacter(loser, loserIdx, loserKnockDir);
     }
   }
 
@@ -1356,6 +1504,272 @@ export class Level1Scene {
     }
 
     this._chars[1] = newEvil;
+  }
+
+  // ---- Death / Explosion / Egg ----
+
+  _killCharacter(char, charIdx, knockDir) {
+    char.dead = true;
+    char.respawnTimer = RESPAWN_DELAY;
+
+    // Spawn egg at character position with their velocity
+    this._spawnEgg(char.positionX, char.positionY, char.velocityX + knockDir * 2, char.velocityY);
+
+    // Explode character into voxel debris (cosmetic only)
+    this._explodeCharacter(char);
+
+    // Hide the character meshes
+    this._disposeCharMeshes(char);
+  }
+
+  _respawnCharacter(char, charIdx) {
+    // Pick a random spawn point not occupied by another character
+    const occupiedFilter = 1.5;
+    const available = SPAWN_POINTS.filter(sp => {
+      for (let i = 0; i < this._chars.length; i++) {
+        if (i === charIdx) {
+          continue;
+        }
+        const other = this._chars[i];
+        if (other && !other.dead) {
+          const dist = Math.abs(other.positionX - sp.x);
+          if (dist < occupiedFilter) {
+            return false;
+          }
+        }
+      }
+      return true;
+    });
+
+    const spawn = available.length > 0
+      ? available[Math.floor(Math.random() * available.length)]
+      : SPAWN_POINTS[Math.floor(Math.random() * SPAWN_POINTS.length)];
+
+    const platform = this._platforms.find(p => p.id === spawn.platformId);
+
+    // Rebuild character meshes
+    const VS = VOXEL_SIZE;
+    const notLit = true;
+
+    if (charIdx === 0) {
+      // Player (ostrich + knight)
+      char.wingMode = 'updown';
+      char.birdRig = buildRig(this.scene, ostrichModel, VS, notLit);
+      const mergedPalette = buildKnightPalette(this._paletteIndex);
+      char.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS, notLit);
+      char.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
+    } else {
+      // Evil (buzzard + evil knight)
+      char.wingMode = 'sweep';
+      char.birdRig = buildRig(this.scene, buzzardModel, VS, notLit);
+      const evilPalette = buildEvilKnightPalette(this._evilTypeIndex);
+      char.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
+      char.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
+    }
+
+    this._assembleCharacter(char, VS);
+
+    // Reset state
+    char.positionX = spawn.x;
+    char.positionY = platform.top + FEET_OFFSET;
+    char.velocityX = 0;
+    char.velocityY = 0;
+    char.playerState = 'GROUNDED';
+    char.currentPlatform = platform;
+    char.facingDir = 1;
+    char.isTurning = false;
+    char.turnTimer = 0;
+    char.stridePhase = 0;
+    char.isFlapping = false;
+    char.flapTimer = 0;
+    char.dead = false;
+    char.respawnTimer = 0;
+    char.invincible = true;
+    char.invincibleTimer = INVINCIBLE_DURATION;
+
+    // Start materialization
+    char.materializing = true;
+    char.materializeTimer = 0;
+    char.materializeDuration = MATERIALIZE_DURATION;
+    char.materializeQuickEnd = false;
+
+    if (char.birdRig.root) {
+      char.birdRig.root.position = new Vector3(char.positionX, char.positionY, 0);
+    }
+
+    this._setCharAlpha(char, 0);
+    this._createMaterializeParticles(char);
+  }
+
+  _explodeCharacter(char) {
+    const rigs = [
+      { rig: char.birdRig, model: char.wingMode === 'updown' ? ostrichModel : buzzardModel },
+    ];
+
+    for (const { rig } of rigs) {
+      if (!rig) {
+        continue;
+      }
+      for (const part of Object.values(rig.parts)) {
+        if (!part.mesh) {
+          continue;
+        }
+
+        // Get world position of this part
+        const worldPos = part.mesh.getAbsolutePosition();
+
+        // Create small debris cubes from the part
+        const debrisCount = 3 + Math.floor(Math.random() * 4);
+        for (let i = 0; i < debrisCount; i++) {
+          const debris = MeshBuilder.CreateBox(`debris_${Math.random()}`, {
+            size: VOXEL_SIZE * (0.8 + Math.random() * 0.4),
+          }, this.scene);
+
+          debris.position = new Vector3(
+            worldPos.x + (Math.random() - 0.5) * 0.3,
+            worldPos.y + (Math.random() - 0.5) * 0.3,
+            worldPos.z + (Math.random() - 0.5) * 0.2,
+          );
+
+          // Copy color from the part mesh material
+          const mat = new StandardMaterial(`debrisMat_${Math.random()}`, this.scene);
+          mat.disableLighting = true;
+          if (part.mesh.material) {
+            mat.emissiveColor = part.mesh.material.emissiveColor
+              ? part.mesh.material.emissiveColor.clone()
+              : new Color3(0.6, 0.5, 0.4);
+          } else {
+            mat.emissiveColor = new Color3(0.6, 0.5, 0.4);
+          }
+          debris.material = mat;
+
+          // Animate outward with velocity
+          const vx = (Math.random() - 0.5) * 8;
+          const vy = 2 + Math.random() * 6;
+          const debrisRef = { mesh: debris, vx, vy, life: 2.0 + Math.random() };
+
+          // Simple animation via onBeforeRender
+          const observer = this.scene.onBeforeRenderObservable.add(() => {
+            const frameDt = this.engine.getDeltaTime() / 1000;
+            debrisRef.vx *= 0.98;
+            debrisRef.vy -= GRAVITY * frameDt;
+            debrisRef.mesh.position.x += debrisRef.vx * frameDt;
+            debrisRef.mesh.position.y += debrisRef.vy * frameDt;
+            debrisRef.mesh.rotation.x += 5 * frameDt;
+            debrisRef.mesh.rotation.z += 3 * frameDt;
+            debrisRef.life -= frameDt;
+
+            // Fade out in last 0.5s
+            if (debrisRef.life < 0.5) {
+              debrisRef.mesh.material.alpha = debrisRef.life / 0.5;
+              debrisRef.mesh.material.transparencyMode = 2;
+            }
+
+            if (debrisRef.life <= 0) {
+              debrisRef.mesh.dispose();
+              this.scene.onBeforeRenderObservable.remove(observer);
+            }
+          });
+        }
+      }
+    }
+  }
+
+  _spawnEgg(x, y, vx, vy) {
+    const VS = VOXEL_SIZE;
+    const rig = buildRig(this.scene, eggModel, VS, true);
+
+    if (rig.root) {
+      rig.root.position = new Vector3(x, y, 0);
+    }
+
+    this._eggs.push({
+      positionX: x,
+      positionY: y,
+      velocityX: vx,
+      velocityY: vy,
+      rig,
+      onPlatform: false,
+      bounceCount: 0,
+    });
+  }
+
+  _updateEggs(dt) {
+    const lavaY = this._orthoBottom + 1.0;
+
+    for (let i = this._eggs.length - 1; i >= 0; i--) {
+      const egg = this._eggs[i];
+
+      // Gravity
+      egg.velocityY -= GRAVITY * dt;
+      if (egg.velocityY < -TERMINAL_VELOCITY) {
+        egg.velocityY = -TERMINAL_VELOCITY;
+      }
+
+      // Friction
+      if (egg.onPlatform) {
+        if (egg.velocityX > 0) {
+          egg.velocityX = Math.max(0, egg.velocityX - FRICTION * dt);
+        } else if (egg.velocityX < 0) {
+          egg.velocityX = Math.min(0, egg.velocityX + FRICTION * dt);
+        }
+      }
+
+      egg.positionX += egg.velocityX * dt;
+      egg.positionY += egg.velocityY * dt;
+
+      // Platform collision for egg
+      const eggRadius = 2 * VOXEL_SIZE;
+      const eggFeet = egg.positionY - eggRadius;
+      const prevEggFeet = eggFeet - egg.velocityY * dt;
+      egg.onPlatform = false;
+
+      if (egg.velocityY <= 0) {
+        for (const plat of this._platforms) {
+          if (egg.positionX + eggRadius < plat.left || egg.positionX - eggRadius > plat.right) {
+            continue;
+          }
+          if (prevEggFeet >= plat.top && eggFeet < plat.top) {
+            egg.positionY = plat.top + eggRadius;
+            if (Math.abs(egg.velocityY) > 0.5) {
+              egg.velocityY *= -0.5;
+              egg.bounceCount += 1;
+            } else {
+              egg.velocityY = 0;
+              egg.onPlatform = true;
+            }
+            break;
+          }
+        }
+      }
+
+      // Screen wrap
+      if (egg.positionX > ORTHO_RIGHT + eggRadius) {
+        egg.positionX = ORTHO_LEFT - eggRadius;
+      } else if (egg.positionX < ORTHO_LEFT - eggRadius) {
+        egg.positionX = ORTHO_RIGHT + eggRadius;
+      }
+
+      // Destroy if fallen into lava
+      if (egg.positionY < lavaY) {
+        if (egg.rig.root) {
+          egg.rig.root.dispose();
+        }
+        for (const part of Object.values(egg.rig.parts)) {
+          if (part.mesh) {
+            part.mesh.dispose();
+          }
+        }
+        this._eggs.splice(i, 1);
+        continue;
+      }
+
+      // Update visual position
+      if (egg.rig.root) {
+        egg.rig.root.position.x = egg.positionX;
+        egg.rig.root.position.y = egg.positionY;
+      }
+    }
   }
 
   _disposeCharMeshes(char) {

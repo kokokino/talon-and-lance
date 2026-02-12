@@ -7,13 +7,13 @@
 
 export const buzzardModel = {
   palette: {
-    1: '#5C4033',  // Medium brown body (warm chocolate)
-    2: '#3D2B1F',  // Dark brown shading
-    3: '#1A1410',  // Very dark brown feather tips/edges
+    1: '#4A7A3D',  // Medium forest green (body)
+    2: '#2D5A1F',  // Dark green shading
+    3: '#1A3010',  // Very dark green feather tips/edges
     4: '#CC3333',  // Red (wattle, head skin)
     5: '#882222',  // Dark red (beak, joints)
     6: '#FFD700',  // Yellow-gold (eyes)
-    7: '#3D2B1F',  // Dark brown tail feathers
+    7: '#2D5A1F',  // Dark green tail feathers
   },
 
   parts: {
