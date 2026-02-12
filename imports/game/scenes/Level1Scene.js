@@ -1101,19 +1101,39 @@ export class Level1Scene {
 
     // Collision detected — compare heights
     const heightDiff = charA.positionY - charB.positionY;
-    const knockDir = charA.positionX < charB.positionX ? -1 : 1;
+    // Direction A should be pushed: left if A is left of B, right if A is right of B
+    const pushA = charA.positionX <= charB.positionX ? -1 : 1;
 
     if (Math.abs(heightDiff) < JOUST_HEIGHT_DEADZONE) {
       // Deadzone — both bounce apart, no winner
-      charA.velocityX = knockDir * -JOUST_KNOCKBACK_X;
-      charA.velocityY = JOUST_KNOCKBACK_Y;
-      charA.playerState = 'AIRBORNE';
-      charA.currentPlatform = null;
+      // Physically separate so they don't overlap next frame
+      const overlap = CHAR_HALF_WIDTH * 2 - Math.abs(charA.positionX - charB.positionX);
+      if (overlap > 0) {
+        charA.positionX += pushA * (overlap / 2 + 0.01);
+        charB.positionX += -pushA * (overlap / 2 + 0.01);
+      }
 
-      charB.velocityX = knockDir * JOUST_KNOCKBACK_X;
-      charB.velocityY = JOUST_KNOCKBACK_Y;
-      charB.playerState = 'AIRBORNE';
-      charB.currentPlatform = null;
+      const bothGrounded = charA.playerState === 'GROUNDED' && charB.playerState === 'GROUNDED';
+      if (bothGrounded) {
+        // Ground bump — horizontal push only, stay grounded
+        charA.velocityX = pushA * JOUST_KNOCKBACK_X * 0.5;
+        charB.velocityX = -pushA * JOUST_KNOCKBACK_X * 0.5;
+      } else {
+        // Air bump — full knockback with vertical impulse
+        charA.velocityX = pushA * JOUST_KNOCKBACK_X;
+        charA.velocityY = JOUST_KNOCKBACK_Y;
+        charA.playerState = 'AIRBORNE';
+        charA.currentPlatform = null;
+
+        charB.velocityX = -pushA * JOUST_KNOCKBACK_X;
+        charB.velocityY = JOUST_KNOCKBACK_Y;
+        charB.playerState = 'AIRBORNE';
+        charB.currentPlatform = null;
+      }
+
+      // Turn both to face away from each other
+      this._startTurn(charA, pushA);
+      this._startTurn(charB, -pushA);
     } else {
       // Higher character wins
       const winner = heightDiff > 0 ? charA : charB;
