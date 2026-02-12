@@ -80,11 +80,11 @@ export const buzzardModel = {
 
     neck: {
       parent: 'body',
-      // Cranes far forward (+x) — vulture posture, raised to sit near lance level
-      offset: [5, 2, 0],
-      // 3w × 3d × 4h — thicker, hunched vulture neck
+      // Cranes far forward (+x) — vulture posture, raised so head sits near lance level
+      offset: [5, 4, 0],
+      // 3w × 3d × 2h — short connector to head
       layers: [
-        // y=0 (neck base — wider)
+        // y=0 (neck base)
         [
           [0, 2, 0],
           [2, 1, 2],
@@ -95,18 +95,6 @@ export const buzzardModel = {
           [0, 1, 0],
           [1, 1, 1],
           [0, 1, 0],
-        ],
-        // y=2
-        [
-          [0, 1, 0],
-          [1, 1, 1],
-          [0, 1, 0],
-        ],
-        // y=3
-        [
-          [0, 2, 0],
-          [2, 1, 2],
-          [0, 2, 0],
         ],
       ],
     },
