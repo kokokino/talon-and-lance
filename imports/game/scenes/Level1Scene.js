@@ -1,4 +1,4 @@
-// Level1Scene — side-scrolling gameplay scene with mounted knight+bird characters.
+// Level1Scene — Joust Level 1 recreation with multi-tier rock platforms over lava.
 // Supports player (ostrich) and evil knight (buzzard) with Up/Down arrow controls
 // to toggle active character and cycle enemy type.
 // Receives Engine/Scene from BabylonPage — does not own them.
@@ -7,11 +7,15 @@ import { FreeCamera } from '@babylonjs/core/Cameras/freeCamera';
 import { Camera } from '@babylonjs/core/Cameras/camera';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
 import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
+import { PointLight } from '@babylonjs/core/Lights/pointLight';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Color3, Color4 } from '@babylonjs/core/Maths/math.color';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
+import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
+import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
+import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
 
 import { InputReader } from '../InputReader.js';
 import { SkyBackground } from './SkyBackground.js';
@@ -24,39 +28,71 @@ import { evilKnightModel } from '../voxels/models/evilKnightModel.js';
 import { buildKnightPalette } from '../voxels/models/knightPalettes.js';
 import { buildEvilKnightPalette } from '../voxels/models/evilKnightPalettes.js';
 
-const VOXEL_SIZE = 0.18;
+// ---- Size & View ----
+const VOXEL_SIZE = 0.07;
 
-// Orthographic view bounds (world units)
-const ORTHO_WIDTH = 20;    // 20 units wide (-10 to +10)
+const ORTHO_WIDTH = 20;
 const ORTHO_LEFT = -ORTHO_WIDTH / 2;
 const ORTHO_RIGHT = ORTHO_WIDTH / 2;
 
-// Movement
-const ACCELERATION = 2.0;   // units/sec^2
-const MAX_SPEED = 6.0;      // units/sec
-const FRICTION = 3.0;       // units/sec^2 — coast deceleration (no input)
-const SKID_DECEL = 8.0;     // units/sec^2 — deceleration when pressing opposite direction
-const TURN_DURATION = 0.25; // seconds for 180-degree turn rotation
+// ---- Movement ----
+const ACCELERATION = 2.0;
+const MAX_SPEED = 5.0;
+const FRICTION = 3.0;
+const SKID_DECEL = 8.0;
+const TURN_DURATION = 0.25;
 
-// Character half-width for wrap calculation (approximate from body ~10 voxels wide)
 const CHAR_HALF_WIDTH = 10 * VOXEL_SIZE / 2;
 
-// Flying physics
-const GRAVITY = 12.0;           // units/sec^2
-const FLAP_IMPULSE = 5.0;       // units/sec (set, not additive — matches Joust)
-const TERMINAL_VELOCITY = 10.0;  // units/sec (max fall speed)
-const AIR_FRICTION = 0.5;        // units/sec^2 (vs FRICTION on ground)
+// ---- Flying physics ----
+const GRAVITY = 8.0;
+const FLAP_IMPULSE = 4.0;
+const TERMINAL_VELOCITY = 8.0;
+const AIR_FRICTION = 0.5;
 
-// Wing flap animation — ostrich (up/down rotation.x)
-const FLAP_DURATION = 0.25;      // seconds for one full flap cycle
-const WING_UP_ANGLE = -1.2;      // radians (~70 deg spread upward)
-const WING_DOWN_ANGLE = 0.4;     // radians (slight overshoot below rest)
-const WING_GLIDE_ANGLE = -0.3;   // radians (slight spread while falling)
+// ---- Collision offsets from body center ----
+const FEET_OFFSET = 7.5 * VOXEL_SIZE;
+const HEAD_OFFSET = 10.5 * VOXEL_SIZE;
+const LEDGE_HEIGHT = 0.06;
 
-// Wing sweep animation — buzzard (forward/backward rotation.z)
-const SWEEP_FORWARD_ANGLE = 0.8;   // radians (wings sweep forward)
-const SWEEP_BACKWARD_ANGLE = -0.6; // radians (wings sweep backward)
-const SWEEP_GLIDE_ANGLE = 0.2;     // radians (slight forward hold)
+// ---- Wing flap animation — ostrich (up/down rotation.x) ----
+const FLAP_DURATION = 0.25;
+const WING_UP_ANGLE = -1.2;
+const WING_DOWN_ANGLE = 0.4;
+const WING_GLIDE_ANGLE = -0.3;
+
+// ---- Wing sweep animation — buzzard (forward/backward rotation.z) ----
+const SWEEP_FORWARD_ANGLE = 0.8;
+const SWEEP_BACKWARD_ANGLE = -0.6;
+const SWEEP_GLIDE_ANGLE = 0.2;
+
+// ---- Platform layout (Joust Level 1) ----
+const PLATFORM_DEFS = [
+  // Base tier — two sections with lava gap in center
+  { id: 'baseLeft',  x: -5.5, y: -3.8, width: 9.0, height: 0.35 },
+  { id: 'baseRight', x:  5.5, y: -3.8, width: 9.0, height: 0.35 },
+  // Lower-middle tier
+  { id: 'midLowL',   x: -5.0, y: -1.5, width: 4.5, height: 0.3 },
+  { id: 'midLowR',   x:  5.0, y: -1.5, width: 4.5, height: 0.3 },
+  // Upper-middle tier (L and R extend past screen edges for wrap-around)
+  { id: 'midUpL',    x: -8.0, y:  0.8, width: 4.5, height: 0.3 },
+  { id: 'midUpC',    x:  0.0, y:  0.8, width: 5.0, height: 0.3 },
+  { id: 'midUpR',    x:  8.0, y:  0.8, width: 4.5, height: 0.3 },
+  // Top tier
+  { id: 'top',       x:  0.0, y:  3.2, width: 12.0, height: 0.3 },
+];
+
+// ---- Spawn points ----
+const SPAWN_POINTS = [
+  { x: -6.0, platformId: 'baseLeft' },
+  { x:  6.0, platformId: 'baseRight' },
+  { x: -5.0, platformId: 'midLowL' },
+  { x:  5.0, platformId: 'midLowR' },
+];
+
+// ---- Materialization ----
+const MATERIALIZE_DURATION = 10.0;
+const MATERIALIZE_QUICK_DURATION = 0.5;
 
 /**
  * Create a fresh character state object with default values.
@@ -89,9 +125,15 @@ function createCharState(wingMode) {
     stridePhase: 0,
     isFlapping: false,
     flapTimer: 0,
-    baseY: 0,
     knightMountY: 0,
-    wingMode: wingMode,  // 'updown' (ostrich) or 'sweep' (buzzard)
+    wingMode: wingMode,
+    currentPlatform: null,
+    // Materialization
+    materializing: true,
+    materializeTimer: 0,
+    materializeDuration: MATERIALIZE_DURATION,
+    materializeQuickEnd: false,
+    materializeParticles: null,
   };
 }
 
@@ -117,7 +159,9 @@ export class Level1Scene {
     // Ortho bounds (Y computed from aspect ratio)
     this._orthoBottom = 0;
     this._orthoTop = 0;
-    this._platformY = 0;
+
+    // Platform collision data (populated in _createPlatforms)
+    this._platforms = [];
 
     // Sky background
     this._skyBackground = null;
@@ -125,6 +169,13 @@ export class Level1Scene {
     // Light refs for dynamic modulation
     this._ambientLight = null;
     this._dirLight = null;
+    this._lavaLight = null;
+
+    // Lava refs
+    this._lavaMaterial = null;
+    this._lavaTexture = null;
+    this._lavaUvOffset = 0;
+    this._lavaBurstTimer = 0;
   }
 
   /**
@@ -143,7 +194,9 @@ export class Level1Scene {
       this.scene, ORTHO_LEFT, ORTHO_RIGHT, this._orthoBottom, this._orthoTop
     );
 
-    this._createPlatform();
+    this._createPlatforms();
+    this._createSpawnPads();
+    this._createLava();
     this._createCharacters();
 
     // Input
@@ -167,7 +220,19 @@ export class Level1Scene {
       this._skyBackground.dispose();
       this._skyBackground = null;
     }
+    // Dispose materialization particles
+    for (const char of this._chars) {
+      if (char && char.materializeParticles) {
+        char.materializeParticles.stop();
+        char.materializeParticles.dispose();
+        char.materializeParticles = null;
+      }
+    }
     this._chars = [null, null];
+    this._platforms = [];
+    this._lavaMaterial = null;
+    this._lavaTexture = null;
+    this._lavaLight = null;
     this.scene = null;
     this.engine = null;
   }
@@ -201,11 +266,15 @@ export class Level1Scene {
     this._dirLight = new DirectionalLight('dirLight', new Vector3(-1, -2, 1), this.scene);
     this._dirLight.intensity = 0.8;
     this._dirLight.diffuse = new Color3(1.0, 0.95, 0.85);
+
+    // Lava glow from below
+    this._lavaLight = new PointLight('lavaLight', new Vector3(0, this._orthoBottom, 0), this.scene);
+    this._lavaLight.intensity = 0.4;
+    this._lavaLight.diffuse = new Color3(1.0, 0.4, 0.1);
+    this._lavaLight.range = 15;
   }
 
   _modulateLighting(timeOfDay) {
-    // Smoothly scale light intensity: bright at noon, dim at midnight
-    // Uses a sine curve peaking at timeOfDay=0.5
     const dayBrightness = Math.sin(timeOfDay * Math.PI);
     const ambientMin = 0.25;
     const ambientMax = 0.7;
@@ -220,29 +289,193 @@ export class Level1Scene {
     }
   }
 
-  _createPlatform() {
-    const platformWidth = ORTHO_WIDTH + 4;
-    const platformHeight = 0.6;
-    this._platformY = this._orthoBottom + platformHeight / 2;
+  // ---- Platforms ----
 
-    const platform = MeshBuilder.CreateBox('platform', {
-      width: platformWidth,
-      height: platformHeight,
-      depth: 2,
-    }, this.scene);
-    platform.position = new Vector3(0, this._platformY, 0);
+  _createPlatforms() {
+    this._platforms = [];
 
-    const mat = new StandardMaterial('platformMat', this.scene);
-    mat.diffuseColor = new Color3(0.45, 0.40, 0.35);
-    mat.specularColor = new Color3(0.1, 0.1, 0.1);
-    mat.emissiveColor = new Color3(0.05, 0.04, 0.03);
-    platform.material = mat;
+    for (const def of PLATFORM_DEFS) {
+      // Main platform body
+      const body = MeshBuilder.CreateBox(`plat_${def.id}`, {
+        width: def.width,
+        height: def.height,
+        depth: 2,
+      }, this.scene);
+      body.position = new Vector3(def.x, def.y, 0);
+
+      const mat = new StandardMaterial(`plat_${def.id}_mat`, this.scene);
+      mat.diffuseColor = new Color3(0.45, 0.40, 0.35);
+      mat.specularColor = new Color3(0.1, 0.1, 0.1);
+      mat.emissiveColor = new Color3(0.05, 0.04, 0.03);
+      body.material = mat;
+
+      // Thin metallic ledge/lip on top
+      const ledge = MeshBuilder.CreateBox(`ledge_${def.id}`, {
+        width: def.width + 0.1,
+        height: LEDGE_HEIGHT,
+        depth: 2,
+      }, this.scene);
+      ledge.position = new Vector3(def.x, def.y + def.height / 2 + LEDGE_HEIGHT / 2, -0.01);
+
+      const ledgeMat = new StandardMaterial(`ledge_${def.id}_mat`, this.scene);
+      ledgeMat.diffuseColor = new Color3(0.6, 0.58, 0.55);
+      ledgeMat.specularColor = new Color3(0.3, 0.3, 0.3);
+      ledgeMat.emissiveColor = new Color3(0.08, 0.07, 0.06);
+      ledge.material = ledgeMat;
+
+      this._platforms.push({
+        id: def.id,
+        x: def.x,
+        y: def.y,
+        width: def.width,
+        height: def.height,
+        top: def.y + def.height / 2 + LEDGE_HEIGHT,
+        bottom: def.y - def.height / 2,
+        left: def.x - def.width / 2,
+        right: def.x + def.width / 2,
+      });
+    }
   }
+
+  _createSpawnPads() {
+    for (const sp of SPAWN_POINTS) {
+      const platform = this._platforms.find(p => p.id === sp.platformId);
+      if (!platform) {
+        continue;
+      }
+
+      const pad = MeshBuilder.CreateBox(`spawnPad_${sp.platformId}`, {
+        width: 1.5,
+        height: 0.08,
+        depth: 2,
+      }, this.scene);
+      pad.position = new Vector3(sp.x, platform.top + 0.04, -0.02);
+
+      const mat = new StandardMaterial(`spawnPadMat_${sp.platformId}`, this.scene);
+      mat.diffuseColor = new Color3(0.55, 0.53, 0.50);
+      mat.specularColor = new Color3(0.2, 0.2, 0.2);
+      mat.emissiveColor = new Color3(0.06, 0.06, 0.05);
+      pad.material = mat;
+    }
+  }
+
+  // ---- Lava ----
+
+  _createLava() {
+    const lavaWidth = ORTHO_WIDTH + 4;
+    const lavaHeight = 2.0;
+    const lavaY = this._orthoBottom + lavaHeight / 2 + 0.1;
+
+    const lava = MeshBuilder.CreatePlane('lava', {
+      width: lavaWidth,
+      height: lavaHeight,
+    }, this.scene);
+    lava.position = new Vector3(0, lavaY, 0.5);
+
+    // Procedural lava texture
+    const lavaTexture = new DynamicTexture('lavaTex', 256, this.scene, false);
+    const ctx = lavaTexture.getContext();
+    this._drawLavaPattern(ctx, 256);
+    lavaTexture.update();
+    lavaTexture.wrapU = Texture.WRAP_ADDRESSMODE;
+    lavaTexture.wrapV = Texture.WRAP_ADDRESSMODE;
+
+    const lavaMat = new StandardMaterial('lavaMat', this.scene);
+    lavaMat.diffuseTexture = lavaTexture;
+    lavaMat.emissiveColor = new Color3(0.8, 0.25, 0.05);
+    lavaMat.specularColor = new Color3(0, 0, 0);
+    lavaMat.backFaceCulling = false;
+    lava.material = lavaMat;
+
+    this._lavaMaterial = lavaMat;
+    this._lavaTexture = lavaTexture;
+    this._lavaBurstTimer = 0.5;
+  }
+
+  _drawLavaPattern(ctx, size) {
+    const imageData = ctx.createImageData(size, size);
+    const data = imageData.data;
+
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const idx = (y * size + x) * 4;
+        const nx = x / size;
+        const ny = y / size;
+        const noise = (
+          Math.sin(nx * 12.0 + ny * 8.0) * 0.3 +
+          Math.sin(nx * 5.0 - ny * 15.0) * 0.2 +
+          Math.sin((nx + ny) * 20.0) * 0.15 +
+          0.5
+        );
+        const clamped = Math.max(0, Math.min(1, noise));
+
+        data[idx] = Math.floor(120 + clamped * 135);
+        data[idx + 1] = Math.floor(20 + clamped * 120);
+        data[idx + 2] = Math.floor(5 + clamped * 25);
+        data[idx + 3] = 255;
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+  }
+
+  _spawnLavaBurst() {
+    const tex = new DynamicTexture('lavaBurstTex', 64, this.scene, false);
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 64, 64);
+    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gradient.addColorStop(0, 'rgba(255, 200, 50, 1)');
+    gradient.addColorStop(0.4, 'rgba(255, 100, 20, 0.8)');
+    gradient.addColorStop(1, 'rgba(200, 40, 0, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 64, 64);
+    tex.update(false);
+    tex.hasAlpha = true;
+
+    const ps = new ParticleSystem('lavaBurst', 30, this.scene);
+    ps.particleTexture = tex;
+
+    // Random X across screen width; Y at lava surface
+    const x = (Math.random() - 0.5) * (ORTHO_WIDTH + 2);
+    const lavaY = this._orthoBottom + 1.2;
+    ps.emitter = new Vector3(x, lavaY, 0.4);
+
+    // Particles shoot upward
+    ps.direction1 = new Vector3(-0.3, 2, 0);
+    ps.direction2 = new Vector3(0.3, 5, 0);
+    ps.gravity = new Vector3(0, -6, 0);
+
+    ps.minSize = 0.08;
+    ps.maxSize = 0.25;
+    ps.minLifeTime = 0.3;
+    ps.maxLifeTime = 0.8;
+
+    ps.emitRate = 40;
+    ps.manualEmitCount = 12 + Math.floor(Math.random() * 10);
+
+    ps.color1 = new Color4(1.0, 0.8, 0.2, 1);
+    ps.color2 = new Color4(1.0, 0.4, 0.1, 1);
+    ps.colorDead = new Color4(0.5, 0.1, 0.0, 0);
+
+    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
+
+    ps.targetStopDuration = 0.15;
+    ps.disposeOnStop = true;
+    ps.start();
+  }
+
+  // ---- Characters ----
 
   _createCharacters() {
     const VS = VOXEL_SIZE;
-    const platformTop = this._platformY + 0.3;
-    const baseY = platformTop + 7.5 * VS;
+
+    // Randomly assign 2 of 4 spawn points
+    const shuffled = [...SPAWN_POINTS].sort(() => Math.random() - 0.5);
+    const playerSpawn = shuffled[0];
+    const evilSpawn = shuffled[1];
+
+    const playerPlatform = this._platforms.find(p => p.id === playerSpawn.platformId);
+    const evilPlatform = this._platforms.find(p => p.id === evilSpawn.platformId);
 
     // --- Player character (knight on ostrich) ---
     const player = createCharState('updown');
@@ -252,19 +485,24 @@ export class Level1Scene {
     player.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS, notLit);
     player.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
     this._assembleCharacter(player, VS);
-    player.baseY = baseY;
-    player.positionX = -3;
-    player.positionY = baseY;
+
+    player.positionX = playerSpawn.x;
+    player.positionY = playerPlatform.top + FEET_OFFSET;
+    player.currentPlatform = playerPlatform;
     if (player.birdRig.root) {
-      player.birdRig.root.position = new Vector3(player.positionX, baseY, 0);
+      player.birdRig.root.position = new Vector3(player.positionX, player.positionY, 0);
     }
     this._chars[0] = player;
 
+    // Start materialization
+    this._setCharAlpha(player, 0);
+    this._createMaterializeParticles(player);
+
     // --- Evil character (evil knight on buzzard) ---
-    this._buildEvilCharacter(VS, baseY);
+    this._buildEvilCharacter(VS, evilSpawn, evilPlatform);
   }
 
-  _buildEvilCharacter(VS, baseY) {
+  _buildEvilCharacter(VS, spawn, platform) {
     const evil = createCharState('sweep');
     const notLit = true;
     evil.birdRig = buildRig(this.scene, buzzardModel, VS, notLit);
@@ -272,29 +510,139 @@ export class Level1Scene {
     evil.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
     evil.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
     this._assembleCharacter(evil, VS);
-    evil.baseY = baseY;
-    evil.positionX = 3;
-    evil.positionY = baseY;
+
+    evil.positionX = spawn.x;
+    evil.positionY = platform.top + FEET_OFFSET;
+    evil.currentPlatform = platform;
     if (evil.birdRig.root) {
-      evil.birdRig.root.position = new Vector3(evil.positionX, baseY, 0);
+      evil.birdRig.root.position = new Vector3(evil.positionX, evil.positionY, 0);
     }
     this._chars[1] = evil;
+
+    // Start materialization
+    this._setCharAlpha(evil, 0);
+    this._createMaterializeParticles(evil);
   }
+
+  // ---- Materialization ----
+
+  _createMaterializeParticles(char) {
+    const tex = new DynamicTexture('matTex', 64, this.scene, false);
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 64, 64);
+    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+    gradient.addColorStop(0.3, 'rgba(255, 215, 64, 0.9)');
+    gradient.addColorStop(1, 'rgba(255, 180, 50, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 64, 64);
+    tex.update(false);
+    tex.hasAlpha = true;
+
+    const ps = new ParticleSystem('materialize', 200, this.scene);
+    ps.particleTexture = tex;
+    ps.emitter = new Vector3(char.positionX, char.positionY, 0);
+
+    // Start with large emit box
+    ps.minEmitBox = new Vector3(-2, -2, -0.3);
+    ps.maxEmitBox = new Vector3(2, 2, 0.3);
+
+    ps.direction1 = new Vector3(-0.5, -0.5, 0);
+    ps.direction2 = new Vector3(0.5, 0.5, 0);
+    ps.gravity = new Vector3(0, 0, 0);
+
+    ps.minSize = 0.04;
+    ps.maxSize = 0.12;
+    ps.minLifeTime = 0.3;
+    ps.maxLifeTime = 0.8;
+    ps.emitRate = 20;
+
+    ps.color1 = new Color4(1.0, 1.0, 1.0, 1.0);
+    ps.color2 = new Color4(1.0, 0.85, 0.25, 1.0);
+    ps.colorDead = new Color4(1.0, 0.7, 0.2, 0.0);
+
+    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
+    ps.start();
+
+    char.materializeParticles = ps;
+  }
+
+  _updateMaterialization(dt, char) {
+    if (!char.materializing) {
+      return;
+    }
+
+    char.materializeTimer += dt;
+    const duration = char.materializeDuration;
+    const progress = Math.min(char.materializeTimer / duration, 1.0);
+    const ps = char.materializeParticles;
+
+    if (progress < 0.8) {
+      // Phase 1: Particle swirl — character invisible
+      const phase1Progress = progress / 0.8;
+      const boxSize = 2.0 - phase1Progress * 1.9;
+
+      if (ps) {
+        ps.minEmitBox.x = -boxSize;
+        ps.minEmitBox.y = -boxSize;
+        ps.maxEmitBox.x = boxSize;
+        ps.maxEmitBox.y = boxSize;
+        ps.emitRate = 20 + phase1Progress * 180;
+      }
+      this._setCharAlpha(char, 0);
+    } else {
+      // Phase 2: Coalesce and reveal
+      const phase2Progress = (progress - 0.8) / 0.2;
+
+      if (ps) {
+        ps.minEmitBox.x = -0.1;
+        ps.minEmitBox.y = -0.1;
+        ps.maxEmitBox.x = 0.1;
+        ps.maxEmitBox.y = 0.1;
+        ps.emitRate = Math.max(0, 200 * (1 - phase2Progress));
+      }
+      this._setCharAlpha(char, phase2Progress);
+    }
+
+    if (progress >= 1.0) {
+      char.materializing = false;
+      this._setCharAlpha(char, 1.0);
+      if (ps) {
+        ps.stop();
+        ps.dispose();
+        char.materializeParticles = null;
+      }
+    }
+  }
+
+  _setCharAlpha(char, alpha) {
+    const rigs = [char.birdRig, char.knightRig, char.lanceRig];
+    for (const rig of rigs) {
+      if (!rig) {
+        continue;
+      }
+      for (const part of Object.values(rig.parts)) {
+        if (part.mesh && part.mesh.material) {
+          part.mesh.material.alpha = alpha;
+          if (alpha < 1.0) {
+            part.mesh.material.transparencyMode = 2; // ALPHA_BLEND
+          } else {
+            part.mesh.material.transparencyMode = 0; // OPAQUE
+          }
+        }
+      }
+    }
+  }
+
+  // ---- Character assembly ----
 
   _assembleCharacter(char, VS) {
     const bParts = char.birdRig.parts;
     const kParts = char.knightRig.parts;
 
-    // Bird leg pivots
     this._setupBirdLegPivots(char, bParts, VS);
-
-    // Bird wing pivots
     this._setupBirdWingPivots(char, bParts, VS);
-
-    // Knight shoulder pivots
     this._setupKnightShoulders(char, kParts, VS);
-
-    // Knight hip pivots (riding pose)
     this._setupKnightHipPivots(char, kParts, VS);
 
     // Parent lance to right arm
@@ -314,7 +662,6 @@ export class Level1Scene {
   }
 
   _setupBirdLegPivots(char, bParts, VS) {
-    // Left leg: hip pivot at body surface where thigh attaches
     if (bParts.leftThigh && bParts.body) {
       char.leftHipPivot = new TransformNode('leftHipPivot', this.scene);
       char.leftHipPivot.parent = bParts.body.mesh;
@@ -331,7 +678,6 @@ export class Level1Scene {
       bParts.leftShin.mesh.position = new Vector3(0, -5 * VS, 0);
     }
 
-    // Right leg: mirror of left
     if (bParts.rightThigh && bParts.body) {
       char.rightHipPivot = new TransformNode('rightHipPivot', this.scene);
       char.rightHipPivot.parent = bParts.body.mesh;
@@ -425,6 +771,9 @@ export class Level1Scene {
       this._modulateLighting(this._skyBackground.timeOfDay);
     }
 
+    // Lava animation
+    this._animateLava(dt);
+
     // Toggle active character
     if (input.switchChar) {
       this._activeCharIdx = this._activeCharIdx === 0 ? 1 : 0;
@@ -435,10 +784,24 @@ export class Level1Scene {
       this._cycleEvilType();
     }
 
-    // Apply input to active character, idle physics to inactive
+    // Update each character
     for (let i = 0; i < 2; i++) {
       const char = this._chars[i];
       if (!char) {
+        continue;
+      }
+
+      // Materialization update (runs before physics)
+      this._updateMaterialization(dt, char);
+
+      if (char.materializing) {
+        // Quick-end: any input from the active character accelerates materialization
+        if (i === this._activeCharIdx && !char.materializeQuickEnd) {
+          if (input.left || input.right || input.flap) {
+            char.materializeQuickEnd = true;
+            char.materializeDuration = char.materializeTimer + MATERIALIZE_QUICK_DURATION;
+          }
+        }
         continue;
       }
 
@@ -464,6 +827,7 @@ export class Level1Scene {
     if (input.flap) {
       char.velocityY = FLAP_IMPULSE;
       char.playerState = 'AIRBORNE';
+      char.currentPlatform = null;
       char.isFlapping = true;
       char.flapTimer = 0;
     }
@@ -504,7 +868,6 @@ export class Level1Scene {
   }
 
   _updateCharIdle(dt, char) {
-    // No input — just friction + gravity
     const isAirborne = char.playerState === 'AIRBORNE';
     const friction = isAirborne ? AIR_FRICTION : FRICTION;
     this._applyFriction(dt, char, friction);
@@ -530,21 +893,31 @@ export class Level1Scene {
     }
   }
 
+  // ---- Position, wrap, and collision ----
+
   _applyPositionAndWrap(dt, char) {
+    const prevY = char.positionY;
+
     char.positionX += char.velocityX * dt;
     char.positionY += char.velocityY * dt;
 
-    // Ground collision
-    if (char.positionY <= char.baseY) {
-      char.positionY = char.baseY;
-      char.velocityY = 0;
-      char.playerState = 'GROUNDED';
-    }
+    // Platform collision detection
+    this._checkPlatformCollisions(char, prevY);
 
     // Ceiling clamp
-    if (char.positionY > this._orthoTop - 1.0) {
-      char.positionY = this._orthoTop - 1.0;
+    if (char.positionY > this._orthoTop - HEAD_OFFSET - 0.1) {
+      char.positionY = this._orthoTop - HEAD_OFFSET - 0.1;
       char.velocityY = 0;
+    }
+
+    // Kill zone — below lava, respawn at top
+    if (char.positionY < this._orthoBottom - 1) {
+      char.positionX = 0;
+      char.positionY = this._orthoTop - HEAD_OFFSET;
+      char.velocityX = 0;
+      char.velocityY = 0;
+      char.playerState = 'AIRBORNE';
+      char.currentPlatform = null;
     }
 
     // Screen wrap
@@ -561,6 +934,54 @@ export class Level1Scene {
 
     // Turn animation
     this._updateTurn(dt, char);
+  }
+
+  _checkPlatformCollisions(char, prevY) {
+    const feetY = char.positionY - FEET_OFFSET;
+    const prevFeetY = prevY - FEET_OFFSET;
+    const headY = char.positionY + HEAD_OFFSET;
+    const prevHeadY = prevY + HEAD_OFFSET;
+    const charLeft = char.positionX - CHAR_HALF_WIDTH;
+    const charRight = char.positionX + CHAR_HALF_WIDTH;
+
+    // Edge fall-off: grounded character walks off current platform
+    if (char.playerState === 'GROUNDED' && char.currentPlatform) {
+      const plat = char.currentPlatform;
+      if (charRight < plat.left || charLeft > plat.right) {
+        char.playerState = 'AIRBORNE';
+        char.currentPlatform = null;
+      }
+    }
+
+    // Landing check: falling onto a platform top
+    if (char.velocityY <= 0) {
+      for (const plat of this._platforms) {
+        if (charRight < plat.left || charLeft > plat.right) {
+          continue;
+        }
+        if (prevFeetY >= plat.top && feetY < plat.top) {
+          char.positionY = plat.top + FEET_OFFSET;
+          char.velocityY = 0;
+          char.playerState = 'GROUNDED';
+          char.currentPlatform = plat;
+          break;
+        }
+      }
+    }
+
+    // Head bump check: rising into platform underside
+    if (char.velocityY > 0) {
+      for (const plat of this._platforms) {
+        if (charRight < plat.left || charLeft > plat.right) {
+          continue;
+        }
+        if (prevHeadY <= plat.bottom && headY > plat.bottom) {
+          char.positionY = plat.bottom - HEAD_OFFSET;
+          char.velocityY = 0;
+          break;
+        }
+      }
+    }
   }
 
   _startTurn(char, newFacingDir) {
@@ -595,7 +1016,6 @@ export class Level1Scene {
   // ---- Animation ----
 
   _animateChar(dt, char) {
-    // Wing flap always runs
     this._animateWingFlap(dt, char);
 
     if (char.playerState === 'GROUNDED') {
@@ -614,14 +1034,12 @@ export class Level1Scene {
       return;
     }
 
-    // Stride frequency scales with speed
     const strideFreq = speedRatio * 2.0;
     char.stridePhase += strideFreq * dt;
 
     const p = char.stridePhase * Math.PI * 2;
     const amp = speedRatio;
 
-    // Bird legs: articulated gait via hip + knee pivots
     const HIP_AMP = 0.8;
     const KNEE_BASE = 0.3;
     const KNEE_AMP = 0.5;
@@ -652,7 +1070,7 @@ export class Level1Scene {
       bParts.neck.mesh.rotation.z = Math.sin(p) * 0.12 * amp;
     }
 
-    // Wings: tucked with slight bounce (via pivots, rotation.z)
+    // Wings: tucked with slight bounce
     const wingBounce = Math.abs(Math.sin(p * 2)) * 0.08 * amp;
     if (char.leftWingPivot) {
       char.leftWingPivot.rotation.z = wingBounce;
@@ -684,7 +1102,6 @@ export class Level1Scene {
   }
 
   _animateWingFlap(dt, char) {
-    // Update flap timer
     if (char.isFlapping) {
       char.flapTimer += dt;
       if (char.flapTimer >= FLAP_DURATION) {
@@ -723,7 +1140,6 @@ export class Level1Scene {
       flapAngle = WING_GLIDE_ANGLE;
     }
 
-    // Apply to wing pivots (rotation.x, mirrored left/right)
     if (char.leftWingPivot) {
       char.leftWingPivot.rotation.x = flapAngle;
     }
@@ -739,17 +1155,14 @@ export class Level1Scene {
       const t = char.flapTimer / FLAP_DURATION;
 
       if (t < 0.3) {
-        // Rest to forward sweep (ease-out sine)
         const phase = t / 0.3;
         const eased = Math.sin(phase * Math.PI / 2);
         sweepAngle = eased * SWEEP_FORWARD_ANGLE;
       } else if (t < 0.7) {
-        // Forward to backward — power stroke (cosine ease-in-out)
         const phase = (t - 0.3) / 0.4;
         const eased = 0.5 - 0.5 * Math.cos(phase * Math.PI);
         sweepAngle = SWEEP_FORWARD_ANGLE + eased * (SWEEP_BACKWARD_ANGLE - SWEEP_FORWARD_ANGLE);
       } else {
-        // Backward back to rest (cosine ease-in-out)
         const phase = (t - 0.7) / 0.3;
         const eased = 0.5 - 0.5 * Math.cos(phase * Math.PI);
         sweepAngle = SWEEP_BACKWARD_ANGLE + eased * (0 - SWEEP_BACKWARD_ANGLE);
@@ -758,7 +1171,6 @@ export class Level1Scene {
       sweepAngle = SWEEP_GLIDE_ANGLE;
     }
 
-    // Buzzard sweep: both wings move in same direction (synchronized rowing)
     if (char.leftWingPivot) {
       char.leftWingPivot.rotation.z = sweepAngle;
     }
@@ -775,23 +1187,18 @@ export class Level1Scene {
       return;
     }
 
-    // Body: stable at flight position
     if (bParts.body) {
       bParts.body.mesh.position.y = char.positionY;
     }
 
-    // Neck: slight backward lean
     if (bParts.neck) {
       bParts.neck.mesh.rotation.z = 0.1;
     }
 
-    // Tail: slight backward trail
     if (bParts.tail) {
       bParts.tail.mesh.rotation.z = -0.15;
     }
 
-    // Wings: clear running bounce (rotation.z handled by flap/sweep animation)
-    // Only clear if using updown mode (sweep mode uses rotation.z for its animation)
     if (char.wingMode === 'updown') {
       if (char.leftWingPivot) {
         char.leftWingPivot.rotation.z = 0;
@@ -801,10 +1208,8 @@ export class Level1Scene {
       }
     }
 
-    // Legs: tucked symmetrically
     this._animateTuckedLegs(char);
 
-    // Knight: stable
     if (kParts) {
       if (kParts.torso) {
         kParts.torso.mesh.position.y = char.knightMountY;
@@ -840,6 +1245,32 @@ export class Level1Scene {
     }
   }
 
+  // ---- Lava animation ----
+
+  _animateLava(dt) {
+    if (!this._lavaMaterial) {
+      return;
+    }
+
+    // Emissive intensity pulse
+    const pulse = 0.6 + Math.sin(this._elapsed * (2 * Math.PI / 4)) * 0.2;
+    this._lavaMaterial.emissiveColor = new Color3(pulse, pulse * 0.3, pulse * 0.06);
+
+    // UV scroll
+    if (this._lavaMaterial.diffuseTexture) {
+      this._lavaUvOffset += dt * 0.02;
+      this._lavaMaterial.diffuseTexture.uOffset = this._lavaUvOffset;
+      this._lavaMaterial.diffuseTexture.vOffset = this._lavaUvOffset * 0.7;
+    }
+
+    // Lava burst spawning
+    this._lavaBurstTimer -= dt;
+    if (this._lavaBurstTimer <= 0) {
+      this._spawnLavaBurst();
+      this._lavaBurstTimer = 0.4 + Math.random() * 1.1;
+    }
+  }
+
   // ---- Evil type cycling ----
 
   _cycleEvilType() {
@@ -865,6 +1296,11 @@ export class Level1Scene {
       stridePhase: evil.stridePhase,
       isFlapping: evil.isFlapping,
       flapTimer: evil.flapTimer,
+      currentPlatform: evil.currentPlatform,
+      materializing: evil.materializing,
+      materializeTimer: evil.materializeTimer,
+      materializeDuration: evil.materializeDuration,
+      materializeQuickEnd: evil.materializeQuickEnd,
     };
 
     // Dispose old evil character meshes
@@ -879,7 +1315,6 @@ export class Level1Scene {
     newEvil.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
     newEvil.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
     this._assembleCharacter(newEvil, VS);
-    newEvil.baseY = evil.baseY;
 
     // Restore state
     newEvil.positionX = savedState.positionX;
@@ -895,6 +1330,11 @@ export class Level1Scene {
     newEvil.stridePhase = savedState.stridePhase;
     newEvil.isFlapping = savedState.isFlapping;
     newEvil.flapTimer = savedState.flapTimer;
+    newEvil.currentPlatform = savedState.currentPlatform;
+    newEvil.materializing = savedState.materializing;
+    newEvil.materializeTimer = savedState.materializeTimer;
+    newEvil.materializeDuration = savedState.materializeDuration;
+    newEvil.materializeQuickEnd = savedState.materializeQuickEnd;
 
     // Apply position and facing to new rig
     if (newEvil.birdRig.root) {
@@ -904,10 +1344,28 @@ export class Level1Scene {
       }
     }
 
+    // Handle alpha if still materializing
+    if (newEvil.materializing) {
+      const progress = Math.min(newEvil.materializeTimer / newEvil.materializeDuration, 1.0);
+      if (progress < 0.8) {
+        this._setCharAlpha(newEvil, 0);
+      } else {
+        this._setCharAlpha(newEvil, (progress - 0.8) / 0.2);
+      }
+      this._createMaterializeParticles(newEvil);
+    }
+
     this._chars[1] = newEvil;
   }
 
   _disposeCharMeshes(char) {
+    // Dispose materialization particles
+    if (char.materializeParticles) {
+      char.materializeParticles.stop();
+      char.materializeParticles.dispose();
+      char.materializeParticles = null;
+    }
+
     // Dispose all TransformNodes we created
     const nodes = [
       char.leftHipPivot, char.rightHipPivot,
