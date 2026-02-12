@@ -555,9 +555,11 @@ export class Level1Scene {
 
     if (this._leftHipPivot) {
       this._leftHipPivot.rotation.z = Math.sin(p) * HIP_AMP * amp;
+      this._leftHipPivot.position.y = 0;
     }
     if (this._rightHipPivot) {
       this._rightHipPivot.rotation.z = Math.sin(p + Math.PI) * HIP_AMP * amp;
+      this._rightHipPivot.position.y = 0;
     }
     if (this._leftKneePivot) {
       this._leftKneePivot.rotation.z = (KNEE_BASE - Math.cos(p) * KNEE_AMP) * amp;
@@ -706,18 +708,23 @@ export class Level1Scene {
   }
 
   _animateTuckedLegs() {
-    // Bird-sitting pose — thighs fold forward against belly, shins fold back
+    // Bird-sitting pose — thighs fold forward against belly, shins fold back.
+    // Also lift hip pivots up into the body so toes don't hang below.
+    const pivotValue = 2.6;
+    const tuckLift = 2 * VOXEL_SIZE;
     if (this._leftHipPivot) {
-      this._leftHipPivot.rotation.z = 2.0;
+      this._leftHipPivot.rotation.z = pivotValue;
+      this._leftHipPivot.position.y = tuckLift;
     }
     if (this._rightHipPivot) {
-      this._rightHipPivot.rotation.z = 2.0;
+      this._rightHipPivot.rotation.z = pivotValue;
+      this._rightHipPivot.position.y = tuckLift;
     }
     if (this._leftKneePivot) {
-      this._leftKneePivot.rotation.z = -2.2;
+      this._leftKneePivot.rotation.z = -pivotValue;
     }
     if (this._rightKneePivot) {
-      this._rightKneePivot.rotation.z = -2.2;
+      this._rightKneePivot.rotation.z = -pivotValue;
     }
   }
 }
