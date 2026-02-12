@@ -14,6 +14,7 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 
 import { InputReader } from '../InputReader.js';
+import { SkyBackground } from './SkyBackground.js';
 import { buildRig } from '../voxels/VoxelBuilder.js';
 import { knightModel } from '../voxels/models/knightModel.js';
 import { lanceModel } from '../voxels/models/lanceModel.js';
@@ -117,6 +118,13 @@ export class Level1Scene {
     this._orthoBottom = 0;
     this._orthoTop = 0;
     this._platformY = 0;
+
+    // Sky background
+    this._skyBackground = null;
+
+    // Light refs for dynamic modulation
+    this._ambientLight = null;
+    this._dirLight = null;
   }
 
   /**
@@ -125,10 +133,16 @@ export class Level1Scene {
   create(scene, engine, canvas) {
     this.scene = scene;
     this.engine = engine;
-    this.scene.clearColor = new Color4(0.06, 0.06, 0.12, 1);
+    this.scene.clearColor = new Color4(0, 0, 0, 1);
 
     this._setupCamera(canvas);
     this._setupLighting();
+
+    // Sky background — after camera, before characters
+    this._skyBackground = new SkyBackground(
+      this.scene, ORTHO_LEFT, ORTHO_RIGHT, this._orthoBottom, this._orthoTop
+    );
+
     this._createPlatform();
     this._createCharacters();
 
@@ -148,6 +162,10 @@ export class Level1Scene {
     if (this._inputReader) {
       this._inputReader.detach();
       this._inputReader = null;
+    }
+    if (this._skyBackground) {
+      this._skyBackground.dispose();
+      this._skyBackground = null;
     }
     this._chars = [null, null];
     this.scene = null;
@@ -175,14 +193,31 @@ export class Level1Scene {
   }
 
   _setupLighting() {
-    const ambient = new HemisphericLight('ambientLight', new Vector3(0, 1, 0), this.scene);
-    ambient.intensity = 0.6;
-    ambient.diffuse = new Color3(0.9, 0.9, 1.0);
-    ambient.groundColor = new Color3(0.2, 0.2, 0.3);
+    this._ambientLight = new HemisphericLight('ambientLight', new Vector3(0, 1, 0), this.scene);
+    this._ambientLight.intensity = 0.6;
+    this._ambientLight.diffuse = new Color3(0.9, 0.9, 1.0);
+    this._ambientLight.groundColor = new Color3(0.2, 0.2, 0.3);
 
-    const dirLight = new DirectionalLight('dirLight', new Vector3(-1, -2, 1), this.scene);
-    dirLight.intensity = 0.8;
-    dirLight.diffuse = new Color3(1.0, 0.95, 0.85);
+    this._dirLight = new DirectionalLight('dirLight', new Vector3(-1, -2, 1), this.scene);
+    this._dirLight.intensity = 0.8;
+    this._dirLight.diffuse = new Color3(1.0, 0.95, 0.85);
+  }
+
+  _modulateLighting(timeOfDay) {
+    // Smoothly scale light intensity: bright at noon, dim at midnight
+    // Uses a sine curve peaking at timeOfDay=0.5
+    const dayBrightness = Math.sin(timeOfDay * Math.PI);
+    const ambientMin = 0.25;
+    const ambientMax = 0.7;
+    const dirMin = 0.15;
+    const dirMax = 0.9;
+
+    if (this._ambientLight) {
+      this._ambientLight.intensity = ambientMin + (ambientMax - ambientMin) * dayBrightness;
+    }
+    if (this._dirLight) {
+      this._dirLight.intensity = dirMin + (dirMax - dirMin) * dayBrightness;
+    }
   }
 
   _createPlatform() {
@@ -380,7 +415,16 @@ export class Level1Scene {
 
     const input = this._inputReader
       ? this._inputReader.sample()
-      : { left: false, right: false, flap: false, switchChar: false, cycleType: false };
+      : { left: false, right: false, flap: false, switchChar: false, cycleType: false, cloudMode: 0 };
+
+    // Sky background update
+    if (this._skyBackground) {
+      this._skyBackground.update(dt);
+      if (input.cloudMode > 0) {
+        this._skyBackground.setCloudMode(input.cloudMode);
+      }
+      this._modulateLighting(this._skyBackground.timeOfDay);
+    }
 
     // Toggle active character
     if (input.switchChar) {

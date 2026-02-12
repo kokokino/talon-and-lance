@@ -80,8 +80,8 @@ export const buzzardModel = {
 
     neck: {
       parent: 'body',
-      // Hunched: y=4 instead of 5, one layer shorter than ostrich
-      offset: [3, 4, 0],
+      // Cranes forward (+x) and drops low — predatory vulture posture
+      offset: [4, 3, 0],
       // 3w × 3d × 4h — thicker, hunched vulture neck
       layers: [
         // y=0 (neck base — wider)
@@ -113,8 +113,8 @@ export const buzzardModel = {
 
     head: {
       parent: 'neck',
-      // Adjusted for shorter neck (4h instead of 5h)
-      offset: [1, 4, 0],
+      // Pushed forward and dropped — juts ahead of/below the lance
+      offset: [2, 3, 0],
       // 5w × 3d × 3h — bald vulture head with red skin and hooked beak
       layers: [
         // y=0 (bottom of head)
