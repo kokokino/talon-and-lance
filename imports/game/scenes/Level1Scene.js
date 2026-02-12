@@ -246,10 +246,11 @@ export class Level1Scene {
 
     // --- Player character (knight on ostrich) ---
     const player = createCharState('updown');
-    player.birdRig = buildRig(this.scene, ostrichModel, VS);
+    const notLit = true;
+    player.birdRig = buildRig(this.scene, ostrichModel, VS, notLit);
     const mergedPalette = buildKnightPalette(this._paletteIndex);
-    player.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS);
-    player.lanceRig = buildRig(this.scene, lanceModel, VS);
+    player.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS, notLit);
+    player.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
     this._assembleCharacter(player, VS);
     player.baseY = baseY;
     player.positionX = -3;
@@ -265,10 +266,11 @@ export class Level1Scene {
 
   _buildEvilCharacter(VS, baseY) {
     const evil = createCharState('sweep');
-    evil.birdRig = buildRig(this.scene, buzzardModel, VS);
+    const notLit = true;
+    evil.birdRig = buildRig(this.scene, buzzardModel, VS, notLit);
     const evilPalette = buildEvilKnightPalette(this._evilTypeIndex);
-    evil.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS);
-    evil.lanceRig = buildRig(this.scene, lanceModel, VS);
+    evil.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
+    evil.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
     this._assembleCharacter(evil, VS);
     evil.baseY = baseY;
     evil.positionX = 3;
@@ -415,14 +417,11 @@ export class Level1Scene {
 
     const input = this._inputReader
       ? this._inputReader.sample()
-      : { left: false, right: false, flap: false, switchChar: false, cycleType: false, cloudMode: 0 };
+      : { left: false, right: false, flap: false, switchChar: false, cycleType: false };
 
     // Sky background update
     if (this._skyBackground) {
       this._skyBackground.update(dt);
-      if (input.cloudMode > 0) {
-        this._skyBackground.setCloudMode(input.cloudMode);
-      }
       this._modulateLighting(this._skyBackground.timeOfDay);
     }
 
@@ -873,11 +872,12 @@ export class Level1Scene {
 
     // Rebuild with new palette
     const VS = VOXEL_SIZE;
+    const notLit = true;
     const newEvil = createCharState('sweep');
-    newEvil.birdRig = buildRig(this.scene, buzzardModel, VS);
+    newEvil.birdRig = buildRig(this.scene, buzzardModel, VS, notLit);
     const evilPalette = buildEvilKnightPalette(this._evilTypeIndex);
-    newEvil.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS);
-    newEvil.lanceRig = buildRig(this.scene, lanceModel, VS);
+    newEvil.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
+    newEvil.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
     this._assembleCharacter(newEvil, VS);
     newEvil.baseY = evil.baseY;
 

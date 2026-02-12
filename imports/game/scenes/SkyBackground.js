@@ -1,17 +1,12 @@
 // SkyBackground — dynamic sky with day/night cycle, sun/moon, stars, lightning, clouds.
 // All background elements live at z > 0 (behind game action at z=0).
-// Cloud rendering has three modes toggled via keys 1/2/3:
-//   1 = voxel clouds, 2 = procedural particle clouds, 3 = both layered.
 
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { ShaderMaterial } from '@babylonjs/core/Materials/shaderMaterial';
 import { Effect } from '@babylonjs/core/Materials/effect';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
-import { Color3, Color4 } from '@babylonjs/core/Maths/math.color';
+import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
-import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
-import { GlowLayer } from '@babylonjs/core/Layers/glowLayer';
 import { buildPart } from '../voxels/VoxelBuilder.js';
 
 // Full day/night cycle duration in seconds
@@ -224,7 +219,6 @@ export class SkyBackground {
 
     this._elapsed = 0;
     this._timeOfDay = 0;
-    this._cloudMode = 1; // default: voxel clouds
 
     // Lightning state
     this._lightningTimer = 0;
@@ -235,22 +229,16 @@ export class SkyBackground {
     this._skyPlane = null;
     this._skyMaterial = null;
     this._sunMesh = null;
+    this._sunHalo = null;
     this._moonMesh = null;
-    this._glowLayer = null;
     this._lightningPlane = null;
     this._lightningMaterial = null;
     this._voxelClouds = [];
-    this._particleSystem = null;
-    this._particleTexture = null;
 
     this._createSkyPlane();
     this._createSunMoon();
     this._createLightning();
     this._createVoxelClouds();
-    this._createProceduralClouds();
-
-    // Apply initial cloud mode visibility
-    this._applyCloudVisibility();
   }
 
   /** Current time of day 0–1 for external light modulation */
@@ -266,14 +254,6 @@ export class SkyBackground {
     this._updateSunMoon();
     this._updateLightning(dt);
     this._updateVoxelClouds(dt);
-    this._updateProceduralClouds();
-  }
-
-  setCloudMode(mode) {
-    if (mode >= 1 && mode <= 3 && mode !== this._cloudMode) {
-      this._cloudMode = mode;
-      this._applyCloudVisibility();
-    }
   }
 
   dispose() {
@@ -286,11 +266,11 @@ export class SkyBackground {
     if (this._sunMesh) {
       this._sunMesh.dispose();
     }
+    if (this._sunHalo) {
+      this._sunHalo.dispose();
+    }
     if (this._moonMesh) {
       this._moonMesh.dispose();
-    }
-    if (this._glowLayer) {
-      this._glowLayer.dispose();
     }
     if (this._lightningPlane) {
       this._lightningPlane.dispose();
@@ -302,12 +282,6 @@ export class SkyBackground {
       if (cloud.mesh) {
         cloud.mesh.dispose();
       }
-    }
-    if (this._particleSystem) {
-      this._particleSystem.dispose();
-    }
-    if (this._particleTexture) {
-      this._particleTexture.dispose();
     }
   }
 
@@ -372,12 +346,17 @@ export class SkyBackground {
     this._moonMesh.material = moonMat;
     this._moonMesh.position.z = 2.5;
 
-    // Glow layer for sun
-    this._glowLayer = new GlowLayer('sunGlow', this._scene, {
-      blurKernelSize: 16,
-    });
-    this._glowLayer.intensity = 0.5;
-    this._glowLayer.addIncludedOnlyMesh(this._sunMesh);
+    // Halo disc behind sun (depth-tested alternative to GlowLayer)
+    this._sunHalo = MeshBuilder.CreateDisc('sunHalo', { radius: 0.7, tessellation: 24 }, this._scene);
+    const haloMat = new StandardMaterial('sunHaloMat', this._scene);
+    haloMat.disableLighting = true;
+    haloMat.emissiveColor = new Color3(1.0, 0.95, 0.7);
+    haloMat.diffuseColor = new Color3(0, 0, 0);
+    haloMat.specularColor = new Color3(0, 0, 0);
+    haloMat.alpha = 0.35;
+    this._sunHalo.material = haloMat;
+    this._sunHalo.hasVertexAlpha = false;
+    this._sunHalo.position.z = 2.6; // slightly behind sun at z=2.5
   }
 
   _updateSunMoon() {
@@ -402,8 +381,15 @@ export class SkyBackground {
       }
       this._sunMesh.visibility = sunAlpha;
       this._sunMesh.setEnabled(true);
+
+      // Move halo with sun
+      this._sunHalo.position.x = this._sunMesh.position.x;
+      this._sunHalo.position.y = this._sunMesh.position.y;
+      this._sunHalo.material.alpha = 0.35 * sunAlpha;
+      this._sunHalo.setEnabled(true);
     } else {
       this._sunMesh.setEnabled(false);
+      this._sunHalo.setEnabled(false);
     }
 
     // Moon: visible during night (0.0–0.15 and 0.85–1.0)
@@ -550,66 +536,6 @@ export class SkyBackground {
     }
   }
 
-  // ---- Procedural particle clouds ----
-
-  _createProceduralClouds() {
-    // Generate cloud texture on a 64x64 canvas
-    this._particleTexture = new DynamicTexture('cloudTex', 64, this._scene, false);
-    const ctx = this._particleTexture.getContext();
-    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-    gradient.addColorStop(0, 'rgba(255, 255, 255, 0.8)');
-    gradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.3)');
-    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, 64, 64);
-    this._particleTexture.update();
-    this._particleTexture.hasAlpha = true;
-
-    this._particleSystem = new ParticleSystem('clouds', 25, this._scene);
-    this._particleSystem.particleTexture = this._particleTexture;
-
-    // Emission: spread across top portion of screen
-    const yCenter = (this._orthoTop + (this._orthoTop + this._orthoBottom) / 2) / 2;
-    const xRange = (this._orthoRight - this._orthoLeft) / 2;
-    const yRange = (this._orthoTop - this._orthoBottom) * 0.15;
-
-    this._particleSystem.createPointEmitter(
-      new Vector3(-0.3, -0.05, 0),
-      new Vector3(-0.1, 0.05, 0)
-    );
-    this._particleSystem.emitter = new Vector3(xRange * 0.8, yCenter, 2.0);
-
-    this._particleSystem.minEmitBox = new Vector3(-xRange * 1.6, -yRange, 0);
-    this._particleSystem.maxEmitBox = new Vector3(xRange * 0.4, yRange, 0);
-
-    this._particleSystem.minLifeTime = 20;
-    this._particleSystem.maxLifeTime = 35;
-    this._particleSystem.emitRate = 1;
-    this._particleSystem.minSize = 1.5;
-    this._particleSystem.maxSize = 3.5;
-
-    this._particleSystem.color1 = new Color4(1, 1, 1, 0.4);
-    this._particleSystem.color2 = new Color4(0.9, 0.9, 0.95, 0.3);
-    this._particleSystem.colorDead = new Color4(0.8, 0.8, 0.85, 0);
-
-    this._particleSystem.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-    this._particleSystem.gravity = new Vector3(0, 0, 0);
-    this._particleSystem.minAngularSpeed = 0;
-    this._particleSystem.maxAngularSpeed = 0;
-
-    this._particleSystem.start();
-  }
-
-  _updateProceduralClouds() {
-    if (!this._particleSystem) {
-      return;
-    }
-
-    const tint = this._getCloudTint();
-    this._particleSystem.color1 = new Color4(tint.r, tint.g, tint.b, 0.4);
-    this._particleSystem.color2 = new Color4(tint.r * 0.9, tint.g * 0.9, tint.b * 0.95, 0.3);
-  }
-
   // ---- Cloud tint based on time of day ----
 
   _getCloudTint() {
@@ -638,33 +564,4 @@ export class SkyBackground {
     }
   }
 
-  // ---- Cloud mode visibility ----
-
-  _applyCloudVisibility() {
-    const showVoxel = this._cloudMode === 1 || this._cloudMode === 3;
-    const showParticle = this._cloudMode === 2 || this._cloudMode === 3;
-
-    for (const cloud of this._voxelClouds) {
-      cloud.mesh.setEnabled(showVoxel);
-    }
-
-    if (this._particleSystem) {
-      if (showParticle) {
-        this._particleSystem.start();
-      } else {
-        this._particleSystem.stop();
-      }
-    }
-
-    // In mode 3, push voxel clouds to z=1.5 (foreground), particles are at z=2.0 (background)
-    if (this._cloudMode === 3) {
-      for (const cloud of this._voxelClouds) {
-        cloud.mesh.position.z = 1.5;
-      }
-    } else {
-      for (const cloud of this._voxelClouds) {
-        cloud.mesh.position.z = 1.5;
-      }
-    }
-  }
 }

@@ -7,13 +7,13 @@
 
 export const buzzardModel = {
   palette: {
-    1: '#2A2018',  // Dark brown body (primary)
-    2: '#1A1410',  // Near-black shading
-    3: '#0A0A0A',  // Black feather tips/edges
+    1: '#5C4033',  // Medium brown body (warm chocolate)
+    2: '#3D2B1F',  // Dark brown shading
+    3: '#1A1410',  // Very dark brown feather tips/edges
     4: '#CC3333',  // Red (wattle, head skin)
     5: '#882222',  // Dark red (beak, joints)
     6: '#FFD700',  // Yellow-gold (eyes)
-    7: '#1A1410',  // Dark tail feathers
+    7: '#3D2B1F',  // Dark brown tail feathers
   },
 
   parts: {
@@ -80,8 +80,8 @@ export const buzzardModel = {
 
     neck: {
       parent: 'body',
-      // Cranes forward (+x) and drops low — predatory vulture posture
-      offset: [4, 3, 0],
+      // Cranes far forward (+x) — vulture posture, raised to sit near lance level
+      offset: [5, 2, 0],
       // 3w × 3d × 4h — thicker, hunched vulture neck
       layers: [
         // y=0 (neck base — wider)
@@ -113,8 +113,8 @@ export const buzzardModel = {
 
     head: {
       parent: 'neck',
-      // Pushed forward and dropped — juts ahead of/below the lance
-      offset: [2, 3, 0],
+      // Pushed far forward from neck — sits just below lance level
+      offset: [3, 0, 0],
       // 5w × 3d × 3h — bald vulture head with red skin and hooked beak
       layers: [
         // y=0 (bottom of head)

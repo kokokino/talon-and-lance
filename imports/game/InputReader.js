@@ -1,9 +1,8 @@
 // Keyboard input sampling for game controls
 // Uses Babylon's scene.onKeyboardObservable for input tied to scene lifecycle.
-// Output: { left, right, flap, switchChar, cycleType, cloudMode } booleans/int
+// Output: { left, right, flap, switchChar, cycleType } booleans
 // Flap, switchChar, and cycleType use edge detection — returns true only on the
 // frame the key transitions from released to pressed (one event per press).
-// cloudMode: 0 = no press, 1/2/3 = cloud display mode (keys Digit1/Digit2/Digit3).
 
 import { KeyboardEventTypes } from '@babylonjs/core/Events/keyboardEvents';
 
@@ -13,8 +12,6 @@ export class InputReader {
     this._flapConsumed = true;
     this._switchCharConsumed = true;
     this._cycleTypeConsumed = true;
-    this._pendingCloudMode = 0;
-    this._cloudModeConsumed = true;
     this._scene = null;
     this._observer = null;
     this.attached = false;
@@ -49,13 +46,6 @@ export class InputReader {
             this._cycleTypeConsumed = false;
           }
         }
-        // Edge detection for cloud mode (Digit1/Digit2/Digit3)
-        if (code === 'Digit1' || code === 'Digit2' || code === 'Digit3') {
-          if (!this.keys[code]) {
-            this._pendingCloudMode = parseInt(code.charAt(5), 10);
-            this._cloudModeConsumed = false;
-          }
-        }
         this.keys[code] = true;
 
         // Prevent scrolling for game keys
@@ -83,8 +73,6 @@ export class InputReader {
     this._flapConsumed = true;
     this._switchCharConsumed = true;
     this._cycleTypeConsumed = true;
-    this._pendingCloudMode = 0;
-    this._cloudModeConsumed = true;
     this.attached = false;
   }
 
@@ -105,20 +93,12 @@ export class InputReader {
       this._cycleTypeConsumed = true;
     }
 
-    let cloudMode = 0;
-    if (!this._cloudModeConsumed) {
-      cloudMode = this._pendingCloudMode;
-      this._cloudModeConsumed = true;
-      this._pendingCloudMode = 0;
-    }
-
     return {
       left: this.keys['ArrowLeft'] || this.keys['KeyA'] || false,
       right: this.keys['ArrowRight'] || this.keys['KeyD'] || false,
       flap: flapPressed,
       switchChar: switchCharPressed,
       cycleType: cycleTypePressed,
-      cloudMode,
     };
   }
 }

@@ -64,7 +64,7 @@ const NEIGHBOR_OFFSETS = [
  * @param {string} partName - Name for the mesh
  * @returns {{ mesh: Mesh, sps: null }}
  */
-export function buildPart(scene, partData, palette, voxelSize, partName) {
+export function buildPart(scene, partData, palette, voxelSize, partName, isUnlit = false) {
   const { layers } = partData;
   const height = layers.length;
   if (height === 0) {
@@ -162,8 +162,13 @@ export function buildPart(scene, partData, palette, voxelSize, partName) {
 
   // Material with vertex colors
   const material = new StandardMaterial(`mat_${partName}`, scene);
-  material.diffuseColor = new Color3(1, 1, 1);
-  material.specularColor = new Color3(0.2, 0.2, 0.2);
+  if (isUnlit) {
+    material.disableLighting = true;
+    material.emissiveColor = new Color3(1, 1, 1);
+  } else {
+    material.diffuseColor = new Color3(1, 1, 1);
+    material.specularColor = new Color3(0.2, 0.2, 0.2);
+  }
   mesh.material = material;
   mesh.hasVertexAlpha = false;
 
@@ -178,13 +183,13 @@ export function buildPart(scene, partData, palette, voxelSize, partName) {
  * @param {number} voxelSize - Size of each voxel cube in world units
  * @returns {{ root: Mesh, parts: Object.<string, { mesh: Mesh, sps: null }> }}
  */
-export function buildRig(scene, modelDef, voxelSize) {
+export function buildRig(scene, modelDef, voxelSize, isUnlit = false) {
   const { palette, parts } = modelDef;
   const builtParts = {};
 
   // First pass: build all part meshes
   for (const [name, partData] of Object.entries(parts)) {
-    const result = buildPart(scene, partData, palette, voxelSize, name);
+    const result = buildPart(scene, partData, palette, voxelSize, name, isUnlit);
     if (result) {
       builtParts[name] = result;
     }
