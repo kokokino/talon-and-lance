@@ -36,6 +36,18 @@ const TURN_DURATION = 0.25; // seconds for 180-degree turn rotation
 // Character half-width for wrap calculation (approximate from ostrich body ~10 voxels wide)
 const CHAR_HALF_WIDTH = 10 * VOXEL_SIZE / 2;
 
+// Flying physics
+const GRAVITY = 12.0;           // units/sec^2
+const FLAP_IMPULSE = 5.0;       // units/sec (set, not additive — matches Joust)
+const TERMINAL_VELOCITY = 10.0;  // units/sec (max fall speed)
+const AIR_FRICTION = 0.5;        // units/sec^2 (vs FRICTION on ground)
+
+// Wing flap animation
+const FLAP_DURATION = 0.25;      // seconds for one full flap cycle
+const WING_UP_ANGLE = -1.2;      // radians (~70 deg spread upward)
+const WING_DOWN_ANGLE = 0.4;     // radians (slight overshoot below rest)
+const WING_GLIDE_ANGLE = -0.3;   // radians (slight spread while falling)
+
 export class Level1Scene {
   /**
    * @param {{ audioManager: AudioManager, paletteIndex: number }} config
@@ -64,9 +76,16 @@ export class Level1Scene {
     this._leftKneePivot = null;
     this._rightKneePivot = null;
 
+    // Wing pivots (shoulder joints for flap rotation)
+    this._leftWingPivot = null;
+    this._rightWingPivot = null;
+
     // Movement state
     this._positionX = 0;
     this._velocityX = 0;
+    this._positionY = 0;
+    this._velocityY = 0;
+    this._playerState = 'GROUNDED'; // 'GROUNDED' or 'AIRBORNE'
     this._facingDir = 1;      // 1 = right, -1 = left
     this._isTurning = false;
     this._turnTimer = 0;
@@ -77,6 +96,10 @@ export class Level1Scene {
     // Animation phase
     this._stridePhase = 0;
     this._elapsed = 0;
+
+    // Wing flap animation
+    this._isFlapping = false;
+    this._flapTimer = 0;
 
     // Base Y positions (set during character creation, used by animation bob)
     this._ostrichBaseY = 0;
@@ -104,9 +127,12 @@ export class Level1Scene {
     this._createPlatform();
     this._createMountedCharacter();
 
-    // Input
+    // Input — attach to Babylon scene observable (not raw window events)
     this._inputReader = new InputReader();
-    this._inputReader.attach();
+    this._inputReader.attach(this.scene);
+
+    // Ensure Babylon processes keyboard events (we don't call camera.attachControl)
+    this.scene.attachControl();
 
     // Animation callback
     this.scene.onBeforeRenderObservable.add(() => {
@@ -135,6 +161,8 @@ export class Level1Scene {
     this._rightHipPivot = null;
     this._leftKneePivot = null;
     this._rightKneePivot = null;
+    this._leftWingPivot = null;
+    this._rightWingPivot = null;
     this.scene = null;
     this.engine = null;
   }
@@ -213,6 +241,9 @@ export class Level1Scene {
     // --- Ostrich leg pivots (articulated bird gait) ---
     this._setupOstrichLegPivots(oParts, VS);
 
+    // --- Ostrich wing pivots (shoulder joints for flap rotation) ---
+    this._setupOstrichWingPivots(oParts, VS);
+
     // --- Knight shoulder pivots (same pattern as MainMenuScene) ---
     if (kParts.leftArm && kParts.torso) {
       this._leftShoulderNode = new TransformNode('leftShoulder', this.scene);
@@ -270,6 +301,7 @@ export class Level1Scene {
 
     this._positionX = 0;
     this._velocityX = 0;
+    this._positionY = this._ostrichBaseY;
   }
 
   _setupOstrichLegPivots(oParts, VS) {
@@ -312,6 +344,27 @@ export class Level1Scene {
     }
   }
 
+  _setupOstrichWingPivots(oParts, VS) {
+    // Wing pivots at shoulder joint (y=4 of wing model = top attachment point).
+    // Pivot sits at the shoulder position in body space so rotation.x sweeps
+    // the wing up/down. Wing mesh is offset so its y=4 layer sits at pivot origin.
+    if (oParts.leftWing && oParts.body) {
+      this._leftWingPivot = new TransformNode('leftWingPivot', this.scene);
+      this._leftWingPivot.parent = oParts.body.mesh;
+      this._leftWingPivot.position = new Vector3(0, 4 * VS, 3 * VS);
+      oParts.leftWing.mesh.parent = this._leftWingPivot;
+      oParts.leftWing.mesh.position = new Vector3(0, -4 * VS, 0);
+    }
+
+    if (oParts.rightWing && oParts.body) {
+      this._rightWingPivot = new TransformNode('rightWingPivot', this.scene);
+      this._rightWingPivot.parent = oParts.body.mesh;
+      this._rightWingPivot.position = new Vector3(0, 4 * VS, -3 * VS);
+      oParts.rightWing.mesh.parent = this._rightWingPivot;
+      oParts.rightWing.mesh.position = new Vector3(0, -4 * VS, 0);
+    }
+  }
+
   _setupKnightHipPivots(kParts, VS) {
     // Knight legs stick forward in riding pose.
     // Knight root has rotation.y = -π/2, which maps:
@@ -343,7 +396,7 @@ export class Level1Scene {
     this._elapsed += dt;
 
     // Sample input
-    const input = this._inputReader ? this._inputReader.sample() : { left: false, right: false };
+    const input = this._inputReader ? this._inputReader.sample() : { left: false, right: false, flap: false };
     let inputDir = 0;
     if (input.right && !input.left) {
       inputDir = 1;
@@ -351,59 +404,98 @@ export class Level1Scene {
       inputDir = -1;
     }
 
-    // Apply acceleration / skid / friction
+    // Handle flap input — each press sets velocity (not additive, matches Joust)
+    if (input.flap) {
+      this._velocityY = FLAP_IMPULSE;
+      this._playerState = 'AIRBORNE';
+      this._isFlapping = true;
+      this._flapTimer = 0;
+    }
+
+    // Horizontal physics — reduced friction and skid in air
+    const isAirborne = this._playerState === 'AIRBORNE';
+    const friction = isAirborne ? AIR_FRICTION : FRICTION;
+    const skidDecel = isAirborne ? SKID_DECEL * 0.3 : SKID_DECEL;
+
     if (inputDir !== 0) {
       const movingOpposite = (this._velocityX > 0 && inputDir < 0) ||
                              (this._velocityX < 0 && inputDir > 0);
       if (movingOpposite) {
-        // Skid: pressing against current velocity
-        this._velocityX += inputDir * SKID_DECEL * dt;
+        this._velocityX += inputDir * skidDecel * dt;
       } else {
-        // Accelerate in input direction
         this._velocityX += inputDir * ACCELERATION * dt;
       }
     } else {
-      // No input: coast to stop
-      this._applyFriction(dt);
+      this._applyFriction(dt, friction);
     }
 
-    // Clamp velocity
+    // Clamp horizontal velocity
     this._velocityX = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, this._velocityX));
 
     // Detect direction change (velocity crosses zero while input is held)
     if (inputDir !== 0 && inputDir !== this._facingDir) {
-      // Check if velocity has crossed to the input side or reached zero
       if ((inputDir > 0 && this._velocityX >= 0) ||
           (inputDir < 0 && this._velocityX <= 0)) {
         this._startTurn(inputDir);
       }
     }
 
-    // Update position
-    this._positionX += this._velocityX * dt;
+    // Vertical physics — gravity while airborne
+    if (isAirborne) {
+      this._velocityY -= GRAVITY * dt;
+      if (this._velocityY < -TERMINAL_VELOCITY) {
+        this._velocityY = -TERMINAL_VELOCITY;
+      }
+    }
 
-    // Bidirectional screen wrap
+    // Update positions
+    this._positionX += this._velocityX * dt;
+    this._positionY += this._velocityY * dt;
+
+    // Ground collision
+    if (this._positionY <= this._ostrichBaseY) {
+      this._positionY = this._ostrichBaseY;
+      this._velocityY = 0;
+      this._playerState = 'GROUNDED';
+    }
+
+    // Ceiling clamp
+    if (this._positionY > this._orthoTop - 1.0) {
+      this._positionY = this._orthoTop - 1.0;
+      this._velocityY = 0;
+    }
+
+    // Bidirectional screen wrap (X axis)
     if (this._positionX > ORTHO_RIGHT + CHAR_HALF_WIDTH) {
       this._positionX = ORTHO_LEFT - CHAR_HALF_WIDTH;
     } else if (this._positionX < ORTHO_LEFT - CHAR_HALF_WIDTH) {
       this._positionX = ORTHO_RIGHT + CHAR_HALF_WIDTH;
     }
 
-    // Update root position
+    // Update root horizontal position
     if (this._ostrichRig?.root) {
       this._ostrichRig.root.position.x = this._positionX;
     }
 
-    // Turn animation + running animation
+    // Turn animation
     this._updateTurn(dt);
-    this._animateRunning(dt);
+
+    // Body animation — grounded runs, airborne glides
+    if (this._playerState === 'GROUNDED') {
+      this._animateRunning(dt);
+    } else {
+      this._animateFlying(dt);
+    }
+
+    // Wing flap always runs (coexists with running bounce via separate rotation axes)
+    this._animateWingFlap(dt);
   }
 
-  _applyFriction(dt) {
+  _applyFriction(dt, friction) {
     if (this._velocityX > 0) {
-      this._velocityX = Math.max(0, this._velocityX - FRICTION * dt);
+      this._velocityX = Math.max(0, this._velocityX - friction * dt);
     } else if (this._velocityX < 0) {
-      this._velocityX = Math.min(0, this._velocityX + FRICTION * dt);
+      this._velocityX = Math.min(0, this._velocityX + friction * dt);
     }
   }
 
@@ -476,7 +568,7 @@ export class Level1Scene {
     // ---- Ostrich body: vertical bob at double stride frequency ----
     if (oParts.body) {
       const bobAmount = Math.abs(Math.sin(p * 2)) * 0.05 * amp;
-      oParts.body.mesh.position.y = this._ostrichBaseY + bobAmount;
+      oParts.body.mesh.position.y = this._positionY + bobAmount;
     }
 
     // ---- Ostrich neck: forward-back bob synced to stride ----
@@ -484,13 +576,13 @@ export class Level1Scene {
       oParts.neck.mesh.rotation.z = Math.sin(p) * 0.12 * amp;
     }
 
-    // ---- Ostrich wings: tucked with slight bounce ----
+    // ---- Ostrich wings: tucked with slight bounce (via pivots) ----
     const wingBounce = Math.abs(Math.sin(p * 2)) * 0.08 * amp;
-    if (oParts.leftWing) {
-      oParts.leftWing.mesh.rotation.z = wingBounce;
+    if (this._leftWingPivot) {
+      this._leftWingPivot.rotation.z = wingBounce;
     }
-    if (oParts.rightWing) {
-      oParts.rightWing.mesh.rotation.z = -wingBounce;
+    if (this._rightWingPivot) {
+      this._rightWingPivot.rotation.z = -wingBounce;
     }
 
     // ---- Ostrich tail: slight wag ----
@@ -512,6 +604,119 @@ export class Level1Scene {
       if (this._rightShoulderNode) {
         this._rightShoulderNode.rotation.z = Math.sin(p - 0.5) * 0.04 * amp;
       }
+    }
+  }
+
+  _animateWingFlap(dt) {
+    // Update flap timer
+    if (this._isFlapping) {
+      this._flapTimer += dt;
+      if (this._flapTimer >= FLAP_DURATION) {
+        this._isFlapping = false;
+        this._flapTimer = 0;
+      }
+    }
+
+    let flapAngle = 0;
+
+    if (this._isFlapping) {
+      const t = this._flapTimer / FLAP_DURATION;
+
+      if (t < 0.3) {
+        // Rest to upstroke peak (ease-out sine)
+        const phase = t / 0.3;
+        const eased = Math.sin(phase * Math.PI / 2);
+        flapAngle = eased * WING_UP_ANGLE;
+      } else if (t < 0.7) {
+        // Upstroke to downstroke — power stroke (cosine ease-in-out)
+        const phase = (t - 0.3) / 0.4;
+        const eased = 0.5 - 0.5 * Math.cos(phase * Math.PI);
+        flapAngle = WING_UP_ANGLE + eased * (WING_DOWN_ANGLE - WING_UP_ANGLE);
+      } else {
+        // Downstroke back to rest (cosine ease-in-out)
+        const phase = (t - 0.7) / 0.3;
+        const eased = 0.5 - 0.5 * Math.cos(phase * Math.PI);
+        flapAngle = WING_DOWN_ANGLE + eased * (0 - WING_DOWN_ANGLE);
+      }
+    } else if (this._playerState === 'AIRBORNE') {
+      // Glide pose — wings slightly spread while falling
+      flapAngle = WING_GLIDE_ANGLE;
+    }
+    // Grounded + not flapping: flapAngle stays 0 (rest position)
+
+    // Apply to wing pivots (rotation.x for flap sweep, mirrored left/right)
+    if (this._leftWingPivot) {
+      this._leftWingPivot.rotation.x = flapAngle;
+    }
+    if (this._rightWingPivot) {
+      this._rightWingPivot.rotation.x = -flapAngle;
+    }
+  }
+
+  _animateFlying(dt) {
+    const oParts = this._ostrichRig?.parts;
+    const kParts = this._knightRig?.parts;
+
+    if (!oParts) {
+      return;
+    }
+
+    // Body: no bob, stable at flight position
+    if (oParts.body) {
+      oParts.body.mesh.position.y = this._positionY;
+    }
+
+    // Neck: slight backward lean
+    if (oParts.neck) {
+      oParts.neck.mesh.rotation.z = 0.1;
+    }
+
+    // Tail: slight backward trail
+    if (oParts.tail) {
+      oParts.tail.mesh.rotation.z = -0.15;
+    }
+
+    // Wings: no running bounce during flight (clear rotation.z)
+    if (this._leftWingPivot) {
+      this._leftWingPivot.rotation.z = 0;
+    }
+    if (this._rightWingPivot) {
+      this._rightWingPivot.rotation.z = 0;
+    }
+
+    // Legs: tucked symmetrically
+    this._animateTuckedLegs();
+
+    // Knight: stable, no bounce or sway
+    if (kParts) {
+      if (kParts.torso) {
+        kParts.torso.mesh.position.y = this._knightMountY;
+      }
+      if (kParts.head) {
+        kParts.head.mesh.rotation.z = 0;
+      }
+      if (this._leftShoulderNode) {
+        this._leftShoulderNode.rotation.z = 0;
+      }
+      if (this._rightShoulderNode) {
+        this._rightShoulderNode.rotation.z = 0;
+      }
+    }
+  }
+
+  _animateTuckedLegs() {
+    // Both legs identical — thighs swing backward, shins fold against thighs
+    if (this._leftHipPivot) {
+      this._leftHipPivot.rotation.z = -0.6;
+    }
+    if (this._rightHipPivot) {
+      this._rightHipPivot.rotation.z = -0.6;
+    }
+    if (this._leftKneePivot) {
+      this._leftKneePivot.rotation.z = 1.2;
+    }
+    if (this._rightKneePivot) {
+      this._rightKneePivot.rotation.z = 1.2;
     }
   }
 }

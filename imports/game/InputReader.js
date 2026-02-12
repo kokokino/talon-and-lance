@@ -1,57 +1,76 @@
 // Keyboard input sampling for game controls
-// Samples the current state of input keys each tick
+// Uses Babylon's scene.onKeyboardObservable for input tied to scene lifecycle.
 // Output: { left, right, flap } booleans
+// Flap uses edge detection — returns true only on the frame the key transitions
+// from released to pressed (one flap per press, not while held).
+
+import { KeyboardEventTypes } from '@babylonjs/core/Events/keyboardEvents';
 
 export class InputReader {
   constructor() {
     this.keys = {};
-    this._onKeyDown = this._onKeyDown.bind(this);
-    this._onKeyUp = this._onKeyUp.bind(this);
+    this._flapConsumed = true;
+    this._scene = null;
+    this._observer = null;
     this.attached = false;
   }
 
-  // Attach keyboard listeners to the window
-  attach() {
+  // Attach to a Babylon scene's keyboard observable
+  attach(scene) {
     if (this.attached) {
       return;
     }
 
-    window.addEventListener('keydown', this._onKeyDown);
-    window.addEventListener('keyup', this._onKeyUp);
+    this._scene = scene;
+    this._observer = scene.onKeyboardObservable.add((kbInfo) => {
+      const code = kbInfo.event.code;
+
+      if (kbInfo.type === KeyboardEventTypes.KEYDOWN) {
+        // Edge detection for flap: only trigger on fresh press
+        if (code === 'Space' || code === 'ArrowUp' || code === 'KeyW') {
+          if (!this.keys[code]) {
+            this._flapConsumed = false;
+          }
+        }
+        this.keys[code] = true;
+
+        // Prevent scrolling for game keys
+        if (code === 'Space' || code === 'ArrowUp' ||
+            code === 'ArrowDown' || code === 'ArrowLeft' ||
+            code === 'ArrowRight') {
+          kbInfo.event.preventDefault();
+        }
+      } else if (kbInfo.type === KeyboardEventTypes.KEYUP) {
+        this.keys[code] = false;
+      }
+    });
+
     this.attached = true;
   }
 
-  // Remove keyboard listeners
+  // Remove keyboard observer
   detach() {
-    window.removeEventListener('keydown', this._onKeyDown);
-    window.removeEventListener('keyup', this._onKeyUp);
+    if (this._scene && this._observer) {
+      this._scene.onKeyboardObservable.remove(this._observer);
+    }
+    this._scene = null;
+    this._observer = null;
     this.keys = {};
+    this._flapConsumed = true;
     this.attached = false;
   }
 
   // Sample the current input state as a structured object
   sample() {
+    const flapPressed = !this._flapConsumed;
+    if (flapPressed) {
+      this._flapConsumed = true;
+    }
+
     return {
       left: this.keys['ArrowLeft'] || this.keys['KeyA'] || false,
       right: this.keys['ArrowRight'] || this.keys['KeyD'] || false,
-      flap: this.keys['Space'] || this.keys['ArrowUp'] || this.keys['KeyW'] || false,
+      flap: flapPressed,
     };
-  }
-
-  // --- Private ---
-
-  _onKeyDown(event) {
-    this.keys[event.code] = true;
-
-    // Prevent scrolling for game keys
-    if (event.code === 'Space' || event.code === 'ArrowUp' ||
-        event.code === 'ArrowDown' || event.code === 'ArrowLeft' ||
-        event.code === 'ArrowRight') {
-      event.preventDefault();
-    }
-  }
-
-  _onKeyUp(event) {
-    this.keys[event.code] = false;
   }
 }
