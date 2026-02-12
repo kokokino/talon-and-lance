@@ -158,6 +158,10 @@ function createCharState(wingMode) {
     respawnTimer: 0,
     invincible: false,
     invincibleTimer: 0,
+    // Joust collision
+    prevPositionX: 0,
+    prevPositionY: 0,
+    joustCooldown: 0,
   };
 }
 
@@ -866,6 +870,15 @@ export class Level1Scene {
         }
       }
 
+      // Joust cooldown tick
+      if (char.joustCooldown > 0) {
+        char.joustCooldown -= dt;
+      }
+
+      // Save pre-movement position for crossing detection
+      char.prevPositionX = char.positionX;
+      char.prevPositionY = char.positionY;
+
       if (i === this._activeCharIdx) {
         this._updateCharWithInput(dt, char, input);
       } else {
@@ -1086,7 +1099,7 @@ export class Level1Scene {
       return;
     }
 
-    // Skip if either is dead, materializing, or invincible
+    // Skip if either is dead, materializing, invincible, or in joust cooldown
     if (charA.dead || charB.dead) {
       return;
     }
@@ -1096,8 +1109,11 @@ export class Level1Scene {
     if (charA.invincible || charB.invincible) {
       return;
     }
+    if (charA.joustCooldown > 0 || charB.joustCooldown > 0) {
+      return;
+    }
 
-    // AABB overlap check
+    // Standard AABB overlap check
     const aLeft = charA.positionX - CHAR_HALF_WIDTH;
     const aRight = charA.positionX + CHAR_HALF_WIDTH;
     const aFeet = charA.positionY - FEET_OFFSET;
@@ -1108,7 +1124,34 @@ export class Level1Scene {
     const bFeet = charB.positionY - FEET_OFFSET;
     const bHead = charB.positionY + HEAD_OFFSET;
 
-    if (aRight < bLeft || aLeft > bRight || aHead < bFeet || aFeet > bHead) {
+    let collided = !(aRight < bLeft || aLeft > bRight || aHead < bFeet || aFeet > bHead);
+
+    // Crossing detection: catch tunneling when characters pass through each
+    // other in a single frame. If their relative X flipped sign and neither
+    // wrapped around the screen, they must have crossed paths.
+    if (!collided) {
+      const prevRelX = charA.prevPositionX - charB.prevPositionX;
+      const currRelX = charA.positionX - charB.positionX;
+      const signFlipped = (prevRelX > 0 && currRelX < 0) || (prevRelX < 0 && currRelX > 0);
+
+      if (signFlipped) {
+        // Ignore screen-wrap false positives (large position jump)
+        const aDeltaX = Math.abs(charA.positionX - charA.prevPositionX);
+        const bDeltaX = Math.abs(charB.positionX - charB.prevPositionX);
+        const noWrap = aDeltaX < ORTHO_WIDTH / 2 && bDeltaX < ORTHO_WIDTH / 2;
+
+        if (noWrap) {
+          // Verify Y ranges overlapped during the crossing
+          const aMinY = Math.min(charA.positionY, charA.prevPositionY) - FEET_OFFSET;
+          const aMaxY = Math.max(charA.positionY, charA.prevPositionY) + HEAD_OFFSET;
+          const bMinY = Math.min(charB.positionY, charB.prevPositionY) - FEET_OFFSET;
+          const bMaxY = Math.max(charB.positionY, charB.prevPositionY) + HEAD_OFFSET;
+          collided = aMaxY > bMinY && aMinY < bMaxY;
+        }
+      }
+    }
+
+    if (!collided) {
       return;
     }
 
@@ -1147,6 +1190,10 @@ export class Level1Scene {
       // Turn both to face away from each other
       this._startTurn(charA, pushA);
       this._startTurn(charB, -pushA);
+
+      // Cooldown prevents re-triggering while separating
+      charA.joustCooldown = 0.15;
+      charB.joustCooldown = 0.15;
     } else {
       // Higher character wins
       const winner = heightDiff > 0 ? charA : charB;
