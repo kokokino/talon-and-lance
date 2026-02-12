@@ -144,6 +144,7 @@ function createCharState(wingMode) {
     materializeParticles: null,
     // Death / respawn
     dead: false,
+    hitLava: false,
     respawnTimer: 0,
     invincible: false,
     invincibleTimer: 0,
@@ -861,6 +862,13 @@ export class Level1Scene {
         this._updateCharIdle(dt, char);
       }
 
+      // Check if character hit lava this frame
+      if (char.hitLava) {
+        char.hitLava = false;
+        this._lavaDeath(char, i);
+        continue;
+      }
+
       this._animateChar(dt, char);
     }
 
@@ -967,14 +975,9 @@ export class Level1Scene {
       char.velocityY = 0;
     }
 
-    // Kill zone — below lava, respawn at top
-    if (char.positionY < this._orthoBottom - 1) {
-      char.positionX = 0;
-      char.positionY = this._orthoTop - HEAD_OFFSET;
-      char.velocityX = 0;
-      char.velocityY = 0;
-      char.playerState = 'AIRBORNE';
-      char.currentPlatform = null;
+    // Lava kill zone
+    if (char.positionY < this._orthoBottom + 1.0) {
+      char.hitLava = true;
     }
 
     // Screen wrap
@@ -1542,6 +1545,18 @@ export class Level1Scene {
     this._disposeCharMeshes(char);
   }
 
+  _lavaDeath(char, charIdx) {
+    char.dead = true;
+    char.respawnTimer = RESPAWN_DELAY;
+
+    // Explode into lava — no egg
+    this._explodeCharacter(char);
+    this._spawnLavaBurst();
+
+    // Hide the character meshes
+    this._disposeCharMeshes(char);
+  }
+
   _respawnCharacter(char, charIdx) {
     // Pick a random spawn point not occupied by another character
     const occupiedFilter = 1.5;
@@ -1770,8 +1785,9 @@ export class Level1Scene {
         egg.positionX = ORTHO_RIGHT + eggRadius;
       }
 
-      // Destroy if fallen into lava
+      // Destroy if fallen into lava — with explosion
       if (egg.positionY < lavaY) {
+        this._spawnLavaBurst();
         if (egg.rig.root) {
           egg.rig.root.dispose();
         }
