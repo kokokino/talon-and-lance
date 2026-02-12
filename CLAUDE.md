@@ -26,8 +26,8 @@ npm run test-app
 # Analyze bundle size
 npm run visualize
 
-# Deploy to Meteor Galaxy
-meteor deploy talon-and-lance.kokokino.com --settings settings.production.json
+# Deploy
+npm run prod-deploy
 ```
 
 ## Tech Stack
@@ -52,7 +52,7 @@ The game uses GGPO-style rollback netcode with a request-based API pattern (insp
 - **Postgame:** Results sent back to Meteor via Methods
 
 ### Determinism Strategy
-All game physics use integer arithmetic (positions in 1/256th pixel units) — no floating point in game logic. Seedable PRNG (mulberry32) for all randomness. Game state serialized as flat `Int32Array` for microsecond save/restore during rollbacks.
+All game physics use integer arithmetic (positions in 1/256th pixel units) — no floating point in game logic. Seedable PRNG (mulberry32) for all randomness. Game state serialized as flat `Int32Array` for microsecond save/restore during rollbacks. Havok physics must **never** be used for gameplay state (not deterministic cross-platform, no snapshot/restore API) — only for cosmetic effects like voxel debris. See `documentation/PHYSICS.md` for full rationale.
 
 ### SSO Flow
 1. User clicks "Launch" in Hub → Hub generates RS256-signed JWT
@@ -61,18 +61,34 @@ All game physics use integer arithmetic (positions in 1/256th pixel units) — n
 4. Spoke calls Hub API for fresh user data
 5. Spoke creates local Meteor session via custom `Accounts.registerLoginHandler`
 
+### Babylon Scene Architecture
+`BabylonPage` (Mithril component) owns the Babylon Engine, canvas, render loop, and AudioManager. It orchestrates scene transitions between `MainMenuScene` and `Level1Scene`. Each scene class exposes `dispose()` and is instantiated by BabylonPage when transitioning.
+
+- **MainMenuScene** — 3D menu with animated knight, arc-rotate camera, palette selector (4 knight colors), music track selector (3 tracks), mode select (Team Play/PvP). Preferences saved to localStorage.
+- **Level1Scene** — Full Joust gameplay: multi-tier platforms over lava, flapping flight physics, lance-height jousting, death/respawn with invincibility, egg drop mechanics, voxel explosion debris, day/night cycle. Currently supports local play with switchable player/enemy (ArrowUp/ArrowDown).
+
+### Voxel Model System
+`VoxelBuilder` converts voxel definitions to Babylon meshes with face culling and flat-shaded cubes. Models in `imports/game/voxels/models/` define shapes as arrays of `[x, y, z, colorIndex]` entries with palette mappings. Each model can have multiple color palettes (e.g., `knightPalettes.js` has 4 variants, `evilKnightPalettes.js` has 3).
+
+### Implementation Status
+The game is a playable single-player Joust with polished visuals. The rollback netcode and transport layers are fully built but **not yet wired to the game** — Level1Scene uses direct local input, not the rollback session. Lobby UI (room list, matchmaking flow) has server methods/publications but no frontend pages.
+
 ### Key Directories
+- `imports/game/scenes/` - Babylon scenes: MainMenuScene (menu + palette picker), Level1Scene (full Joust gameplay)
+- `imports/game/voxels/` - VoxelBuilder mesh generator + voxel model definitions (knight, ostrich, evil knight, buzzard, lance, egg)
+- `imports/game/audio/` - AudioManager (Babylon Audio V2, menu music tracks)
+- `imports/game/` - GameLoop (fixed 60fps timestep), InputReader (keyboard sampling with edge detection)
 - `imports/netcode/` - Rollback engine (game-agnostic): RollbackSession, InputQueue, StateBuffer, TimeSync, SyncTestSession, InputEncoder
 - `imports/netcode/transport/` - Transport layer: PeerJSTransport (P2P), GeckosTransport (relay), TransportManager (orchestrator)
-- `imports/game/` - Game-specific code: GameLoop (fixed-timestep), InputReader (keyboard sampling)
 - `imports/hub/` - Hub integration (SSO handler, API client, subscription checking)
 - `imports/lib/collections/` - MongoDB collections (GameRooms, ChatMessages)
-- `imports/ui/components/` - Mithril components including `RequireAuth` and `RequireSubscription` HOCs
-- `imports/ui/pages/` - Route pages including `SsoCallback` for SSO handling, LobbyPage, GamePage
+- `imports/ui/pages/` - BabylonPage (engine/scene lifecycle), SsoCallback, HomePage, auth gate pages
+- `imports/ui/components/` - RequireAuth, RequireSubscription HOCs, ChatRoom/ChatMessage
 - `server/methods/` - Meteor methods (room CRUD, matchmaking, chat, subscriptions)
 - `server/publications/` - Data publications (rooms.lobby, rooms.current, userData)
 - `server/relay/` - geckos.io server bridge for WebRTC relay fallback
 - `server/accounts.js` - Custom login handler for SSO
+- `documentation/` - Architecture docs (PHYSICS.md has determinism/Havok decisions, joust-remake-rollback-networking.md)
 
 ### Settings Structure
 ```json
@@ -90,6 +106,9 @@ All game physics use integer arithmetic (positions in 1/256th pixel units) — n
   }
 }
 ```
+
+### Rspack Configuration
+`rspack.config.js` externalizes `node-datachannel` (native addon used by geckos.io) on the server build. This is required because Rspack cannot bundle native `.node` addons.
 
 ## Code Conventions
 
@@ -129,8 +148,11 @@ Components are plain objects with lifecycle hooks:
 
 State lives on `vnode.state`. Call `m.redraw()` after async operations complete.
 
+### Client Routing
+Routes defined in `client/main.js` using `m.route()` with `m.route.prefix = ''`. Logged-in users at `/` get `BabylonPage` (full-canvas Babylon, no Pico layout). All other pages use `Layout` wrapper (MeteorWrapper + MainLayout with Pico CSS). Auth gate pages: `/not-logged-in`, `/no-subscription`, `/session-expired`. SSO callback at `/sso`.
+
 ### Meteor-Mithril Reactivity
-The `MeteorWrapper` component in `client/main.js` bridges Meteor's reactivity with Mithril:
+`MeteorWrapper` in `client/main.js` bridges Meteor's Tracker reactivity with Mithril redraws:
 ```javascript
 Tracker.autorun(() => {
   Meteor.user(); Meteor.userId(); Meteor.loggingIn();
