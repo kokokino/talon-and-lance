@@ -156,30 +156,31 @@ export const ostrichModel = {
       offset: [0, 0, 3],
       // 7w × 2d × 5h — mirrored wing (z-rows swapped vs right)
       // centerX=3, centerZ=0.5
+      // z=0 row cleared to avoid Z-fighting with body outer surface
       layers: [
         // y=0 (bottom — narrow tip)
         [
-          [0, 0, 0, 3, 0, 0, 0],
+          [0, 0, 0, 0, 0, 0, 0],
           [0, 0, 3, 3, 3, 0, 0],
         ],
         // y=1
         [
-          [0, 0, 3, 2, 1, 0, 0],
+          [0, 0, 0, 0, 0, 0, 0],
           [0, 3, 3, 2, 2, 1, 0],
         ],
         // y=2 (mid — wider)
         [
-          [0, 3, 3, 2, 2, 1, 0],
+          [0, 0, 0, 0, 0, 0, 0],
           [3, 3, 2, 2, 1, 1, 1],
         ],
         // y=3
         [
-          [0, 3, 2, 2, 1, 1, 0],
+          [0, 0, 0, 0, 0, 0, 0],
           [3, 3, 2, 1, 1, 1, 1],
         ],
         // y=4 (top — widest, connects to body)
         [
-          [0, 3, 2, 1, 1, 1, 0],
+          [0, 0, 0, 0, 0, 0, 0],
           [3, 2, 2, 1, 1, 1, 1],
         ],
       ],
@@ -191,31 +192,32 @@ export const ostrichModel = {
       offset: [0, 0, -3],
       // 7w × 2d × 5h — wing with volume, tapers bottom to top
       // centerX=3, centerZ=0.5
+      // z=1 row cleared to avoid Z-fighting with body outer surface
       layers: [
         // y=0 (bottom — narrow tip)
         [
           [0, 0, 3, 3, 3, 0, 0],
-          [0, 0, 0, 3, 0, 0, 0],
+          [0, 0, 0, 0, 0, 0, 0],
         ],
         // y=1
         [
           [0, 3, 3, 2, 2, 1, 0],
-          [0, 0, 3, 2, 1, 0, 0],
+          [0, 0, 0, 0, 0, 0, 0],
         ],
         // y=2 (mid — wider)
         [
           [3, 3, 2, 2, 1, 1, 1],
-          [0, 3, 3, 2, 2, 1, 0],
+          [0, 0, 0, 0, 0, 0, 0],
         ],
         // y=3
         [
           [3, 3, 2, 1, 1, 1, 1],
-          [0, 3, 2, 2, 1, 1, 0],
+          [0, 0, 0, 0, 0, 0, 0],
         ],
         // y=4 (top — widest, connects to body)
         [
           [3, 2, 2, 1, 1, 1, 1],
-          [0, 3, 2, 1, 1, 1, 0],
+          [0, 0, 0, 0, 0, 0, 0],
         ],
       ],
     },
