@@ -434,7 +434,8 @@ export class Level1Scene {
 
     // Detect direction change (velocity crosses zero while input is held)
     if (inputDir !== 0 && inputDir !== this._facingDir) {
-      if ((inputDir > 0 && this._velocityX >= 0) ||
+      if (isAirborne ||
+          (inputDir > 0 && this._velocityX >= 0) ||
           (inputDir < 0 && this._velocityX <= 0)) {
         this._startTurn(inputDir);
       }
@@ -705,18 +706,18 @@ export class Level1Scene {
   }
 
   _animateTuckedLegs() {
-    // Both legs identical — thighs swing backward, shins fold against thighs
+    // Bird-sitting pose — thighs fold forward against belly, shins fold back
     if (this._leftHipPivot) {
-      this._leftHipPivot.rotation.z = -0.6;
+      this._leftHipPivot.rotation.z = 2.0;
     }
     if (this._rightHipPivot) {
-      this._rightHipPivot.rotation.z = -0.6;
+      this._rightHipPivot.rotation.z = 2.0;
     }
     if (this._leftKneePivot) {
-      this._leftKneePivot.rotation.z = 1.2;
+      this._leftKneePivot.rotation.z = -2.2;
     }
     if (this._rightKneePivot) {
-      this._rightKneePivot.rotation.z = 1.2;
+      this._rightKneePivot.rotation.z = -2.2;
     }
   }
 }
