@@ -29,6 +29,16 @@ import { eggModel } from '../voxels/models/eggModel.js';
 import { buildKnightPalette } from '../voxels/models/knightPalettes.js';
 import { buildEvilKnightPalette } from '../voxels/models/evilKnightPalettes.js';
 
+/**
+ * Convert a hex color string (e.g. '#FF8800') to a Babylon Color3.
+ */
+function hexToColor3(hex) {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  return new Color3(r, g, b);
+}
+
 // ---- Size & View ----
 const VOXEL_SIZE = 0.07;
 
@@ -1539,7 +1549,7 @@ export class Level1Scene {
     this._spawnEgg(char.positionX, char.positionY, char.velocityX + knockDir * 2, char.velocityY);
 
     // Explode character into voxel debris (cosmetic only)
-    this._explodeCharacter(char);
+    this._explodeCharacter(char, charIdx);
 
     // Hide the character meshes
     this._disposeCharMeshes(char);
@@ -1550,7 +1560,7 @@ export class Level1Scene {
     char.respawnTimer = RESPAWN_DELAY;
 
     // Explode into lava — no egg
-    this._explodeCharacter(char);
+    this._explodeCharacter(char, charIdx);
     this._spawnLavaBurst();
 
     // Hide the character meshes
@@ -1636,78 +1646,140 @@ export class Level1Scene {
     this._createMaterializeParticles(char);
   }
 
-  _explodeCharacter(char) {
-    const rigs = [
-      { rig: char.birdRig, model: char.wingMode === 'updown' ? ostrichModel : buzzardModel },
+  _explodeCharacter(char, charIdx) {
+    // Determine the correct model definitions and palettes for each rig
+    const birdModel = char.wingMode === 'updown' ? ostrichModel : buzzardModel;
+    let knightPalette;
+    let knightModelDef;
+    if (charIdx === 0) {
+      knightModelDef = knightModel;
+      knightPalette = buildKnightPalette(this._paletteIndex);
+    } else {
+      knightModelDef = evilKnightModel;
+      knightPalette = buildEvilKnightPalette(this._evilTypeIndex);
+    }
+
+    const rigSources = [
+      { rig: char.birdRig, modelDef: birdModel, palette: birdModel.palette },
+      { rig: char.knightRig, modelDef: knightModelDef, palette: knightPalette },
+      { rig: char.lanceRig, modelDef: lanceModel, palette: lanceModel.palette },
     ];
 
-    for (const { rig } of rigs) {
+    // Collect voxel positions grouped by hex color
+    const byColor = {};
+
+    for (const { rig, modelDef, palette } of rigSources) {
       if (!rig) {
         continue;
       }
-      for (const part of Object.values(rig.parts)) {
-        if (!part.mesh) {
+
+      for (const [partName, partData] of Object.entries(modelDef.parts)) {
+        if (!rig.parts[partName] || !rig.parts[partName].mesh) {
           continue;
         }
 
-        // Get world position of this part
-        const worldPos = part.mesh.getAbsolutePosition();
+        const { layers } = partData;
+        if (!layers || layers.length === 0) {
+          continue;
+        }
 
-        // Create small debris cubes from the part
-        const debrisCount = 3 + Math.floor(Math.random() * 4);
-        for (let i = 0; i < debrisCount; i++) {
-          const debris = MeshBuilder.CreateBox(`debris_${Math.random()}`, {
-            size: VOXEL_SIZE * (0.8 + Math.random() * 0.4),
-          }, this.scene);
+        const worldPos = rig.parts[partName].mesh.getAbsolutePosition();
+        const height = layers.length;
+        const depth = layers[0].length;
+        const width = layers[0][0].length;
+        const centerX = (width - 1) / 2;
+        const centerZ = (depth - 1) / 2;
 
-          debris.position = new Vector3(
-            worldPos.x + (Math.random() - 0.5) * 0.3,
-            worldPos.y + (Math.random() - 0.5) * 0.3,
-            worldPos.z + (Math.random() - 0.5) * 0.2,
-          );
+        for (let y = 0; y < height; y++) {
+          for (let z = 0; z < depth; z++) {
+            for (let x = 0; x < width; x++) {
+              const colorIndex = layers[y][z][x];
+              if (colorIndex === 0) {
+                continue;
+              }
 
-          // Copy color from the part mesh material
-          const mat = new StandardMaterial(`debrisMat_${Math.random()}`, this.scene);
-          mat.disableLighting = true;
-          if (part.mesh.material) {
-            mat.emissiveColor = part.mesh.material.emissiveColor
-              ? part.mesh.material.emissiveColor.clone()
-              : new Color3(0.6, 0.5, 0.4);
-          } else {
-            mat.emissiveColor = new Color3(0.6, 0.5, 0.4);
+              const hex = palette[colorIndex];
+              if (!hex) {
+                continue;
+              }
+
+              if (!byColor[hex]) {
+                byColor[hex] = [];
+              }
+              byColor[hex].push({
+                wx: worldPos.x + (x - centerX) * VOXEL_SIZE,
+                wy: worldPos.y + y * VOXEL_SIZE,
+                wz: worldPos.z + (z - centerZ) * VOXEL_SIZE,
+              });
+            }
           }
-          debris.material = mat;
-
-          // Animate outward with velocity
-          const vx = (Math.random() - 0.5) * 8;
-          const vy = 2 + Math.random() * 6;
-          const debrisRef = { mesh: debris, vx, vy, life: 2.0 + Math.random() };
-
-          // Simple animation via onBeforeRender
-          const observer = this.scene.onBeforeRenderObservable.add(() => {
-            const frameDt = this.engine.getDeltaTime() / 1000;
-            debrisRef.vx *= 0.98;
-            debrisRef.vy -= GRAVITY * frameDt;
-            debrisRef.mesh.position.x += debrisRef.vx * frameDt;
-            debrisRef.mesh.position.y += debrisRef.vy * frameDt;
-            debrisRef.mesh.rotation.x += 5 * frameDt;
-            debrisRef.mesh.rotation.z += 3 * frameDt;
-            debrisRef.life -= frameDt;
-
-            // Fade out in last 0.5s
-            if (debrisRef.life < 0.5) {
-              debrisRef.mesh.material.alpha = debrisRef.life / 0.5;
-              debrisRef.mesh.material.transparencyMode = 2;
-            }
-
-            if (debrisRef.life <= 0) {
-              debrisRef.mesh.dispose();
-              this.scene.onBeforeRenderObservable.remove(observer);
-            }
-          });
         }
       }
     }
+
+    // One parent mesh per unique color; instances for each voxel of that color.
+    // Instances share geometry — avoids creating hundreds of individual box meshes.
+    const parentMeshes = [];
+    const allDebris = [];
+
+    for (const [hex, voxels] of Object.entries(byColor)) {
+      const parent = MeshBuilder.CreateBox(`debrisP_${hex}`, { size: VOXEL_SIZE }, this.scene);
+      const mat = new StandardMaterial(`debrisM_${hex}`, this.scene);
+      mat.disableLighting = true;
+      mat.emissiveColor = hexToColor3(hex);
+      parent.material = mat;
+      parent.isVisible = false;
+      parentMeshes.push(parent);
+
+      for (const v of voxels) {
+        const inst = parent.createInstance('d');
+        inst.position.set(v.wx, v.wy, v.wz);
+        allDebris.push({
+          mesh: inst,
+          vx: (Math.random() - 0.5) * 3,
+          vy: Math.random() * 2,
+          life: 1.2 + Math.random() * 0.5,
+        });
+      }
+    }
+
+    // Single observer updates all debris each frame
+    const observer = this.scene.onBeforeRenderObservable.add(() => {
+      const frameDt = this.engine.getDeltaTime() / 1000;
+      let remaining = 0;
+
+      for (const d of allDebris) {
+        if (d.life <= 0) {
+          continue;
+        }
+        remaining++;
+
+        d.vx *= 0.97;
+        d.vy -= GRAVITY * frameDt;
+        d.mesh.position.x += d.vx * frameDt;
+        d.mesh.position.y += d.vy * frameDt;
+        d.mesh.rotation.x += 5 * frameDt;
+        d.mesh.rotation.z += 3 * frameDt;
+        d.life -= frameDt;
+
+        // Scale down in last 0.4s (instances can't fade alpha independently)
+        if (d.life < 0.4) {
+          const s = Math.max(0, d.life / 0.4);
+          d.mesh.scaling.setAll(s);
+        }
+
+        if (d.life <= 0) {
+          d.mesh.dispose();
+        }
+      }
+
+      if (remaining === 0) {
+        this.scene.onBeforeRenderObservable.remove(observer);
+        for (const p of parentMeshes) {
+          p.dispose();
+        }
+      }
+    });
   }
 
   _spawnEgg(x, y, vx, vy) {
