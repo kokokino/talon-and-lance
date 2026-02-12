@@ -1,8 +1,8 @@
 // Keyboard input sampling for game controls
 // Uses Babylon's scene.onKeyboardObservable for input tied to scene lifecycle.
-// Output: { left, right, flap } booleans
-// Flap uses edge detection — returns true only on the frame the key transitions
-// from released to pressed (one flap per press, not while held).
+// Output: { left, right, flap, switchChar, cycleType } booleans
+// Flap, switchChar, and cycleType use edge detection — returns true only on the
+// frame the key transitions from released to pressed (one event per press).
 
 import { KeyboardEventTypes } from '@babylonjs/core/Events/keyboardEvents';
 
@@ -10,6 +10,8 @@ export class InputReader {
   constructor() {
     this.keys = {};
     this._flapConsumed = true;
+    this._switchCharConsumed = true;
+    this._cycleTypeConsumed = true;
     this._scene = null;
     this._observer = null;
     this.attached = false;
@@ -27,9 +29,21 @@ export class InputReader {
 
       if (kbInfo.type === KeyboardEventTypes.KEYDOWN) {
         // Edge detection for flap: only trigger on fresh press
-        if (code === 'Space' || code === 'ArrowUp' || code === 'KeyW') {
+        if (code === 'Space' || code === 'KeyW') {
           if (!this.keys[code]) {
             this._flapConsumed = false;
+          }
+        }
+        // Edge detection for switchChar (ArrowUp)
+        if (code === 'ArrowUp') {
+          if (!this.keys[code]) {
+            this._switchCharConsumed = false;
+          }
+        }
+        // Edge detection for cycleType (ArrowDown)
+        if (code === 'ArrowDown') {
+          if (!this.keys[code]) {
+            this._cycleTypeConsumed = false;
           }
         }
         this.keys[code] = true;
@@ -57,6 +71,8 @@ export class InputReader {
     this._observer = null;
     this.keys = {};
     this._flapConsumed = true;
+    this._switchCharConsumed = true;
+    this._cycleTypeConsumed = true;
     this.attached = false;
   }
 
@@ -67,10 +83,22 @@ export class InputReader {
       this._flapConsumed = true;
     }
 
+    const switchCharPressed = !this._switchCharConsumed;
+    if (switchCharPressed) {
+      this._switchCharConsumed = true;
+    }
+
+    const cycleTypePressed = !this._cycleTypeConsumed;
+    if (cycleTypePressed) {
+      this._cycleTypeConsumed = true;
+    }
+
     return {
       left: this.keys['ArrowLeft'] || this.keys['KeyA'] || false,
       right: this.keys['ArrowRight'] || this.keys['KeyD'] || false,
       flap: flapPressed,
+      switchChar: switchCharPressed,
+      cycleType: cycleTypePressed,
     };
   }
 }
