@@ -1,12 +1,12 @@
 // Egg voxel model — dropped when a character loses a joust
-// Simple oval shape, cream/white coloring
+// Gold coloring — collectible by the player for points
 // Coordinate system: layers[y][z][x] — y=0 is bottom
 
 export const eggModel = {
   palette: {
-    1: '#F5F0DC',  // Cream (main shell)
-    2: '#E8DFC8',  // Slightly darker cream (shading)
-    3: '#D4C9A8',  // Tan shadow (bottom/edges)
+    1: '#FFD700',  // Gold (main shell highlight)
+    2: '#DAA520',  // Goldenrod (mid-tone)
+    3: '#B8860B',  // Dark goldenrod (shadow/edges)
   },
 
   parts: {

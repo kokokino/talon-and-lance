@@ -87,10 +87,7 @@ export const BabylonPage = {
       paletteIndex: this._paletteIndex,
       onPlay: (paletteIndex) => {
         this._paletteIndex = paletteIndex;
-        this._transitionTo(new Level1Scene({
-          audioManager: this.audioManager,
-          paletteIndex,
-        }));
+        this._startLevel(paletteIndex);
       },
     }));
   },
@@ -101,6 +98,16 @@ export const BabylonPage = {
    * sceneInstance.create(scene, engine, canvas).
    * @param {Object} sceneInstance — must have create(scene, engine, canvas) and dispose()
    */
+  _startLevel(paletteIndex) {
+    this._transitionTo(new Level1Scene({
+      audioManager: this.audioManager,
+      paletteIndex,
+      onQuitToMenu: () => {
+        this._bootMainMenu();
+      },
+    }));
+  },
+
   _transitionTo(sceneInstance) {
     // Dispose old scene content
     if (this._currentScene) {

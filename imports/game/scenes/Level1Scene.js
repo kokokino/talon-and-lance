@@ -1,6 +1,6 @@
 // Level1Scene — Joust Level 1 recreation with multi-tier rock platforms over lava.
-// Supports player (ostrich) and evil knight (buzzard) with Up/Down arrow controls
-// to toggle active character and cycle enemy type.
+// Player (ostrich) vs AI-controlled enemies (buzzards) with wave-based progression.
+// Features: scoring, lives, HUD, egg collection, egg hatching, enemy AI.
 // Receives Engine/Scene from BabylonPage — does not own them.
 
 import { FreeCamera } from '@babylonjs/core/Cameras/freeCamera';
@@ -18,6 +18,13 @@ import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
 
 import { InputReader } from '../InputReader.js';
+import { EnemyAI } from '../EnemyAI.js';
+import {
+  STARTING_LIVES, EXTRA_LIFE_THRESHOLD,
+  POINTS_SURVIVAL_WAVE, POINTS_EGG_MID_AIR,
+  ENEMY_TYPE_BOUNDER, ENEMY_TYPE_HUNTER, ENEMY_TYPE_SHADOW_LORD,
+  getKillPoints, getEggPoints, getWaveComposition,
+} from '../scoring.js';
 import { SkyBackground } from './SkyBackground.js';
 import { buildRig, buildPart } from '../voxels/VoxelBuilder.js';
 import { knightModel } from '../voxels/models/knightModel.js';
@@ -112,6 +119,22 @@ const SPAWN_POINTS = [
 const MATERIALIZE_DURATION = 10.0;
 const MATERIALIZE_QUICK_DURATION = 0.5;
 
+// ---- Egg hatching ----
+const HATCH_TIME = 8.0;
+const WOBBLE_START = 5.0;
+const LOOK_AROUND_TIME = 3.0;
+const BIRD_ARRIVE_TIME = 1.5;
+
+// ---- Wave spawning ----
+const ENEMY_SPAWN_POINTS = [
+  { x: -8.0, y: 1.1 },   // top-left (above midUpL)
+  { x: 8.0, y: 1.1 },    // top-right (above midUpR)
+  { x: -5.0, y: -1.2 },  // mid-left (above midLowL)
+  { x: 5.0, y: -1.2 },   // mid-right (above midLowR)
+];
+const SPAWN_GROUP_INTERVAL = 2.0;
+const WAVE_TRANSITION_DELAY = 2.0;
+
 /**
  * Create a fresh character state object with default values.
  */
@@ -162,6 +185,9 @@ function createCharState(wingMode) {
     prevPositionX: 0,
     prevPositionY: 0,
     joustCooldown: 0,
+    // Enemy AI
+    enemyType: undefined,
+    ai: null,
   };
 }
 
@@ -169,20 +195,48 @@ export class Level1Scene {
   /**
    * @param {{ audioManager: AudioManager, paletteIndex: number }} config
    */
-  constructor({ audioManager, paletteIndex }) {
+  constructor({ audioManager, paletteIndex, onQuitToMenu }) {
     this._audioManager = audioManager;
     this._paletteIndex = paletteIndex;
+    this._onQuitToMenu = onQuitToMenu || null;
 
     this.engine = null;
     this.scene = null;
 
-    // Character state array: [0] = player, [1] = evil
+    // Character state array: [0] = player, rest = enemies
     this._chars = [null, null];
-    this._activeCharIdx = 0;
     this._evilTypeIndex = 0;
 
     this._inputReader = null;
     this._elapsed = 0;
+
+    // Escape overlay
+    this._escapeOverlay = null;
+    this._escapeVisible = false;
+
+    // Scoring & lives
+    this._score = 0;
+    this._lives = STARTING_LIVES;
+    this._nextLifeScore = EXTRA_LIFE_THRESHOLD;
+    this._eggsCollectedThisWave = 0;
+    this._playerDiedThisWave = false;
+    this._gameOverActive = false;
+
+    // Wave system
+    this._waveNumber = 1;
+    this._waveTextTimer = 0;
+    this._waveBannerActive = false;
+    this._waveState = 'SPAWNING'; // SPAWNING, PLAYING, TRANSITION
+    this._spawnQueue = [];
+    this._spawnTimer = 0;
+    this._waveTransitionTimer = 0;
+
+    // HUD
+    this._hudUI = null;
+    this._hudScoreText = null;
+    this._hudLivesText = null;
+    this._hudWaveText = null;
+    this._hudBannerText = null;
 
     // Ortho bounds (Y computed from aspect ratio)
     this._orthoBottom = 0;
@@ -235,6 +289,9 @@ export class Level1Scene {
     this._inputReader.attach(this.scene);
     this.scene.attachControl();
 
+    // HUD
+    this._createHUD();
+
     // Animation callback
     this.scene.onBeforeRenderObservable.add(() => {
       const dt = engine.getDeltaTime() / 1000;
@@ -251,6 +308,11 @@ export class Level1Scene {
       this._skyBackground.dispose();
       this._skyBackground = null;
     }
+    this._hideEscapeOverlay();
+    if (this._hudUI) {
+      this._hudUI.dispose();
+      this._hudUI = null;
+    }
     // Dispose materialization particles
     for (const char of this._chars) {
       if (char && char.materializeParticles) {
@@ -259,7 +321,7 @@ export class Level1Scene {
         char.materializeParticles = null;
       }
     }
-    this._chars = [null, null];
+    this._chars = [];
     // Dispose eggs
     for (const egg of this._eggs) {
       if (egg.rig.root) {
@@ -512,14 +574,11 @@ export class Level1Scene {
 
   _createCharacters() {
     const VS = VOXEL_SIZE;
+    this._chars = [];
 
-    // Randomly assign 2 of 4 spawn points
-    const shuffled = [...SPAWN_POINTS].sort(() => Math.random() - 0.5);
-    const playerSpawn = shuffled[0];
-    const evilSpawn = shuffled[1];
-
+    // Player spawn — pick a random ground spawn
+    const playerSpawn = SPAWN_POINTS[Math.floor(Math.random() * SPAWN_POINTS.length)];
     const playerPlatform = this._platforms.find(p => p.id === playerSpawn.platformId);
-    const evilPlatform = this._platforms.find(p => p.id === evilSpawn.platformId);
 
     // --- Player character (knight on ostrich) ---
     const player = createCharState('updown');
@@ -536,36 +595,159 @@ export class Level1Scene {
     if (player.birdRig.root) {
       player.birdRig.root.position = new Vector3(player.positionX, player.positionY, 0);
     }
-    this._chars[0] = player;
+    this._chars.push(player);
 
     // Start materialization
     this._setCharAlpha(player, 0);
     this._createMaterializeParticles(player);
 
-    // --- Evil character (evil knight on buzzard) ---
-    this._buildEvilCharacter(VS, evilSpawn, evilPlatform);
+    // Start wave 1
+    this._startWave(this._waveNumber);
   }
 
-  _buildEvilCharacter(VS, spawn, platform) {
-    const evil = createCharState('sweep');
+  _spawnEnemy(enemyType, spawnX, spawnY) {
+    const VS = VOXEL_SIZE;
     const notLit = true;
+    const paletteIndex = enemyType; // 0=Bounder, 1=Hunter, 2=Shadow Lord maps to palette indices
+    const evil = createCharState('sweep');
+
     evil.birdRig = buildRig(this.scene, buzzardModel, VS, notLit);
-    const evilPalette = buildEvilKnightPalette(this._evilTypeIndex);
+    const evilPalette = buildEvilKnightPalette(paletteIndex);
     evil.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
     evil.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
     this._assembleCharacter(evil, VS);
 
-    evil.positionX = spawn.x;
-    evil.positionY = platform.top + FEET_OFFSET;
-    evil.currentPlatform = platform;
+    evil.positionX = spawnX;
+    evil.positionY = spawnY;
+    evil.playerState = 'AIRBORNE';
+    evil.currentPlatform = null;
+    evil.enemyType = enemyType;
+    evil.ai = new EnemyAI(enemyType);
+
     if (evil.birdRig.root) {
       evil.birdRig.root.position = new Vector3(evil.positionX, evil.positionY, 0);
     }
-    this._chars[1] = evil;
+
+    this._chars.push(evil);
 
     // Start materialization
     this._setCharAlpha(evil, 0);
     this._createMaterializeParticles(evil);
+  }
+
+  // ---- Wave system ----
+
+  _startWave(waveNumber) {
+    this._waveNumber = waveNumber;
+    this._eggsCollectedThisWave = 0;
+    this._playerDiedThisWave = false;
+    this._waveState = 'SPAWNING';
+
+    const composition = getWaveComposition(waveNumber);
+
+    // Build a spawn queue: list of enemy types to spawn in groups of 2
+    this._spawnQueue = [];
+    for (let i = 0; i < composition.bounders; i++) {
+      this._spawnQueue.push(ENEMY_TYPE_BOUNDER);
+    }
+    for (let i = 0; i < composition.hunters; i++) {
+      this._spawnQueue.push(ENEMY_TYPE_HUNTER);
+    }
+    for (let i = 0; i < composition.shadowLords; i++) {
+      this._spawnQueue.push(ENEMY_TYPE_SHADOW_LORD);
+    }
+
+    // Shuffle the queue so types are mixed
+    for (let i = this._spawnQueue.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const temp = this._spawnQueue[i];
+      this._spawnQueue[i] = this._spawnQueue[j];
+      this._spawnQueue[j] = temp;
+    }
+
+    // Spawn first group immediately
+    this._spawnTimer = 0;
+    this._spawnNextGroup();
+
+    // Show wave banner
+    this._showBanner('WAVE ' + waveNumber, WAVE_TRANSITION_DELAY, null);
+  }
+
+  _spawnNextGroup() {
+    if (this._spawnQueue.length === 0) {
+      this._waveState = 'PLAYING';
+      return;
+    }
+
+    // Spawn up to 2 enemies from the queue
+    const spawnCount = Math.min(2, this._spawnQueue.length);
+    const shuffledSpawns = [...ENEMY_SPAWN_POINTS].sort(() => Math.random() - 0.5);
+
+    for (let i = 0; i < spawnCount; i++) {
+      const enemyType = this._spawnQueue.shift();
+      const sp = shuffledSpawns[i % shuffledSpawns.length];
+      this._spawnEnemy(enemyType, sp.x, sp.y);
+    }
+  }
+
+  _updateWaveSystem(dt) {
+    if (this._gameOverActive) {
+      return;
+    }
+
+    // Handle spawn timing
+    if (this._waveState === 'SPAWNING' && this._spawnQueue.length > 0) {
+      this._spawnTimer += dt;
+      if (this._spawnTimer >= SPAWN_GROUP_INTERVAL) {
+        this._spawnTimer = 0;
+        this._spawnNextGroup();
+      }
+    }
+
+    // Check wave completion
+    if (this._waveState === 'PLAYING' || (this._waveState === 'SPAWNING' && this._spawnQueue.length === 0)) {
+      this._waveState = 'PLAYING';
+
+      // Count living enemies (indices > 0)
+      let livingEnemies = 0;
+      for (let i = 1; i < this._chars.length; i++) {
+        const char = this._chars[i];
+        if (char && !char.dead) {
+          livingEnemies++;
+        }
+      }
+
+      // Count eggs that could still hatch (enemy eggs only)
+      let activeEggs = 0;
+      for (const egg of this._eggs) {
+        if (egg.enemyType >= 0) {
+          activeEggs++;
+        }
+      }
+
+      if (livingEnemies === 0 && activeEggs === 0) {
+        // Wave complete!
+        this._waveState = 'TRANSITION';
+        this._waveTransitionTimer = WAVE_TRANSITION_DELAY;
+
+        // Survival bonus if player didn't die
+        if (!this._playerDiedThisWave) {
+          this._addScore(POINTS_SURVIVAL_WAVE);
+          this._showBanner('SURVIVAL BONUS!', 1.5, null);
+        }
+
+        // Clean up dead enemy slots
+        this._chars = [this._chars[0]];
+      }
+    }
+
+    // Handle wave transition delay
+    if (this._waveState === 'TRANSITION') {
+      this._waveTransitionTimer -= dt;
+      if (this._waveTransitionTimer <= 0) {
+        this._startWave(this._waveNumber + 1);
+      }
+    }
   }
 
   // ---- Materialization ----
@@ -808,7 +990,12 @@ export class Level1Scene {
 
     const input = this._inputReader
       ? this._inputReader.sample()
-      : { left: false, right: false, flap: false, switchChar: false, cycleType: false };
+      : { left: false, right: false, flap: false, escape: false };
+
+    // Escape overlay toggle
+    if (input.escape) {
+      this._toggleEscapeOverlay();
+    }
 
     // Sky background update
     if (this._skyBackground) {
@@ -819,18 +1006,8 @@ export class Level1Scene {
     // Lava animation
     this._animateLava(dt);
 
-    // Toggle active character
-    if (input.switchChar) {
-      this._activeCharIdx = this._activeCharIdx === 0 ? 1 : 0;
-    }
-
-    // Cycle evil knight type
-    if (input.cycleType) {
-      this._cycleEvilType();
-    }
-
     // Update each character
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < this._chars.length; i++) {
       const char = this._chars[i];
       if (!char) {
         continue;
@@ -838,9 +1015,11 @@ export class Level1Scene {
 
       // Respawn timer for dead characters
       if (char.dead) {
-        char.respawnTimer -= dt;
-        if (char.respawnTimer <= 0) {
-          this._respawnCharacter(char, i);
+        if (!this._gameOverActive) {
+          char.respawnTimer -= dt;
+          if (char.respawnTimer <= 0) {
+            this._respawnCharacter(char, i);
+          }
         }
         continue;
       }
@@ -849,8 +1028,8 @@ export class Level1Scene {
       this._updateMaterialization(dt, char);
 
       if (char.materializing) {
-        // Quick-end: any input from the active character accelerates materialization
-        if (i === this._activeCharIdx && !char.materializeQuickEnd) {
+        // Quick-end: any input from player accelerates materialization
+        if (i === 0 && !char.materializeQuickEnd) {
           if (input.left || input.right || input.flap) {
             char.materializeQuickEnd = true;
             char.materializeDuration = char.materializeTimer + MATERIALIZE_QUICK_DURATION;
@@ -862,7 +1041,7 @@ export class Level1Scene {
       // Invincibility timer
       if (char.invincible) {
         char.invincibleTimer -= dt;
-        const hasInput = i === this._activeCharIdx &&
+        const hasInput = i === 0 &&
           (input.left || input.right || input.flap);
         if (hasInput || char.invincibleTimer <= 0) {
           char.invincible = false;
@@ -879,8 +1058,14 @@ export class Level1Scene {
       char.prevPositionX = char.positionX;
       char.prevPositionY = char.positionY;
 
-      if (i === this._activeCharIdx) {
+      if (i === 0) {
         this._updateCharWithInput(dt, char, input);
+      } else if (char.ai) {
+        // AI-controlled enemy
+        const player = this._chars[0];
+        const playerTarget = (player && !player.dead && !player.materializing) ? player : null;
+        const aiInput = char.ai.decide(char, playerTarget, this._orthoBottom, dt);
+        this._updateCharWithInput(dt, char, aiInput);
       } else {
         this._updateCharIdle(dt, char);
       }
@@ -900,6 +1085,13 @@ export class Level1Scene {
 
     // Update eggs
     this._updateEggs(dt);
+
+    // Wave system
+    this._updateWaveSystem(dt);
+
+    // HUD + banner
+    this._updateHUD();
+    this._updateBanner(dt);
   }
 
   _updateCharWithInput(dt, char, input) {
@@ -1092,8 +1284,17 @@ export class Level1Scene {
   }
 
   _checkJoustCollisions() {
-    const charA = this._chars[0];
-    const charB = this._chars[1];
+    // Check every unique pair of characters
+    for (let a = 0; a < this._chars.length; a++) {
+      for (let b = a + 1; b < this._chars.length; b++) {
+        this._checkJoustPair(a, b);
+      }
+    }
+  }
+
+  _checkJoustPair(idxA, idxB) {
+    const charA = this._chars[idxA];
+    const charB = this._chars[idxB];
 
     if (!charA || !charB) {
       return;
@@ -1127,21 +1328,18 @@ export class Level1Scene {
     let collided = !(aRight < bLeft || aLeft > bRight || aHead < bFeet || aFeet > bHead);
 
     // Crossing detection: catch tunneling when characters pass through each
-    // other in a single frame. If their relative X flipped sign and neither
-    // wrapped around the screen, they must have crossed paths.
+    // other in a single frame.
     if (!collided) {
       const prevRelX = charA.prevPositionX - charB.prevPositionX;
       const currRelX = charA.positionX - charB.positionX;
       const signFlipped = (prevRelX > 0 && currRelX < 0) || (prevRelX < 0 && currRelX > 0);
 
       if (signFlipped) {
-        // Ignore screen-wrap false positives (large position jump)
         const aDeltaX = Math.abs(charA.positionX - charA.prevPositionX);
         const bDeltaX = Math.abs(charB.positionX - charB.prevPositionX);
         const noWrap = aDeltaX < ORTHO_WIDTH / 2 && bDeltaX < ORTHO_WIDTH / 2;
 
         if (noWrap) {
-          // Verify Y ranges overlapped during the crossing
           const aMinY = Math.min(charA.positionY, charA.prevPositionY) - FEET_OFFSET;
           const aMaxY = Math.max(charA.positionY, charA.prevPositionY) + HEAD_OFFSET;
           const bMinY = Math.min(charB.positionY, charB.prevPositionY) - FEET_OFFSET;
@@ -1157,12 +1355,10 @@ export class Level1Scene {
 
     // Collision detected — compare heights
     const heightDiff = charA.positionY - charB.positionY;
-    // Direction A should be pushed: left if A is left of B, right if A is right of B
     const pushA = charA.positionX <= charB.positionX ? -1 : 1;
 
     if (Math.abs(heightDiff) < JOUST_HEIGHT_DEADZONE) {
       // Deadzone — both bounce apart, no winner
-      // Physically separate so they don't overlap next frame
       const overlap = CHAR_HALF_WIDTH * 2 - Math.abs(charA.positionX - charB.positionX);
       if (overlap > 0) {
         charA.positionX += pushA * (overlap / 2 + 0.01);
@@ -1171,11 +1367,9 @@ export class Level1Scene {
 
       const bothGrounded = charA.playerState === 'GROUNDED' && charB.playerState === 'GROUNDED';
       if (bothGrounded) {
-        // Ground bump — horizontal push only, stay grounded
         charA.velocityX = pushA * JOUST_KNOCKBACK_X * 0.5;
         charB.velocityX = -pushA * JOUST_KNOCKBACK_X * 0.5;
       } else {
-        // Air bump — full knockback with vertical impulse
         charA.velocityX = pushA * JOUST_KNOCKBACK_X;
         charA.velocityY = JOUST_KNOCKBACK_Y;
         charA.playerState = 'AIRBORNE';
@@ -1187,27 +1381,23 @@ export class Level1Scene {
         charB.currentPlatform = null;
       }
 
-      // Turn both to face away from each other
       this._startTurn(charA, pushA);
       this._startTurn(charB, -pushA);
 
-      // Cooldown prevents re-triggering while separating
       charA.joustCooldown = 0.15;
       charB.joustCooldown = 0.15;
     } else {
       // Higher character wins
       const winner = heightDiff > 0 ? charA : charB;
       const loser = heightDiff > 0 ? charB : charA;
-      const loserIdx = heightDiff > 0 ? 1 : 0;
+      const loserIdx = heightDiff > 0 ? idxB : idxA;
       const loserKnockDir = winner.positionX < loser.positionX ? 1 : -1;
 
-      // Winner gets knockback upward
       winner.velocityY = JOUST_KNOCKBACK_Y;
       winner.velocityX = loserKnockDir * -JOUST_KNOCKBACK_X * 0.3;
       winner.playerState = 'AIRBORNE';
       winner.currentPlatform = null;
 
-      // Loser dies
       this._killCharacter(loser, loserIdx, loserKnockDir);
     }
   }
@@ -1499,91 +1689,234 @@ export class Level1Scene {
     }
   }
 
-  // ---- Evil type cycling ----
+  // ---- Escape overlay ----
 
-  _cycleEvilType() {
-    this._evilTypeIndex = (this._evilTypeIndex + 1) % 3;
+  _toggleEscapeOverlay() {
+    if (this._escapeVisible) {
+      this._hideEscapeOverlay();
+    } else {
+      this._showEscapeOverlay();
+    }
+  }
 
-    const evil = this._chars[1];
-    if (!evil) {
+  _showEscapeOverlay() {
+    if (this._escapeVisible || !this.scene) {
       return;
     }
+    this._escapeVisible = true;
 
-    // Save current state
-    const savedState = {
-      positionX: evil.positionX,
-      positionY: evil.positionY,
-      velocityX: evil.velocityX,
-      velocityY: evil.velocityY,
-      playerState: evil.playerState,
-      facingDir: evil.facingDir,
-      isTurning: evil.isTurning,
-      turnTimer: evil.turnTimer,
-      turnFrom: evil.turnFrom,
-      turnTo: evil.turnTo,
-      stridePhase: evil.stridePhase,
-      isFlapping: evil.isFlapping,
-      flapTimer: evil.flapTimer,
-      currentPlatform: evil.currentPlatform,
-      materializing: evil.materializing,
-      materializeTimer: evil.materializeTimer,
-      materializeDuration: evil.materializeDuration,
-      materializeQuickEnd: evil.materializeQuickEnd,
-    };
+    // Lazy-import GUI to avoid bundling when not needed
+    import('@babylonjs/gui/2D/advancedDynamicTexture').then(({ AdvancedDynamicTexture }) => {
+      import('@babylonjs/gui/2D/controls').then(({ Rectangle, TextBlock, StackPanel, Button }) => {
+        if (!this._escapeVisible || !this.scene) {
+          return;
+        }
 
-    // Dispose old evil character meshes
-    this._disposeCharMeshes(evil);
+        const ui = AdvancedDynamicTexture.CreateFullscreenUI('escapeUI', true, this.scene);
+        this._escapeOverlay = ui;
 
-    // Rebuild with new palette
-    const VS = VOXEL_SIZE;
-    const notLit = true;
-    const newEvil = createCharState('sweep');
-    newEvil.birdRig = buildRig(this.scene, buzzardModel, VS, notLit);
-    const evilPalette = buildEvilKnightPalette(this._evilTypeIndex);
-    newEvil.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
-    newEvil.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
-    this._assembleCharacter(newEvil, VS);
+        // Semi-transparent background
+        const bg = new Rectangle('escapeBg');
+        bg.width = 1;
+        bg.height = 1;
+        bg.background = 'rgba(0, 0, 0, 0.6)';
+        bg.thickness = 0;
+        ui.addControl(bg);
 
-    // Restore state
-    newEvil.positionX = savedState.positionX;
-    newEvil.positionY = savedState.positionY;
-    newEvil.velocityX = savedState.velocityX;
-    newEvil.velocityY = savedState.velocityY;
-    newEvil.playerState = savedState.playerState;
-    newEvil.facingDir = savedState.facingDir;
-    newEvil.isTurning = savedState.isTurning;
-    newEvil.turnTimer = savedState.turnTimer;
-    newEvil.turnFrom = savedState.turnFrom;
-    newEvil.turnTo = savedState.turnTo;
-    newEvil.stridePhase = savedState.stridePhase;
-    newEvil.isFlapping = savedState.isFlapping;
-    newEvil.flapTimer = savedState.flapTimer;
-    newEvil.currentPlatform = savedState.currentPlatform;
-    newEvil.materializing = savedState.materializing;
-    newEvil.materializeTimer = savedState.materializeTimer;
-    newEvil.materializeDuration = savedState.materializeDuration;
-    newEvil.materializeQuickEnd = savedState.materializeQuickEnd;
+        // Center panel
+        const panel = new StackPanel('escapePanel');
+        panel.width = '300px';
+        panel.verticalAlignment = 1; // center
+        bg.addControl(panel);
 
-    // Apply position and facing to new rig
-    if (newEvil.birdRig.root) {
-      newEvil.birdRig.root.position = new Vector3(newEvil.positionX, newEvil.positionY, 0);
-      if (newEvil.facingDir === -1) {
-        newEvil.birdRig.root.rotation.y = Math.PI;
-      }
+        // Title
+        const title = new TextBlock('escapeTitle', 'PAUSED');
+        title.color = '#FFD700';
+        title.fontSize = 36;
+        title.fontFamily = 'monospace';
+        title.height = '60px';
+        panel.addControl(title);
+
+        // Resume button
+        const resumeBtn = Button.CreateSimpleButton('resumeBtn', 'Resume');
+        resumeBtn.width = '200px';
+        resumeBtn.height = '50px';
+        resumeBtn.color = 'white';
+        resumeBtn.background = '#444';
+        resumeBtn.cornerRadius = 8;
+        resumeBtn.fontSize = 20;
+        resumeBtn.fontFamily = 'monospace';
+        resumeBtn.paddingTop = '10px';
+        resumeBtn.onPointerUpObservable.add(() => {
+          this._hideEscapeOverlay();
+        });
+        panel.addControl(resumeBtn);
+
+        // Quit button
+        const quitBtn = Button.CreateSimpleButton('quitBtn', 'Quit to Menu');
+        quitBtn.width = '200px';
+        quitBtn.height = '50px';
+        quitBtn.color = 'white';
+        quitBtn.background = '#822';
+        quitBtn.cornerRadius = 8;
+        quitBtn.fontSize = 20;
+        quitBtn.fontFamily = 'monospace';
+        quitBtn.paddingTop = '10px';
+        quitBtn.onPointerUpObservable.add(() => {
+          this._hideEscapeOverlay();
+          if (this._onQuitToMenu) {
+            this._onQuitToMenu();
+          }
+        });
+        panel.addControl(quitBtn);
+      });
+    });
+  }
+
+  _hideEscapeOverlay() {
+    this._escapeVisible = false;
+    if (this._escapeOverlay) {
+      this._escapeOverlay.dispose();
+      this._escapeOverlay = null;
+    }
+  }
+
+  // ---- HUD ----
+
+  _createHUD() {
+    import('@babylonjs/gui/2D/advancedDynamicTexture').then(({ AdvancedDynamicTexture }) => {
+      import('@babylonjs/gui/2D/controls').then(({ TextBlock }) => {
+        if (!this.scene) {
+          return;
+        }
+
+        const ui = AdvancedDynamicTexture.CreateFullscreenUI('hud', true, this.scene);
+        this._hudUI = ui;
+
+        // Score — top right
+        const scoreText = new TextBlock('score', '000000');
+        scoreText.color = '#FFFFFF';
+        scoreText.fontSize = 28;
+        scoreText.fontFamily = 'monospace';
+        scoreText.textHorizontalAlignment = 1; // right
+        scoreText.textVerticalAlignment = 0; // top
+        scoreText.top = '10px';
+        scoreText.left = '-15px';
+        scoreText.horizontalAlignment = 1; // right
+        scoreText.verticalAlignment = 0; // top
+        ui.addControl(scoreText);
+        this._hudScoreText = scoreText;
+
+        // Lives — top left
+        const livesText = new TextBlock('lives', 'x' + this._lives);
+        livesText.color = '#FFFFFF';
+        livesText.fontSize = 28;
+        livesText.fontFamily = 'monospace';
+        livesText.textHorizontalAlignment = 0; // left
+        livesText.textVerticalAlignment = 0; // top
+        livesText.top = '10px';
+        livesText.left = '15px';
+        livesText.horizontalAlignment = 0; // left
+        livesText.verticalAlignment = 0; // top
+        ui.addControl(livesText);
+        this._hudLivesText = livesText;
+
+        // Wave — top center
+        const waveText = new TextBlock('wave', 'WAVE 1');
+        waveText.color = '#FFD700';
+        waveText.fontSize = 22;
+        waveText.fontFamily = 'monospace';
+        waveText.textHorizontalAlignment = 2; // center
+        waveText.textVerticalAlignment = 0; // top
+        waveText.top = '10px';
+        waveText.horizontalAlignment = 2; // center
+        waveText.verticalAlignment = 0; // top
+        ui.addControl(waveText);
+        this._hudWaveText = waveText;
+
+        // Center banner (for WAVE X, GAME OVER text)
+        const banner = new TextBlock('banner', '');
+        banner.color = '#FFD700';
+        banner.fontSize = 48;
+        banner.fontFamily = 'monospace';
+        banner.textHorizontalAlignment = 2;
+        banner.textVerticalAlignment = 2;
+        banner.alpha = 0;
+        ui.addControl(banner);
+        this._hudBannerText = banner;
+      });
+    });
+  }
+
+  _updateHUD() {
+    if (this._hudScoreText) {
+      this._hudScoreText.text = String(this._score).padStart(6, '0');
+    }
+    if (this._hudLivesText) {
+      this._hudLivesText.text = 'x' + this._lives;
+    }
+    if (this._hudWaveText) {
+      this._hudWaveText.text = 'WAVE ' + this._waveNumber;
+    }
+  }
+
+  _addScore(points) {
+    if (this._gameOverActive) {
+      return;
+    }
+    this._score += points;
+
+    // Extra life check
+    if (this._score >= this._nextLifeScore) {
+      this._lives += 1;
+      this._nextLifeScore += EXTRA_LIFE_THRESHOLD;
     }
 
-    // Handle alpha if still materializing
-    if (newEvil.materializing) {
-      const progress = Math.min(newEvil.materializeTimer / newEvil.materializeDuration, 1.0);
-      if (progress < 0.8) {
-        this._setCharAlpha(newEvil, 0);
-      } else {
-        this._setCharAlpha(newEvil, (progress - 0.8) / 0.2);
-      }
-      this._createMaterializeParticles(newEvil);
-    }
+    this._updateHUD();
+  }
 
-    this._chars[1] = newEvil;
+  _showBanner(text, duration, callback) {
+    if (!this._hudBannerText) {
+      if (callback) {
+        setTimeout(callback, duration * 1000);
+      }
+      return;
+    }
+    this._hudBannerText.text = text;
+    this._hudBannerText.alpha = 1;
+    this._waveBannerActive = true;
+    this._waveTextTimer = duration;
+    this._bannerCallback = callback || null;
+  }
+
+  _updateBanner(dt) {
+    if (!this._waveBannerActive) {
+      return;
+    }
+    this._waveTextTimer -= dt;
+    // Fade out in last 0.5s
+    if (this._waveTextTimer < 0.5 && this._hudBannerText) {
+      this._hudBannerText.alpha = Math.max(0, this._waveTextTimer / 0.5);
+    }
+    if (this._waveTextTimer <= 0) {
+      this._waveBannerActive = false;
+      if (this._hudBannerText) {
+        this._hudBannerText.alpha = 0;
+      }
+      if (this._bannerCallback) {
+        this._bannerCallback();
+        this._bannerCallback = null;
+      }
+    }
+  }
+
+  _gameOver() {
+    this._gameOverActive = true;
+    this._showBanner('GAME OVER', 3, () => {
+      if (this._onQuitToMenu) {
+        this._onQuitToMenu();
+      }
+    });
   }
 
   // ---- Death / Explosion / Egg ----
@@ -1593,7 +1926,28 @@ export class Level1Scene {
     char.respawnTimer = RESPAWN_DELAY;
 
     // Spawn egg at character position with their velocity
-    this._spawnEgg(char.positionX, char.positionY, char.velocityX + knockDir * 2, char.velocityY);
+    const enemyType = charIdx > 0 ? (char.enemyType !== undefined ? char.enemyType : ENEMY_TYPE_BOUNDER) : -1;
+    this._spawnEgg(char.positionX, char.positionY, char.velocityX + knockDir * 2, char.velocityY, enemyType);
+
+    // Award kill points to player when they kill an enemy
+    if (charIdx > 0) {
+      this._addScore(getKillPoints(enemyType));
+    }
+
+    // Player death: decrement lives
+    if (charIdx === 0) {
+      this._lives -= 1;
+      this._playerDiedThisWave = true;
+      if (this._lives <= 0) {
+        this._lives = 0;
+        // Explode but don't respawn — game over
+        this._explodeCharacter(char, charIdx);
+        this._disposeCharMeshes(char);
+        this._updateHUD();
+        this._gameOver();
+        return;
+      }
+    }
 
     // Explode character into voxel debris (cosmetic only)
     this._explodeCharacter(char, charIdx);
@@ -1606,6 +1960,21 @@ export class Level1Scene {
     char.dead = true;
     char.respawnTimer = RESPAWN_DELAY;
 
+    // Player death: decrement lives
+    if (charIdx === 0) {
+      this._lives -= 1;
+      this._playerDiedThisWave = true;
+      if (this._lives <= 0) {
+        this._lives = 0;
+        this._explodeCharacter(char, charIdx);
+        this._spawnLavaBurst();
+        this._disposeCharMeshes(char);
+        this._updateHUD();
+        this._gameOver();
+        return;
+      }
+    }
+
     // Explode into lava — no egg
     this._explodeCharacter(char, charIdx);
     this._spawnLavaBurst();
@@ -1615,6 +1984,11 @@ export class Level1Scene {
   }
 
   _respawnCharacter(char, charIdx) {
+    // Enemies don't respawn — they become eggs/hatch via wave system
+    if (charIdx > 0) {
+      return;
+    }
+
     // Pick a random spawn point not occupied by another character
     const occupiedFilter = 1.5;
     const available = SPAWN_POINTS.filter(sp => {
@@ -1639,25 +2013,15 @@ export class Level1Scene {
 
     const platform = this._platforms.find(p => p.id === spawn.platformId);
 
-    // Rebuild character meshes
+    // Rebuild player character meshes
     const VS = VOXEL_SIZE;
     const notLit = true;
 
-    if (charIdx === 0) {
-      // Player (ostrich + knight)
-      char.wingMode = 'updown';
-      char.birdRig = buildRig(this.scene, ostrichModel, VS, notLit);
-      const mergedPalette = buildKnightPalette(this._paletteIndex);
-      char.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS, notLit);
-      char.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
-    } else {
-      // Evil (buzzard + evil knight)
-      char.wingMode = 'sweep';
-      char.birdRig = buildRig(this.scene, buzzardModel, VS, notLit);
-      const evilPalette = buildEvilKnightPalette(this._evilTypeIndex);
-      char.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
-      char.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
-    }
+    char.wingMode = 'updown';
+    char.birdRig = buildRig(this.scene, ostrichModel, VS, notLit);
+    const mergedPalette = buildKnightPalette(this._paletteIndex);
+    char.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS, notLit);
+    char.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
 
     this._assembleCharacter(char, VS);
 
@@ -1703,7 +2067,8 @@ export class Level1Scene {
       knightPalette = buildKnightPalette(this._paletteIndex);
     } else {
       knightModelDef = evilKnightModel;
-      knightPalette = buildEvilKnightPalette(this._evilTypeIndex);
+      const paletteIdx = char.enemyType !== undefined ? char.enemyType : ENEMY_TYPE_BOUNDER;
+      knightPalette = buildEvilKnightPalette(paletteIdx);
     }
 
     const rigSources = [
@@ -1829,7 +2194,7 @@ export class Level1Scene {
     });
   }
 
-  _spawnEgg(x, y, vx, vy) {
+  _spawnEgg(x, y, vx, vy, enemyType) {
     const VS = VOXEL_SIZE;
     const rig = buildRig(this.scene, eggModel, VS, true);
 
@@ -1845,85 +2210,280 @@ export class Level1Scene {
       rig,
       onPlatform: false,
       bounceCount: 0,
+      enemyType: enemyType !== undefined ? enemyType : ENEMY_TYPE_BOUNDER,
+      // Hatching state
+      hatchState: 'EGG_FALLING',
+      hatchTimer: 0,
     });
   }
 
   _updateEggs(dt) {
     const lavaY = this._orthoBottom + 1.0;
+    const player = this._chars[0];
 
     for (let i = this._eggs.length - 1; i >= 0; i--) {
       const egg = this._eggs[i];
 
-      // Gravity
-      egg.velocityY -= GRAVITY * dt;
-      if (egg.velocityY < -TERMINAL_VELOCITY) {
-        egg.velocityY = -TERMINAL_VELOCITY;
-      }
-
-      // Friction
-      if (egg.onPlatform) {
-        if (egg.velocityX > 0) {
-          egg.velocityX = Math.max(0, egg.velocityX - FRICTION * dt);
-        } else if (egg.velocityX < 0) {
-          egg.velocityX = Math.min(0, egg.velocityX + FRICTION * dt);
+      // Only apply physics to eggs in falling/platform states
+      if (egg.hatchState === 'EGG_FALLING' || egg.hatchState === 'EGG_ON_PLATFORM' || egg.hatchState === 'EGG_WOBBLING') {
+        // Gravity
+        egg.velocityY -= GRAVITY * dt;
+        if (egg.velocityY < -TERMINAL_VELOCITY) {
+          egg.velocityY = -TERMINAL_VELOCITY;
         }
-      }
 
-      egg.positionX += egg.velocityX * dt;
-      egg.positionY += egg.velocityY * dt;
+        // Friction
+        if (egg.onPlatform) {
+          if (egg.velocityX > 0) {
+            egg.velocityX = Math.max(0, egg.velocityX - FRICTION * dt);
+          } else if (egg.velocityX < 0) {
+            egg.velocityX = Math.min(0, egg.velocityX + FRICTION * dt);
+          }
+        }
 
-      // Platform collision for egg
-      const eggRadius = 2 * VOXEL_SIZE;
-      const eggFeet = egg.positionY - eggRadius;
-      const prevEggFeet = eggFeet - egg.velocityY * dt;
-      egg.onPlatform = false;
+        egg.positionX += egg.velocityX * dt;
+        egg.positionY += egg.velocityY * dt;
 
-      if (egg.velocityY <= 0) {
-        for (const plat of this._platforms) {
-          if (egg.positionX + eggRadius < plat.left || egg.positionX - eggRadius > plat.right) {
+        // Platform collision for egg
+        const eggRadius = 2 * VOXEL_SIZE;
+        const eggFeet = egg.positionY - eggRadius;
+        const prevEggFeet = eggFeet - egg.velocityY * dt;
+        const wasOnPlatform = egg.onPlatform;
+        egg.onPlatform = false;
+
+        if (egg.velocityY <= 0) {
+          for (const plat of this._platforms) {
+            if (egg.positionX + eggRadius < plat.left || egg.positionX - eggRadius > plat.right) {
+              continue;
+            }
+            if (prevEggFeet >= plat.top && eggFeet < plat.top) {
+              egg.positionY = plat.top + eggRadius;
+              if (Math.abs(egg.velocityY) > 0.5) {
+                egg.velocityY *= -0.5;
+                egg.bounceCount += 1;
+              } else {
+                egg.velocityY = 0;
+                egg.onPlatform = true;
+                if (egg.hatchState === 'EGG_FALLING') {
+                  egg.hatchState = 'EGG_ON_PLATFORM';
+                  egg.hatchTimer = 0;
+                }
+              }
+              break;
+            }
+          }
+        }
+
+        // Keep platform state for already-landed eggs
+        if (wasOnPlatform && !egg.onPlatform && egg.velocityY === 0) {
+          egg.onPlatform = true;
+        }
+
+        // Screen wrap
+        if (egg.positionX > ORTHO_RIGHT + eggRadius) {
+          egg.positionX = ORTHO_LEFT - eggRadius;
+        } else if (egg.positionX < ORTHO_LEFT - eggRadius) {
+          egg.positionX = ORTHO_RIGHT + eggRadius;
+        }
+
+        // Destroy if fallen into lava — with explosion
+        if (egg.positionY < lavaY) {
+          this._spawnLavaBurst();
+          this._disposeEgg(egg);
+          this._eggs.splice(i, 1);
+          continue;
+        }
+
+        // Player-egg collection check
+        if (player && !player.dead && !player.materializing) {
+          const pLeft = player.positionX - CHAR_HALF_WIDTH;
+          const pRight = player.positionX + CHAR_HALF_WIDTH;
+          const pFeet = player.positionY - FEET_OFFSET;
+          const pHead = player.positionY + HEAD_OFFSET;
+
+          const eLeft = egg.positionX - eggRadius;
+          const eRight = egg.positionX + eggRadius;
+          const eBottom = egg.positionY - eggRadius;
+          const eTop = egg.positionY + eggRadius;
+
+          if (pRight > eLeft && pLeft < eRight && pHead > eBottom && pFeet < eTop) {
+            // Collect the egg
+            const midAir = !egg.onPlatform;
+            const basePoints = getEggPoints(this._eggsCollectedThisWave);
+            const bonus = midAir ? POINTS_EGG_MID_AIR : 0;
+            this._addScore(basePoints + bonus);
+            this._eggsCollectedThisWave += 1;
+
+            // Spawn collection effect
+            this._spawnEggCollectEffect(egg.positionX, egg.positionY, player);
+
+            this._disposeEgg(egg);
+            this._eggs.splice(i, 1);
             continue;
           }
-          if (prevEggFeet >= plat.top && eggFeet < plat.top) {
-            egg.positionY = plat.top + eggRadius;
-            if (Math.abs(egg.velocityY) > 0.5) {
-              egg.velocityY *= -0.5;
-              egg.bounceCount += 1;
-            } else {
-              egg.velocityY = 0;
-              egg.onPlatform = true;
-            }
-            break;
-          }
         }
       }
 
-      // Screen wrap
-      if (egg.positionX > ORTHO_RIGHT + eggRadius) {
-        egg.positionX = ORTHO_LEFT - eggRadius;
-      } else if (egg.positionX < ORTHO_LEFT - eggRadius) {
-        egg.positionX = ORTHO_RIGHT + eggRadius;
-      }
+      // Hatch timer for platform eggs (only enemy eggs hatch)
+      if (egg.enemyType >= 0 && (egg.hatchState === 'EGG_ON_PLATFORM' || egg.hatchState === 'EGG_WOBBLING')) {
+        egg.hatchTimer += dt;
 
-      // Destroy if fallen into lava — with explosion
-      if (egg.positionY < lavaY) {
-        this._spawnLavaBurst();
-        if (egg.rig.root) {
-          egg.rig.root.dispose();
+        // Transition to wobbling
+        if (egg.hatchState === 'EGG_ON_PLATFORM' && egg.hatchTimer >= WOBBLE_START) {
+          egg.hatchState = 'EGG_WOBBLING';
         }
-        for (const part of Object.values(egg.rig.parts)) {
-          if (part.mesh) {
-            part.mesh.dispose();
-          }
+
+        // Wobble animation
+        if (egg.hatchState === 'EGG_WOBBLING' && egg.rig && egg.rig.root) {
+          const wobbleProgress = (egg.hatchTimer - WOBBLE_START) / (HATCH_TIME - WOBBLE_START);
+          const amplitude = 0.2 + wobbleProgress * 0.5;
+          const frequency = 8 + wobbleProgress * 12;
+          egg.rig.root.rotation.z = Math.sin(egg.hatchTimer * frequency) * amplitude;
         }
-        this._eggs.splice(i, 1);
-        continue;
+
+        // Hatch!
+        if (egg.hatchTimer >= HATCH_TIME) {
+          this._hatchEgg(egg);
+          this._disposeEgg(egg);
+          this._eggs.splice(i, 1);
+          continue;
+        }
       }
 
       // Update visual position
-      if (egg.rig.root) {
+      if (egg.rig && egg.rig.root) {
         egg.rig.root.position.x = egg.positionX;
         egg.rig.root.position.y = egg.positionY;
       }
+    }
+  }
+
+  _hatchEgg(egg) {
+    // Egg explosion effect — gold particles burst outward
+    const tex = new DynamicTexture('hatchTex', 64, this.scene, false);
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 64, 64);
+    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gradient.addColorStop(0, 'rgba(255, 215, 0, 1)');
+    gradient.addColorStop(0.5, 'rgba(218, 165, 32, 0.8)');
+    gradient.addColorStop(1, 'rgba(184, 134, 11, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 64, 64);
+    tex.update(false);
+    tex.hasAlpha = true;
+
+    const ps = new ParticleSystem('hatchBurst', 30, this.scene);
+    ps.particleTexture = tex;
+    ps.emitter = new Vector3(egg.positionX, egg.positionY, 0);
+    ps.direction1 = new Vector3(-2, 1, 0);
+    ps.direction2 = new Vector3(2, 4, 0);
+    ps.gravity = new Vector3(0, -4, 0);
+    ps.minSize = 0.05;
+    ps.maxSize = 0.15;
+    ps.minLifeTime = 0.3;
+    ps.maxLifeTime = 0.6;
+    ps.manualEmitCount = 20;
+    ps.color1 = new Color4(1.0, 0.85, 0.2, 1);
+    ps.color2 = new Color4(1.0, 0.65, 0.1, 1);
+    ps.colorDead = new Color4(0.8, 0.5, 0.0, 0);
+    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
+    ps.targetStopDuration = 0.2;
+    ps.disposeOnStop = true;
+    ps.start();
+
+    // Spawn a new enemy at the egg's position
+    // Upgrade enemy type after long time on platform (optional — keep same type for now)
+    const spawnType = egg.enemyType;
+    this._spawnEnemy(spawnType, egg.positionX, egg.positionY + 0.5);
+  }
+
+  _disposeEgg(egg) {
+    if (egg.rig) {
+      if (egg.rig.root) {
+        egg.rig.root.dispose();
+      }
+      for (const part of Object.values(egg.rig.parts)) {
+        if (part.mesh) {
+          part.mesh.dispose();
+        }
+      }
+    }
+  }
+
+  _spawnEggCollectEffect(x, y, player) {
+    // Gold sparkle particles that spiral toward the player
+    const tex = new DynamicTexture('eggCollectTex', 64, this.scene, false);
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 64, 64);
+    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gradient.addColorStop(0, 'rgba(255, 230, 100, 1)');
+    gradient.addColorStop(0.5, 'rgba(255, 200, 50, 0.8)');
+    gradient.addColorStop(1, 'rgba(255, 170, 0, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 64, 64);
+    tex.update(false);
+    tex.hasAlpha = true;
+
+    const ps = new ParticleSystem('eggCollect', 40, this.scene);
+    ps.particleTexture = tex;
+    ps.emitter = new Vector3(x, y, 0);
+
+    ps.minEmitBox = new Vector3(-0.2, -0.2, 0);
+    ps.maxEmitBox = new Vector3(0.2, 0.2, 0);
+
+    // Spiral upward
+    ps.direction1 = new Vector3(-1, 1, 0);
+    ps.direction2 = new Vector3(1, 2, 0);
+    ps.gravity = new Vector3(0, 2, 0);
+
+    ps.minSize = 0.04;
+    ps.maxSize = 0.12;
+    ps.minLifeTime = 0.3;
+    ps.maxLifeTime = 0.7;
+    ps.emitRate = 60;
+    ps.manualEmitCount = 25;
+
+    ps.color1 = new Color4(1.0, 0.9, 0.4, 1);
+    ps.color2 = new Color4(1.0, 0.75, 0.2, 1);
+    ps.colorDead = new Color4(1.0, 0.6, 0.0, 0);
+
+    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
+    ps.targetStopDuration = 0.3;
+    ps.disposeOnStop = true;
+    ps.start();
+
+    // Brief golden aura on player — boost emissive
+    if (player && player.knightRig) {
+      const originalEmissives = [];
+      for (const part of Object.values(player.knightRig.parts)) {
+        if (part.mesh && part.mesh.material) {
+          originalEmissives.push({
+            mat: part.mesh.material,
+            original: part.mesh.material.emissiveColor ? part.mesh.material.emissiveColor.clone() : new Color3(0, 0, 0),
+          });
+          part.mesh.material.emissiveColor = new Color3(0.8, 0.65, 0.1);
+        }
+      }
+
+      // Fade back over 0.8s
+      let auraTime = 0;
+      const auraObs = this.scene.onBeforeRenderObservable.add(() => {
+        const frameDt = this.engine.getDeltaTime() / 1000;
+        auraTime += frameDt;
+        const t = Math.min(auraTime / 0.8, 1);
+        for (const entry of originalEmissives) {
+          if (entry.mat) {
+            entry.mat.emissiveColor = Color3.Lerp(
+              new Color3(0.8, 0.65, 0.1),
+              entry.original,
+              t
+            );
+          }
+        }
+        if (t >= 1) {
+          this.scene.onBeforeRenderObservable.remove(auraObs);
+        }
+      });
     }
   }
 

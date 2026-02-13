@@ -21,8 +21,10 @@ export class AudioManager {
    * Initialize the Babylon Audio V2 engine.
    */
   async init() {
-    this._audioEngine = await CreateAudioEngineAsync();
-    this._audioEngine.volume = 0.5;
+    if (!this._audioEngine) {
+      this._audioEngine = await CreateAudioEngineAsync();
+      this._audioEngine.volume = 0.5;
+    }
     await this._playTrack(this._trackIndex);
   }
 
