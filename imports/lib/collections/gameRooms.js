@@ -10,6 +10,12 @@ export const RoomStatus = {
   FINISHED: 'finished',
 };
 
+// Game mode constants
+export const GameMode = {
+  TEAM_PLAY: 'team',
+  PVP: 'pvp',
+};
+
 // Maximum players per room
 export const MAX_PLAYERS = 4;
 

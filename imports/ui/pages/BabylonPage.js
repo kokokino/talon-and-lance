@@ -7,6 +7,7 @@ import { Scene } from '@babylonjs/core/scene';
 import { AudioManager } from '../../game/audio/AudioManager.js';
 import { MainMenuScene } from '../../game/scenes/MainMenuScene.js';
 import { Level1Scene } from '../../game/scenes/Level1Scene.js';
+import { MultiplayerManager } from '../../game/MultiplayerManager.js';
 
 const ASPECT = 16 / 9;
 
@@ -17,6 +18,7 @@ export const BabylonPage = {
     this.canvas = null;
     this.audioManager = null;
     this._currentScene = null;
+    this._multiplayerManager = null;
     this._resizeHandler = null;
     this._paletteIndex = parseInt(localStorage.getItem('talon-lance:paletteIndex'), 10) || 0;
   },
@@ -52,6 +54,10 @@ export const BabylonPage = {
       window.removeEventListener('resize', this._resizeHandler);
       this._resizeHandler = null;
     }
+    if (this._multiplayerManager) {
+      this._multiplayerManager.destroy();
+      this._multiplayerManager = null;
+    }
     if (this._currentScene) {
       this._currentScene.dispose();
       this._currentScene = null;
@@ -85,30 +91,72 @@ export const BabylonPage = {
     this._transitionTo(new MainMenuScene({
       audioManager: this.audioManager,
       paletteIndex: this._paletteIndex,
-      onPlay: (paletteIndex) => {
+      onPlay: (paletteIndex, gameMode) => {
         this._paletteIndex = paletteIndex;
-        this._startLevel(paletteIndex);
+        this._startLevel(paletteIndex, gameMode);
       },
     }));
   },
 
-  /**
-   * Transition to a new scene instance. Disposes old scene content,
-   * creates a fresh Babylon Scene on the same Engine, and calls
-   * sceneInstance.create(scene, engine, canvas).
-   * @param {Object} sceneInstance — must have create(scene, engine, canvas) and dispose()
-   */
-  _startLevel(paletteIndex) {
-    this._transitionTo(new Level1Scene({
+  _startLevel(paletteIndex, gameMode) {
+    const levelScene = new Level1Scene({
       audioManager: this.audioManager,
       paletteIndex,
       onQuitToMenu: () => {
+        this._cleanupMultiplayer();
         this._bootMainMenu();
       },
-    }));
+      rendererOnly: !!gameMode,
+    });
+
+    this._transitionTo(levelScene);
+
+    // Start multiplayer manager if we have a game mode and user is logged in
+    if (gameMode) {
+      this._startMultiplayer(gameMode, paletteIndex, levelScene);
+    }
+  },
+
+  async _startMultiplayer(gameMode, paletteIndex, renderer) {
+    this._multiplayerManager = new MultiplayerManager({
+      gameMode,
+      paletteIndex,
+      renderer,
+      scene: this.scene,
+      engine: this.engine,
+      canvas: this.canvas,
+      orthoBottom: renderer._orthoBottom,
+      orthoTop: renderer._orthoTop,
+      onQuitToMenu: () => {
+        this._cleanupMultiplayer();
+        this._bootMainMenu();
+      },
+      onGameOver: async () => {
+        if (this._multiplayerManager) {
+          await this._multiplayerManager.submitScore();
+        }
+      },
+    });
+
+    try {
+      await this._multiplayerManager.start();
+    } catch (err) {
+      console.error('[BabylonPage] Failed to start multiplayer:', err);
+      // Fall back to solo play — Level1Scene already handles its own game loop
+    }
+  },
+
+  _cleanupMultiplayer() {
+    if (this._multiplayerManager) {
+      this._multiplayerManager.destroy();
+      this._multiplayerManager = null;
+    }
   },
 
   _transitionTo(sceneInstance) {
+    // Clean up multiplayer
+    this._cleanupMultiplayer();
+
     // Dispose old scene content
     if (this._currentScene) {
       this._currentScene.dispose();

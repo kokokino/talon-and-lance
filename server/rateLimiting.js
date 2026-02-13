@@ -33,3 +33,17 @@ DDPRateLimiter.addRule({
   name: 'rooms.setReady',
   userId: () => true
 }, 10, 10000);
+
+// Limit matchmaking: 5 calls per 10 seconds per user
+DDPRateLimiter.addRule({
+  type: 'method',
+  name: 'matchmaking.findOrCreate',
+  userId: () => true
+}, 5, 10000);
+
+// Limit high score submissions: 5 calls per 10 seconds per user
+DDPRateLimiter.addRule({
+  type: 'method',
+  name: 'highScores.submit',
+  userId: () => true
+}, 5, 10000);

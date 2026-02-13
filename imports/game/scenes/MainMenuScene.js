@@ -20,6 +20,8 @@ import { Control } from '@babylonjs/gui/2D/controls/control';
 import { Rectangle } from '@babylonjs/gui/2D/controls/rectangle';
 import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
 import { Meteor } from 'meteor/meteor';
+import { Tracker } from 'meteor/tracker';
+import { HighScores } from '../../lib/collections/highScores.js';
 
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { buildRig } from '../voxels/VoxelBuilder.js';
@@ -57,8 +59,13 @@ export class MainMenuScene {
     this.lavaUvOffset = 0;
 
     // Menu state machine
-    this._menuState = 'main';   // 'main' | 'modeSelect'
+    this._menuState = 'main';   // 'main' | 'modeSelect' | 'highScores'
     this._selectedMode = null;  // 'team' | 'pvp'
+
+    // High scores panel refs
+    this._highScoresBackdrop = null;
+    this._highScoresPanel = null;
+    this._highScoresSub = null;
     this._paletteIndex = paletteIndex;
 
     // GUI references
@@ -102,6 +109,14 @@ export class MainMenuScene {
    * Does NOT dispose Engine, audio, or the Scene itself — BabylonPage handles that.
    */
   dispose() {
+    if (this._highScoresSub) {
+      this._highScoresSub.stop();
+      this._highScoresSub = null;
+    }
+    if (this._highScoresComputation) {
+      this._highScoresComputation.stop();
+      this._highScoresComputation = null;
+    }
     if (this._gui) {
       this._gui.dispose();
       this._gui = null;
@@ -440,7 +455,7 @@ export class MainMenuScene {
   _createMainPanel(gui) {
     const backdrop = new Rectangle('mainBackdrop');
     backdrop.widthInPixels = 240;
-    backdrop.heightInPixels = 210;
+    backdrop.heightInPixels = 260;
     backdrop.cornerRadius = 10;
     backdrop.thickness = 0;
     backdrop.background = 'rgba(0, 0, 0, 0.5)';
@@ -484,6 +499,13 @@ export class MainMenuScene {
       this._showModeSelect();
     });
     panel.addControl(pvpBtn);
+
+    // High Scores
+    const scoresBtn = this._createMenuButton('High Scores', false);
+    scoresBtn.onPointerClickObservable.add(() => {
+      this._showHighScores();
+    });
+    panel.addControl(scoresBtn);
   }
 
   // ---- Mode select sub-menu ----
@@ -581,7 +603,7 @@ export class MainMenuScene {
     const playBtn = this._createMenuButton('Play', false);
     playBtn.onPointerClickObservable.add(() => {
       if (this._onPlay) {
-        this._onPlay(this._paletteIndex);
+        this._onPlay(this._paletteIndex, this._selectedMode);
       }
     });
     panel.addControl(playBtn);
@@ -595,6 +617,20 @@ export class MainMenuScene {
     this._mainPanel.isVisible = true;
     this._modeBackdrop.isVisible = false;
     this._modePanel.isVisible = false;
+    if (this._highScoresBackdrop) {
+      this._highScoresBackdrop.isVisible = false;
+    }
+    if (this._highScoresPanel) {
+      this._highScoresPanel.isVisible = false;
+    }
+    if (this._highScoresSub) {
+      this._highScoresSub.stop();
+      this._highScoresSub = null;
+    }
+    if (this._highScoresComputation) {
+      this._highScoresComputation.stop();
+      this._highScoresComputation = null;
+    }
   }
 
   _showModeSelect() {
@@ -603,6 +639,98 @@ export class MainMenuScene {
     this._mainPanel.isVisible = false;
     this._modeBackdrop.isVisible = true;
     this._modePanel.isVisible = true;
+  }
+
+  _showHighScores() {
+    this._menuState = 'highScores';
+    this._mainBackdrop.isVisible = false;
+    this._mainPanel.isVisible = false;
+    this._modeBackdrop.isVisible = false;
+    this._modePanel.isVisible = false;
+
+    if (!this._highScoresBackdrop) {
+      this._createHighScoresPanel(this._gui);
+    }
+    this._highScoresBackdrop.isVisible = true;
+    this._highScoresPanel.isVisible = true;
+
+    // Subscribe and reactively update
+    this._highScoresSub = Meteor.subscribe('highScores.top10');
+    this._highScoresComputation = Tracker.autorun(() => {
+      const scores = HighScores.find({}, { sort: { score: -1 }, limit: 10 }).fetch();
+      this._updateHighScoresDisplay(scores);
+    });
+  }
+
+  _createHighScoresPanel(gui) {
+    const backdrop = new Rectangle('scoresBackdrop');
+    backdrop.widthInPixels = 340;
+    backdrop.heightInPixels = 450;
+    backdrop.cornerRadius = 10;
+    backdrop.thickness = 0;
+    backdrop.background = 'rgba(0, 0, 0, 0.7)';
+    backdrop.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+    backdrop.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    backdrop.left = '-40px';
+    backdrop.isVisible = false;
+    gui.addControl(backdrop);
+    this._highScoresBackdrop = backdrop;
+
+    const panel = new StackPanel('scoresPanel');
+    panel.widthInPixels = 320;
+    panel.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+    panel.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    panel.left = '-50px';
+    panel.spacing = 4;
+    panel.isVisible = false;
+    gui.addControl(panel);
+    this._highScoresPanel = panel;
+
+    // Title
+    const title = new TextBlock('scoresTitle', 'HIGH SCORES');
+    title.heightInPixels = 40;
+    title.fontSize = 28;
+    title.fontFamily = 'monospace';
+    title.color = '#FFD700';
+    title.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    panel.addControl(title);
+
+    // Score entries (10 placeholder rows)
+    this._scoreRows = [];
+    for (let i = 0; i < 10; i++) {
+      const row = new TextBlock(`scoreRow_${i}`, `${i + 1}. ---`);
+      row.heightInPixels = 28;
+      row.fontSize = 18;
+      row.fontFamily = 'monospace';
+      row.color = i < 3 ? '#FFD740' : '#FFFFFF';
+      row.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+      row.paddingLeftInPixels = 10;
+      panel.addControl(row);
+      this._scoreRows.push(row);
+    }
+
+    // Back button
+    const backBtn = this._createMenuButton('Back', false);
+    backBtn.onPointerClickObservable.add(() => {
+      this._showMainMenu();
+    });
+    panel.addControl(backBtn);
+  }
+
+  _updateHighScoresDisplay(scores) {
+    if (!this._scoreRows) {
+      return;
+    }
+    for (let i = 0; i < 10; i++) {
+      if (i < scores.length) {
+        const s = scores[i];
+        const name = (s.username || 'Anon').substring(0, 12).padEnd(12);
+        const pts = String(s.score).padStart(7);
+        this._scoreRows[i].text = `${i + 1}. ${name} ${pts}`;
+      } else {
+        this._scoreRows[i].text = `${i + 1}. ---`;
+      }
+    }
   }
 
   async _cycleTrack(direction) {

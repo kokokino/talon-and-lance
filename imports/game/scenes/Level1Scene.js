@@ -18,12 +18,21 @@ import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
 
 import { InputReader } from '../InputReader.js';
-import { EnemyAI } from '../EnemyAI.js';
+import { GameSimulation } from '../GameSimulation.js';
 import {
-  STARTING_LIVES, EXTRA_LIFE_THRESHOLD,
-  POINTS_SURVIVAL_WAVE, POINTS_EGG_MID_AIR,
-  ENEMY_TYPE_BOUNDER, ENEMY_TYPE_HUNTER, ENEMY_TYPE_SHADOW_LORD,
-  getKillPoints, getEggPoints, getWaveComposition,
+  VOXEL_SIZE, ORTHO_WIDTH, ORTHO_LEFT, ORTHO_RIGHT,
+  MAX_SPEED, GRAVITY, LEDGE_HEIGHT,
+  TURN_DURATION, FLAP_DURATION,
+  WING_UP_ANGLE, WING_DOWN_ANGLE, WING_GLIDE_ANGLE,
+  SWEEP_FORWARD_ANGLE, SWEEP_BACKWARD_ANGLE, SWEEP_GLIDE_ANGLE,
+  HATCH_TIME, WOBBLE_START,
+  WAVE_TRANSITION_DELAY,
+  PLATFORM_DEFS, SPAWN_POINTS,
+  buildPlatformCollisionData,
+  GAME_MODE_TEAM,
+} from '../physics/constants.js';
+import {
+  ENEMY_TYPE_BOUNDER,
 } from '../scoring.js';
 import { SkyBackground } from './SkyBackground.js';
 import { buildRig, buildPart } from '../voxels/VoxelBuilder.js';
@@ -35,6 +44,10 @@ import { evilKnightModel } from '../voxels/models/evilKnightModel.js';
 import { eggModel } from '../voxels/models/eggModel.js';
 import { buildKnightPalette } from '../voxels/models/knightPalettes.js';
 import { buildEvilKnightPalette } from '../voxels/models/evilKnightPalettes.js';
+import {
+  MAX_HUMANS, MAX_ENEMIES, MAX_EGGS,
+  HATCH_WOBBLING,
+} from '../physics/stateLayout.js';
 
 /**
  * Convert a hex color string (e.g. '#FF8800') to a Babylon Color3.
@@ -46,190 +59,34 @@ function hexToColor3(hex) {
   return new Color3(r, g, b);
 }
 
-// ---- Size & View ----
-const VOXEL_SIZE = 0.07;
-
-const ORTHO_WIDTH = 20;
-const ORTHO_LEFT = -ORTHO_WIDTH / 2;
-const ORTHO_RIGHT = ORTHO_WIDTH / 2;
-
-// ---- Movement ----
-const ACCELERATION = 4.0;
-const MAX_SPEED = 10.0;
-const FRICTION = 3.0;
-const SKID_DECEL = 12.0;
-const TURN_DURATION = 0.25;
-
-const CHAR_HALF_WIDTH = 10 * VOXEL_SIZE / 2;
-
-// ---- Flying physics ----
-const GRAVITY = 8.0;
-const FLAP_IMPULSE = 4.0;
-const TERMINAL_VELOCITY = 8.0;
-const AIR_FRICTION = 0.5;
-
-// ---- Collision offsets from body center ----
-const FEET_OFFSET = 7.5 * VOXEL_SIZE;
-const HEAD_OFFSET = 10.5 * VOXEL_SIZE;
-const LEDGE_HEIGHT = 0.06;
-
-// ---- Joust collision ----
-const JOUST_HEIGHT_DEADZONE = 0.15;
-const JOUST_KNOCKBACK_X = 6.0;
-const JOUST_KNOCKBACK_Y = 3.0;
-const RESPAWN_DELAY = 2.0;
-const INVINCIBLE_DURATION = 5.0;
-
-// ---- Wing flap animation — ostrich (up/down rotation.x) ----
-const FLAP_DURATION = 0.25;
-const WING_UP_ANGLE = -1.2;
-const WING_DOWN_ANGLE = 0.4;
-const WING_GLIDE_ANGLE = -0.3;
-
-// ---- Wing sweep animation — buzzard (forward/backward rotation.z) ----
-const SWEEP_FORWARD_ANGLE = 0.8;
-const SWEEP_BACKWARD_ANGLE = -0.6;
-const SWEEP_GLIDE_ANGLE = 0.2;
-
-// ---- Platform layout (Joust Level 1) ----
-const PLATFORM_DEFS = [
-  // Base tier — two sections with lava gap in center
-  { id: 'baseLeft',  x: -5.5, y: -3.8, width: 9.0, height: 0.35 },
-  { id: 'baseRight', x:  5.5, y: -3.8, width: 9.0, height: 0.35 },
-  // Lower-middle tier
-  { id: 'midLowL',   x: -5.0, y: -1.5, width: 4.5, height: 0.3 },
-  { id: 'midLowR',   x:  5.0, y: -1.5, width: 4.5, height: 0.3 },
-  // Upper-middle tier (L and R extend past screen edges for wrap-around)
-  { id: 'midUpL',    x: -8.0, y:  0.8, width: 4.5, height: 0.3 },
-  { id: 'midUpC',    x:  0.0, y:  0.8, width: 5.0, height: 0.3 },
-  { id: 'midUpR',    x:  8.0, y:  0.8, width: 4.5, height: 0.3 },
-  // Top tier
-  { id: 'top',       x:  0.0, y:  3.2, width: 12.0, height: 0.3 },
-];
-
-// ---- Spawn points ----
-const SPAWN_POINTS = [
-  { x: -6.0, platformId: 'baseLeft' },
-  { x:  6.0, platformId: 'baseRight' },
-  { x: -5.0, platformId: 'midLowL' },
-  { x:  5.0, platformId: 'midLowR' },
-];
-
-// ---- Materialization ----
-const MATERIALIZE_DURATION = 10.0;
-const MATERIALIZE_QUICK_DURATION = 0.5;
-
-// ---- Egg hatching ----
-const HATCH_TIME = 8.0;
-const WOBBLE_START = 5.0;
-const LOOK_AROUND_TIME = 3.0;
-const BIRD_ARRIVE_TIME = 1.5;
-
-// ---- Wave spawning ----
-const ENEMY_SPAWN_POINTS = [
-  { x: -8.0, y: 1.1 },   // top-left (above midUpL)
-  { x: 8.0, y: 1.1 },    // top-right (above midUpR)
-  { x: -5.0, y: -1.2 },  // mid-left (above midLowL)
-  { x: 5.0, y: -1.2 },   // mid-right (above midLowR)
-];
-const SPAWN_GROUP_INTERVAL = 2.0;
-const WAVE_TRANSITION_DELAY = 2.0;
-
-/**
- * Create a fresh character state object with default values.
- */
-function createCharState(wingMode) {
-  return {
-    birdRig: null,
-    knightRig: null,
-    lanceRig: null,
-    leftShoulderNode: null,
-    rightShoulderNode: null,
-    leftHipNode: null,
-    rightHipNode: null,
-    leftHipPivot: null,
-    rightHipPivot: null,
-    leftKneePivot: null,
-    rightKneePivot: null,
-    leftWingPivot: null,
-    rightWingPivot: null,
-    positionX: 0,
-    positionY: 0,
-    velocityX: 0,
-    velocityY: 0,
-    playerState: 'GROUNDED',
-    facingDir: 1,
-    isTurning: false,
-    turnTimer: 0,
-    turnFrom: 0,
-    turnTo: 0,
-    stridePhase: 0,
-    isFlapping: false,
-    flapTimer: 0,
-    knightMountY: 0,
-    wingMode: wingMode,
-    currentPlatform: null,
-    // Materialization
-    materializing: true,
-    materializeTimer: 0,
-    materializeDuration: MATERIALIZE_DURATION,
-    materializeQuickEnd: false,
-    materializeParticles: null,
-    // Death / respawn
-    dead: false,
-    hitLava: false,
-    respawnTimer: 0,
-    invincible: false,
-    invincibleTimer: 0,
-    // Joust collision
-    prevPositionX: 0,
-    prevPositionY: 0,
-    joustCooldown: 0,
-    // Enemy AI
-    enemyType: undefined,
-    ai: null,
-  };
-}
 
 export class Level1Scene {
   /**
    * @param {{ audioManager: AudioManager, paletteIndex: number }} config
    */
-  constructor({ audioManager, paletteIndex, onQuitToMenu }) {
+  constructor({ audioManager, paletteIndex, onQuitToMenu, rendererOnly }) {
     this._audioManager = audioManager;
     this._paletteIndex = paletteIndex;
     this._onQuitToMenu = onQuitToMenu || null;
+    this._rendererOnly = rendererOnly || false;
 
     this.engine = null;
     this.scene = null;
 
-    // Character state array: [0] = player, rest = enemies
-    this._chars = [null, null];
-    this._evilTypeIndex = 0;
-
     this._inputReader = null;
     this._elapsed = 0;
+
+    // Solo mode simulation (created in create() for non-rendererOnly mode)
+    this._soloSimulation = null;
 
     // Escape overlay
     this._escapeOverlay = null;
     this._escapeVisible = false;
+    this._escapeKeyHandler = null;
 
-    // Scoring & lives
-    this._score = 0;
-    this._lives = STARTING_LIVES;
-    this._nextLifeScore = EXTRA_LIFE_THRESHOLD;
-    this._eggsCollectedThisWave = 0;
-    this._playerDiedThisWave = false;
-    this._gameOverActive = false;
-
-    // Wave system
-    this._waveNumber = 1;
+    // Banner system
     this._waveTextTimer = 0;
     this._waveBannerActive = false;
-    this._waveState = 'SPAWNING'; // SPAWNING, PLAYING, TRANSITION
-    this._spawnQueue = [];
-    this._spawnTimer = 0;
-    this._waveTransitionTimer = 0;
 
     // HUD
     this._hudUI = null;
@@ -245,8 +102,6 @@ export class Level1Scene {
     // Platform collision data (populated in _createPlatforms)
     this._platforms = [];
 
-    // Eggs (dropped on joust death)
-    this._eggs = [];
 
     // Sky background
     this._skyBackground = null;
@@ -261,6 +116,25 @@ export class Level1Scene {
     this._lavaTexture = null;
     this._lavaUvOffset = 0;
     this._lavaBurstTimer = 0;
+
+    // ---- Renderer mode state (activated on first draw() call) ----
+    this._rendererMode = false;
+    this._lastDrawTime = 0;
+    this._prevState = null;
+    this._localPlayerSlot = 0;
+
+    // Per-slot render data: mesh refs + visual-only animation state
+    // Indices 0-3 = humans, 4-11 = enemies
+    this._renderSlots = [];
+    for (let i = 0; i < 12; i++) {
+      this._renderSlots.push(this._createRenderSlot());
+    }
+
+    // Per-egg-slot render data
+    this._eggRenderSlots = [];
+    for (let i = 0; i < 8; i++) {
+      this._eggRenderSlots.push({ rig: null, prevActive: false, prevHitLava: false });
+    }
   }
 
   /**
@@ -282,15 +156,34 @@ export class Level1Scene {
     this._createPlatforms();
     this._createSpawnPads();
     this._createLava();
-    this._createCharacters();
 
-    // Input
-    this._inputReader = new InputReader();
-    this._inputReader.attach(this.scene);
-    this.scene.attachControl();
+    // Input (needed in solo mode)
+    if (!this._rendererOnly) {
+      this._inputReader = new InputReader();
+      this._inputReader.attach(this.scene);
+      this.scene.attachControl();
+
+      // Create internal GameSimulation for solo play
+      this._soloSimulation = new GameSimulation({
+        gameMode: GAME_MODE_TEAM,
+        seed: Date.now() >>> 0,
+        orthoBottom: this._orthoBottom,
+        orthoTop: this._orthoTop,
+      });
+      this._soloSimulation.activatePlayer(0, this._paletteIndex);
+      this._soloSimulation.startGame();
+    }
 
     // HUD
     this._createHUD();
+
+    // Escape key — works in both solo and renderer modes
+    this._escapeKeyHandler = (event) => {
+      if (event.code === 'Escape' && !event.repeat) {
+        this._toggleEscapeOverlay();
+      }
+    };
+    window.addEventListener('keydown', this._escapeKeyHandler);
 
     // Animation callback
     this.scene.onBeforeRenderObservable.add(() => {
@@ -299,11 +192,373 @@ export class Level1Scene {
     });
   }
 
+  /**
+   * Renderer interface for GameLoop integration.
+   * Accepts GameSimulation render state and updates all visuals.
+   * On first call, activates renderer mode and disables internal physics loop.
+   */
+  draw(gameState) {
+    if (!gameState || !this.scene) {
+      return;
+    }
+
+    // Activate renderer mode on first call
+    if (!this._rendererMode) {
+      this._rendererMode = true;
+      this._lastDrawTime = performance.now();
+    }
+
+    // Calculate dt for visual-only animations
+    const now = performance.now();
+    const dt = Math.min((now - this._lastDrawTime) / 1000, 0.05);
+    this._lastDrawTime = now;
+
+    // Sync humans
+    for (const human of gameState.humans) {
+      this._syncCharSlot(human, 'human', dt);
+    }
+
+    // Sync enemies
+    for (const enemy of gameState.enemies) {
+      this._syncCharSlot(enemy, 'enemy', dt);
+    }
+
+    // Sync eggs
+    this._syncEggs(gameState.eggs, dt);
+
+    // Sync HUD
+    this._syncHUD(gameState);
+
+    // Sync banners (wave transitions, game over)
+    this._syncBanners(gameState);
+
+    // Save state snapshot for diffing on next frame
+    this._prevState = this._snapshotState(gameState);
+  }
+
+  /**
+   * Snapshot enough of gameState for next-frame diffing.
+   */
+  _snapshotState(gameState) {
+    const humans = gameState.humans.map(h => ({
+      slotIndex: h.slotIndex,
+      active: h.active,
+      dead: h.dead,
+      materializing: h.materializing,
+      isTurning: h.isTurning,
+      turnTimer: h.turnTimer,
+    }));
+    const enemies = gameState.enemies.map(e => ({
+      slotIndex: e.slotIndex,
+      active: e.active,
+      dead: e.dead,
+      materializing: e.materializing,
+      isTurning: e.isTurning,
+      turnTimer: e.turnTimer,
+    }));
+    const eggs = {};
+    for (const egg of gameState.eggs) {
+      eggs[egg.slotIndex] = { active: true, hitLava: egg.hitLava };
+    }
+    return {
+      waveNumber: gameState.waveNumber,
+      gameOver: gameState.gameOver,
+      humans,
+      enemies,
+      eggs,
+    };
+  }
+
+  /**
+   * Core per-character renderer sync.
+   * Manages mesh lifecycle (create/dispose) and drives visual animations.
+   */
+  _syncCharSlot(charState, type, dt) {
+    const slot = this._renderSlots[charState.slotIndex];
+    const prevChar = this._findPrevChar(charState.slotIndex, type);
+    const prevActive = prevChar ? prevChar.active : false;
+    const prevDead = prevChar ? prevChar.dead : false;
+
+    // ---- Mesh lifecycle transitions ----
+
+    // Character became active and alive → create meshes
+    if (charState.active && !charState.dead && !slot.meshCreated) {
+      this._createSlotMeshes(slot, charState, type);
+      this._setCharAlpha(slot, 0);
+      // Set position temporarily for particle emitter placement
+      slot.positionX = charState.positionX;
+      slot.positionY = charState.positionY;
+      this._createMaterializeParticles(slot);
+      delete slot.positionX;
+      delete slot.positionY;
+    }
+
+    // Character just died → explode and dispose
+    if (charState.active && charState.dead && prevActive && !prevDead && slot.meshCreated) {
+      this._explodeSlotCharacter(slot, charState, type);
+      this._disposeSlotMeshes(slot);
+    }
+
+    // Character became inactive → dispose if meshes exist
+    if (!charState.active && slot.meshCreated) {
+      this._disposeSlotMeshes(slot);
+    }
+
+    // ---- Per-frame rendering (when alive and meshes exist) ----
+    if (!charState.active || charState.dead || !slot.meshCreated) {
+      return;
+    }
+
+    // Position root mesh
+    if (slot.birdRig?.root) {
+      slot.birdRig.root.position.x = charState.positionX;
+    }
+
+    // Detect new turn: isTurning became true or turnTimer reset
+    const prevTurning = prevChar ? prevChar.isTurning : false;
+    if (charState.isTurning && (!prevTurning || charState.turnTimer === 0)) {
+      if (charState.facingDir === -1) {
+        slot.turnFrom = 0;
+        slot.turnTo = Math.PI;
+      } else {
+        slot.turnFrom = Math.PI;
+        slot.turnTo = 0;
+      }
+    }
+
+    // Materialization visual (use authoritative timer from game state, not dt)
+    if (charState.materializing) {
+      this._syncMaterialization(slot, charState);
+      return;
+    }
+
+    // Materialization just ended — clean up particles if still active
+    if (slot.materializeParticles) {
+      this._setCharAlpha(slot, 1.0);
+      slot.materializeParticles.stop();
+      slot.materializeParticles.dispose();
+      slot.materializeParticles = null;
+    }
+
+    // Build a merged view: prototype = slot (mesh refs), own props = physics state
+    const view = Object.create(slot);
+    view.positionX = charState.positionX;
+    view.positionY = charState.positionY;
+    view.velocityX = charState.velocityX;
+    view.velocityY = charState.velocityY;
+    view.playerState = charState.playerState;
+    view.facingDir = charState.facingDir;
+    view.isTurning = charState.isTurning;
+    view.turnTimer = charState.turnTimer;
+    view.stridePhase = charState.stridePhase;
+    view.isFlapping = charState.isFlapping;
+    view.flapTimer = charState.flapTimer;
+    view.wingMode = charState.wingMode;
+
+    // Turn animation
+    this._updateTurn(dt, view);
+
+    // Snap facing direction when not turning (ensures correct facing after rollback)
+    if (!view.isTurning && slot.birdRig?.root) {
+      slot.birdRig.root.rotation.y = view.facingDir === 1 ? 0 : Math.PI;
+    }
+
+    // Animate character (running/flying/wings)
+    this._animateChar(dt, view);
+  }
+
+  /**
+   * Find the previous frame's snapshot for a given slot.
+   */
+  _findPrevChar(slotIndex, type) {
+    if (!this._prevState) {
+      return null;
+    }
+    const list = type === 'human' ? this._prevState.humans : this._prevState.enemies;
+    for (const entry of list) {
+      if (entry.slotIndex === slotIndex) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Explode a render-slot character into voxel debris (cosmetic).
+   */
+  _explodeSlotCharacter(slot, charState, type) {
+    // Build a temporary char-like object for _explodeCharacter
+    const fakeChar = {
+      birdRig: slot.birdRig,
+      knightRig: slot.knightRig,
+      lanceRig: slot.lanceRig,
+      wingMode: charState.wingMode,
+      enemyType: charState.enemyType,
+    };
+
+    const charIdx = type === 'human' ? 0 : 1;
+    this._explodeCharacter(fakeChar, charIdx);
+  }
+
+  /**
+   * Sync eggs from game state to egg render slots.
+   */
+  _syncEggs(eggs, dt) {
+    // Build a set of active egg slot indices this frame
+    const activeSlots = new Set();
+    for (const egg of eggs) {
+      activeSlots.add(egg.slotIndex);
+    }
+
+    // Check for eggs that disappeared since last frame
+    for (let i = 0; i < this._eggRenderSlots.length; i++) {
+      const eggSlot = this._eggRenderSlots[i];
+      if (eggSlot.prevActive && !activeSlots.has(i)) {
+        // Egg was removed
+        if (eggSlot.prevHitLava) {
+          this._spawnLavaBurst();
+        }
+        if (eggSlot.rig) {
+          this._disposeEggRig(eggSlot.rig);
+          eggSlot.rig = null;
+        }
+        eggSlot.prevActive = false;
+        eggSlot.prevHitLava = false;
+      }
+    }
+
+    // Update active eggs
+    for (const egg of eggs) {
+      const eggSlot = this._eggRenderSlots[egg.slotIndex];
+
+      // New egg — create mesh
+      if (!eggSlot.rig) {
+        const VS = VOXEL_SIZE;
+        eggSlot.rig = buildRig(this.scene, eggModel, VS, true);
+        eggSlot.prevActive = true;
+      }
+
+      // Position
+      if (eggSlot.rig && eggSlot.rig.root) {
+        eggSlot.rig.root.position.x = egg.positionX;
+        eggSlot.rig.root.position.y = egg.positionY;
+
+        // Wobble animation
+        if (egg.hatchState === HATCH_WOBBLING) {
+          const wobbleProgress = (egg.hatchTimer - WOBBLE_START) / (HATCH_TIME - WOBBLE_START);
+          const amplitude = 0.2 + wobbleProgress * 0.5;
+          const frequency = 8 + wobbleProgress * 12;
+          eggSlot.rig.root.rotation.z = Math.sin(egg.hatchTimer * frequency) * amplitude;
+        } else {
+          eggSlot.rig.root.rotation.z = 0;
+        }
+      }
+
+      eggSlot.prevActive = true;
+      eggSlot.prevHitLava = egg.hitLava || false;
+    }
+  }
+
+  /**
+   * Dispose an egg rig's meshes.
+   */
+  _disposeEggRig(rig) {
+    if (rig.root) {
+      rig.root.dispose();
+    }
+    for (const part of Object.values(rig.parts)) {
+      if (part.mesh) {
+        part.mesh.dispose();
+      }
+    }
+  }
+
+  /**
+   * Update HUD from game state (renderer mode).
+   */
+  _syncHUD(gameState) {
+    const localPlayer = gameState.humans[this._localPlayerSlot];
+    if (localPlayer && localPlayer.active) {
+      if (this._hudScoreText) {
+        this._hudScoreText.text = String(localPlayer.score).padStart(6, '0');
+      }
+      if (this._hudLivesText) {
+        this._hudLivesText.text = 'x' + localPlayer.lives;
+      }
+    }
+    if (this._hudWaveText) {
+      this._hudWaveText.text = 'WAVE ' + gameState.waveNumber;
+    }
+  }
+
+  /**
+   * Detect wave transitions and game over to show banners (renderer mode).
+   */
+  _syncBanners(gameState) {
+    if (!this._prevState) {
+      return;
+    }
+
+    // Wave number changed → show wave banner
+    if (gameState.waveNumber !== this._prevState.waveNumber) {
+      this._showBanner('WAVE ' + gameState.waveNumber, WAVE_TRANSITION_DELAY, null);
+    }
+
+    // Game over transition
+    if (gameState.gameOver && !this._prevState.gameOver) {
+      this._showBanner('GAME OVER', 3, () => {
+        if (this._onQuitToMenu) {
+          this._onQuitToMenu();
+        }
+      });
+    }
+  }
+
+  /**
+   * Drive materialization visual from authoritative game state timer.
+   * Does not advance the timer — reads directly from charState.
+   */
+  _syncMaterialization(slot, charState) {
+    const progress = Math.min(charState.materializeTimer / charState.materializeDuration, 1.0);
+    const ps = slot.materializeParticles;
+
+    if (progress < 0.8) {
+      const phase1Progress = progress / 0.8;
+      const boxSizeX = 0.7 - phase1Progress * 0.6;
+      const boxSizeY = 1.0 - phase1Progress * 0.9;
+
+      if (ps) {
+        ps.minEmitBox.x = -boxSizeX;
+        ps.minEmitBox.y = -boxSizeY;
+        ps.maxEmitBox.x = boxSizeX;
+        ps.maxEmitBox.y = boxSizeY;
+        ps.emitRate = 20 + phase1Progress * 130;
+      }
+      this._setCharAlpha(slot, 0);
+    } else {
+      const phase2Progress = (progress - 0.8) / 0.2;
+
+      if (ps) {
+        ps.minEmitBox.x = -0.1;
+        ps.minEmitBox.y = -0.1;
+        ps.maxEmitBox.x = 0.1;
+        ps.maxEmitBox.y = 0.1;
+        ps.emitRate = Math.max(0, 200 * (1 - phase2Progress));
+      }
+      this._setCharAlpha(slot, phase2Progress);
+    }
+  }
+
   dispose() {
+    if (this._escapeKeyHandler) {
+      window.removeEventListener('keydown', this._escapeKeyHandler);
+      this._escapeKeyHandler = null;
+    }
     if (this._inputReader) {
       this._inputReader.detach();
       this._inputReader = null;
     }
+    this._soloSimulation = null;
     if (this._skyBackground) {
       this._skyBackground.dispose();
       this._skyBackground = null;
@@ -313,27 +568,19 @@ export class Level1Scene {
       this._hudUI.dispose();
       this._hudUI = null;
     }
-    // Dispose materialization particles
-    for (const char of this._chars) {
-      if (char && char.materializeParticles) {
-        char.materializeParticles.stop();
-        char.materializeParticles.dispose();
-        char.materializeParticles = null;
+    // Dispose renderer mode render slots
+    for (const slot of this._renderSlots) {
+      if (slot.meshCreated) {
+        this._disposeSlotMeshes(slot);
       }
     }
-    this._chars = [];
-    // Dispose eggs
-    for (const egg of this._eggs) {
-      if (egg.rig.root) {
-        egg.rig.root.dispose();
-      }
-      for (const part of Object.values(egg.rig.parts)) {
-        if (part.mesh) {
-          part.mesh.dispose();
-        }
+    // Dispose renderer mode egg slots
+    for (const eggSlot of this._eggRenderSlots) {
+      if (eggSlot.rig) {
+        this._disposeEggRig(eggSlot.rig);
+        eggSlot.rig = null;
       }
     }
-    this._eggs = [];
     this._platforms = [];
     this._lavaMaterial = null;
     this._lavaTexture = null;
@@ -397,7 +644,7 @@ export class Level1Scene {
   // ---- Platforms ----
 
   _createPlatforms() {
-    this._platforms = [];
+    this._platforms = buildPlatformCollisionData();
 
     for (const def of PLATFORM_DEFS) {
       // Main platform body
@@ -427,18 +674,6 @@ export class Level1Scene {
       ledgeMat.specularColor = new Color3(0.3, 0.3, 0.3);
       ledgeMat.emissiveColor = new Color3(0.08, 0.07, 0.06);
       ledge.material = ledgeMat;
-
-      this._platforms.push({
-        id: def.id,
-        x: def.x,
-        y: def.y,
-        width: def.width,
-        height: def.height,
-        top: def.y + def.height / 2 + LEDGE_HEIGHT,
-        bottom: def.y - def.height / 2,
-        left: def.x - def.width / 2,
-        right: def.x + def.width / 2,
-      });
     }
   }
 
@@ -570,188 +805,6 @@ export class Level1Scene {
     ps.start();
   }
 
-  // ---- Characters ----
-
-  _createCharacters() {
-    const VS = VOXEL_SIZE;
-    this._chars = [];
-
-    // Player spawn — pick a random ground spawn
-    const playerSpawn = SPAWN_POINTS[Math.floor(Math.random() * SPAWN_POINTS.length)];
-    const playerPlatform = this._platforms.find(p => p.id === playerSpawn.platformId);
-
-    // --- Player character (knight on ostrich) ---
-    const player = createCharState('updown');
-    const notLit = true;
-    player.birdRig = buildRig(this.scene, ostrichModel, VS, notLit);
-    const mergedPalette = buildKnightPalette(this._paletteIndex);
-    player.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS, notLit);
-    player.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
-    this._assembleCharacter(player, VS);
-
-    player.positionX = playerSpawn.x;
-    player.positionY = playerPlatform.top + FEET_OFFSET;
-    player.currentPlatform = playerPlatform;
-    if (player.birdRig.root) {
-      player.birdRig.root.position = new Vector3(player.positionX, player.positionY, 0);
-    }
-    this._chars.push(player);
-
-    // Start materialization
-    this._setCharAlpha(player, 0);
-    this._createMaterializeParticles(player);
-
-    // Start wave 1
-    this._startWave(this._waveNumber);
-  }
-
-  _spawnEnemy(enemyType, spawnX, spawnY) {
-    const VS = VOXEL_SIZE;
-    const notLit = true;
-    const paletteIndex = enemyType; // 0=Bounder, 1=Hunter, 2=Shadow Lord maps to palette indices
-    const evil = createCharState('sweep');
-
-    evil.birdRig = buildRig(this.scene, buzzardModel, VS, notLit);
-    const evilPalette = buildEvilKnightPalette(paletteIndex);
-    evil.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
-    evil.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
-    this._assembleCharacter(evil, VS);
-
-    evil.positionX = spawnX;
-    evil.positionY = spawnY;
-    evil.playerState = 'AIRBORNE';
-    evil.currentPlatform = null;
-    evil.enemyType = enemyType;
-    evil.ai = new EnemyAI(enemyType);
-
-    if (evil.birdRig.root) {
-      evil.birdRig.root.position = new Vector3(evil.positionX, evil.positionY, 0);
-    }
-
-    this._chars.push(evil);
-
-    // Start materialization
-    this._setCharAlpha(evil, 0);
-    this._createMaterializeParticles(evil);
-  }
-
-  // ---- Wave system ----
-
-  _startWave(waveNumber) {
-    this._waveNumber = waveNumber;
-    this._eggsCollectedThisWave = 0;
-    this._playerDiedThisWave = false;
-    this._waveState = 'SPAWNING';
-
-    const composition = getWaveComposition(waveNumber);
-
-    // Build a spawn queue: list of enemy types to spawn in groups of 2
-    this._spawnQueue = [];
-    for (let i = 0; i < composition.bounders; i++) {
-      this._spawnQueue.push(ENEMY_TYPE_BOUNDER);
-    }
-    for (let i = 0; i < composition.hunters; i++) {
-      this._spawnQueue.push(ENEMY_TYPE_HUNTER);
-    }
-    for (let i = 0; i < composition.shadowLords; i++) {
-      this._spawnQueue.push(ENEMY_TYPE_SHADOW_LORD);
-    }
-
-    // Shuffle the queue so types are mixed
-    for (let i = this._spawnQueue.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const temp = this._spawnQueue[i];
-      this._spawnQueue[i] = this._spawnQueue[j];
-      this._spawnQueue[j] = temp;
-    }
-
-    // Spawn first group immediately
-    this._spawnTimer = 0;
-    this._spawnNextGroup();
-
-    // Show wave banner
-    this._showBanner('WAVE ' + waveNumber, WAVE_TRANSITION_DELAY, null);
-  }
-
-  _spawnNextGroup() {
-    if (this._spawnQueue.length === 0) {
-      this._waveState = 'PLAYING';
-      return;
-    }
-
-    // Spawn up to 2 enemies from the queue
-    const spawnCount = Math.min(2, this._spawnQueue.length);
-    const shuffledSpawns = [...ENEMY_SPAWN_POINTS].sort(() => Math.random() - 0.5);
-
-    for (let i = 0; i < spawnCount; i++) {
-      const enemyType = this._spawnQueue.shift();
-      const sp = shuffledSpawns[i % shuffledSpawns.length];
-      this._spawnEnemy(enemyType, sp.x, sp.y);
-    }
-  }
-
-  _updateWaveSystem(dt) {
-    if (this._gameOverActive) {
-      return;
-    }
-
-    // Handle spawn timing
-    if (this._waveState === 'SPAWNING' && this._spawnQueue.length > 0) {
-      this._spawnTimer += dt;
-      if (this._spawnTimer >= SPAWN_GROUP_INTERVAL) {
-        this._spawnTimer = 0;
-        this._spawnNextGroup();
-      }
-    }
-
-    // Check wave completion
-    if (this._waveState === 'PLAYING' || (this._waveState === 'SPAWNING' && this._spawnQueue.length === 0)) {
-      this._waveState = 'PLAYING';
-
-      // Count living enemies (indices > 0)
-      let livingEnemies = 0;
-      for (let i = 1; i < this._chars.length; i++) {
-        const char = this._chars[i];
-        if (char && !char.dead) {
-          livingEnemies++;
-        }
-      }
-
-      // Count eggs that could still hatch (enemy eggs only)
-      let activeEggs = 0;
-      for (const egg of this._eggs) {
-        if (egg.enemyType >= 0) {
-          activeEggs++;
-        }
-      }
-
-      if (livingEnemies === 0 && activeEggs === 0) {
-        // Wave complete!
-        this._waveState = 'TRANSITION';
-        this._waveTransitionTimer = WAVE_TRANSITION_DELAY;
-
-        // Survival bonus if player didn't die
-        if (!this._playerDiedThisWave) {
-          this._addScore(POINTS_SURVIVAL_WAVE);
-          this._showBanner('SURVIVAL BONUS!', 1.5, null);
-        }
-
-        // Clean up dead enemy slots
-        this._chars = [this._chars[0]];
-      }
-    }
-
-    // Handle wave transition delay
-    if (this._waveState === 'TRANSITION') {
-      this._waveTransitionTimer -= dt;
-      if (this._waveTransitionTimer <= 0) {
-        this._startWave(this._waveNumber + 1);
-      }
-    }
-  }
-
-  // ---- Materialization ----
-
   _createMaterializeParticles(char) {
     const tex = new DynamicTexture('matTex', 64, this.scene, false);
     const ctx = tex.getContext();
@@ -791,55 +844,6 @@ export class Level1Scene {
     ps.start();
 
     char.materializeParticles = ps;
-  }
-
-  _updateMaterialization(dt, char) {
-    if (!char.materializing) {
-      return;
-    }
-
-    char.materializeTimer += dt;
-    const duration = char.materializeDuration;
-    const progress = Math.min(char.materializeTimer / duration, 1.0);
-    const ps = char.materializeParticles;
-
-    if (progress < 0.8) {
-      // Phase 1: Particle swirl — character invisible
-      const phase1Progress = progress / 0.8;
-      const boxSizeX = 0.7 - phase1Progress * 0.6;
-      const boxSizeY = 1.0 - phase1Progress * 0.9;
-
-      if (ps) {
-        ps.minEmitBox.x = -boxSizeX;
-        ps.minEmitBox.y = -boxSizeY;
-        ps.maxEmitBox.x = boxSizeX;
-        ps.maxEmitBox.y = boxSizeY;
-        ps.emitRate = 20 + phase1Progress * 130;
-      }
-      this._setCharAlpha(char, 0);
-    } else {
-      // Phase 2: Coalesce and reveal
-      const phase2Progress = (progress - 0.8) / 0.2;
-
-      if (ps) {
-        ps.minEmitBox.x = -0.1;
-        ps.minEmitBox.y = -0.1;
-        ps.maxEmitBox.x = 0.1;
-        ps.maxEmitBox.y = 0.1;
-        ps.emitRate = Math.max(0, 200 * (1 - phase2Progress));
-      }
-      this._setCharAlpha(char, phase2Progress);
-    }
-
-    if (progress >= 1.0) {
-      char.materializing = false;
-      this._setCharAlpha(char, 1.0);
-      if (ps) {
-        ps.stop();
-        ps.dispose();
-        char.materializeParticles = null;
-      }
-    }
   }
 
   _setCharAlpha(char, alpha) {
@@ -983,436 +987,149 @@ export class Level1Scene {
     }
   }
 
+  // ---- Render slot helpers ----
+
+  _createRenderSlot() {
+    return {
+      meshCreated: false,
+      birdRig: null,
+      knightRig: null,
+      lanceRig: null,
+      leftShoulderNode: null,
+      rightShoulderNode: null,
+      leftHipNode: null,
+      rightHipNode: null,
+      leftHipPivot: null,
+      rightHipPivot: null,
+      leftKneePivot: null,
+      rightKneePivot: null,
+      leftWingPivot: null,
+      rightWingPivot: null,
+      knightMountY: 0,
+      materializeParticles: null,
+      // Renderer-local turn animation state
+      turnFrom: 0,
+      turnTo: 0,
+    };
+  }
+
+  _createSlotMeshes(slot, charState, type) {
+    const VS = VOXEL_SIZE;
+    const notLit = true;
+
+    if (type === 'human') {
+      slot.birdRig = buildRig(this.scene, ostrichModel, VS, notLit);
+      const mergedPalette = buildKnightPalette(charState.paletteIndex);
+      slot.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS, notLit);
+      slot.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
+    } else {
+      slot.birdRig = buildRig(this.scene, buzzardModel, VS, notLit);
+      const evilPalette = buildEvilKnightPalette(charState.enemyType);
+      slot.knightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
+      slot.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
+    }
+
+    this._assembleCharacter(slot, VS);
+
+    if (slot.birdRig.root) {
+      slot.birdRig.root.position = new Vector3(charState.positionX, charState.positionY, 0);
+    }
+
+    slot.meshCreated = true;
+  }
+
+  _disposeSlotMeshes(slot) {
+    if (slot.materializeParticles) {
+      slot.materializeParticles.stop();
+      slot.materializeParticles.dispose();
+      slot.materializeParticles = null;
+    }
+
+    const nodes = [
+      slot.leftHipPivot, slot.rightHipPivot,
+      slot.leftKneePivot, slot.rightKneePivot,
+      slot.leftWingPivot, slot.rightWingPivot,
+      slot.leftShoulderNode, slot.rightShoulderNode,
+      slot.leftHipNode, slot.rightHipNode,
+    ];
+    for (const node of nodes) {
+      if (node) {
+        node.dispose();
+      }
+    }
+
+    const rigs = [slot.birdRig, slot.knightRig, slot.lanceRig];
+    for (const rig of rigs) {
+      if (rig) {
+        for (const part of Object.values(rig.parts)) {
+          if (part.mesh) {
+            part.mesh.dispose();
+          }
+        }
+        if (rig.root) {
+          rig.root.dispose();
+        }
+      }
+    }
+
+    slot.birdRig = null;
+    slot.knightRig = null;
+    slot.lanceRig = null;
+    slot.leftShoulderNode = null;
+    slot.rightShoulderNode = null;
+    slot.leftHipNode = null;
+    slot.rightHipNode = null;
+    slot.leftHipPivot = null;
+    slot.rightHipPivot = null;
+    slot.leftKneePivot = null;
+    slot.rightKneePivot = null;
+    slot.leftWingPivot = null;
+    slot.rightWingPivot = null;
+    slot.knightMountY = 0;
+    slot.meshCreated = false;
+  }
+
   // ---- Update loop ----
 
   _update(dt) {
     this._elapsed += dt;
 
-    const input = this._inputReader
-      ? this._inputReader.sample()
-      : { left: false, right: false, flap: false, escape: false };
-
-    // Escape overlay toggle
-    if (input.escape) {
-      this._toggleEscapeOverlay();
-    }
-
-    // Sky background update
+    // Cosmetic updates (run in all modes)
     if (this._skyBackground) {
       this._skyBackground.update(dt);
       this._modulateLighting(this._skyBackground.timeOfDay);
     }
-
-    // Lava animation
     this._animateLava(dt);
-
-    // Update each character
-    for (let i = 0; i < this._chars.length; i++) {
-      const char = this._chars[i];
-      if (!char) {
-        continue;
-      }
-
-      // Respawn timer for dead characters
-      if (char.dead) {
-        if (!this._gameOverActive) {
-          char.respawnTimer -= dt;
-          if (char.respawnTimer <= 0) {
-            this._respawnCharacter(char, i);
-          }
-        }
-        continue;
-      }
-
-      // Materialization update (runs before physics)
-      this._updateMaterialization(dt, char);
-
-      if (char.materializing) {
-        // Quick-end: any input from player accelerates materialization
-        if (i === 0 && !char.materializeQuickEnd) {
-          if (input.left || input.right || input.flap) {
-            char.materializeQuickEnd = true;
-            char.materializeDuration = char.materializeTimer + MATERIALIZE_QUICK_DURATION;
-          }
-        }
-        continue;
-      }
-
-      // Invincibility timer
-      if (char.invincible) {
-        char.invincibleTimer -= dt;
-        const hasInput = i === 0 &&
-          (input.left || input.right || input.flap);
-        if (hasInput || char.invincibleTimer <= 0) {
-          char.invincible = false;
-          char.invincibleTimer = 0;
-        }
-      }
-
-      // Joust cooldown tick
-      if (char.joustCooldown > 0) {
-        char.joustCooldown -= dt;
-      }
-
-      // Save pre-movement position for crossing detection
-      char.prevPositionX = char.positionX;
-      char.prevPositionY = char.positionY;
-
-      if (i === 0) {
-        this._updateCharWithInput(dt, char, input);
-      } else if (char.ai) {
-        // AI-controlled enemy
-        const player = this._chars[0];
-        const playerTarget = (player && !player.dead && !player.materializing) ? player : null;
-        const aiInput = char.ai.decide(char, playerTarget, this._orthoBottom, dt);
-        this._updateCharWithInput(dt, char, aiInput);
-      } else {
-        this._updateCharIdle(dt, char);
-      }
-
-      // Check if character hit lava this frame
-      if (char.hitLava) {
-        char.hitLava = false;
-        this._lavaDeath(char, i);
-        continue;
-      }
-
-      this._animateChar(dt, char);
-    }
-
-    // Joust collision between characters (after positions updated)
-    this._checkJoustCollisions();
-
-    // Update eggs
-    this._updateEggs(dt);
-
-    // Wave system
-    this._updateWaveSystem(dt);
-
-    // HUD + banner
-    this._updateHUD();
     this._updateBanner(dt);
-  }
 
-  _updateCharWithInput(dt, char, input) {
-    let inputDir = 0;
-    if (input.right && !input.left) {
-      inputDir = 1;
-    } else if (input.left && !input.right) {
-      inputDir = -1;
-    }
-
-    // Handle flap
-    if (input.flap) {
-      char.velocityY = FLAP_IMPULSE;
-      char.playerState = 'AIRBORNE';
-      char.currentPlatform = null;
-      char.isFlapping = true;
-      char.flapTimer = 0;
-    }
-
-    // Horizontal physics
-    const isAirborne = char.playerState === 'AIRBORNE';
-    const friction = isAirborne ? AIR_FRICTION : FRICTION;
-    const skidDecel = isAirborne ? SKID_DECEL * 0.3 : SKID_DECEL;
-
-    if (inputDir !== 0) {
-      const movingOpposite = (char.velocityX > 0 && inputDir < 0) ||
-                             (char.velocityX < 0 && inputDir > 0);
-      if (movingOpposite) {
-        char.velocityX += inputDir * skidDecel * dt;
-      } else {
-        char.velocityX += inputDir * ACCELERATION * dt;
-      }
-    } else {
-      this._applyFriction(dt, char, friction);
-    }
-
-    char.velocityX = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, char.velocityX));
-
-    // Detect direction change
-    if (inputDir !== 0 && inputDir !== char.facingDir) {
-      if (isAirborne ||
-          (inputDir > 0 && char.velocityX >= 0) ||
-          (inputDir < 0 && char.velocityX <= 0)) {
-        this._startTurn(char, inputDir);
-      }
-    }
-
-    // Vertical physics
-    this._applyVerticalPhysics(dt, char);
-
-    // Update positions
-    this._applyPositionAndWrap(dt, char);
-  }
-
-  _updateCharIdle(dt, char) {
-    const isAirborne = char.playerState === 'AIRBORNE';
-    const friction = isAirborne ? AIR_FRICTION : FRICTION;
-    this._applyFriction(dt, char, friction);
-
-    this._applyVerticalPhysics(dt, char);
-    this._applyPositionAndWrap(dt, char);
-  }
-
-  _applyFriction(dt, char, friction) {
-    if (char.velocityX > 0) {
-      char.velocityX = Math.max(0, char.velocityX - friction * dt);
-    } else if (char.velocityX < 0) {
-      char.velocityX = Math.min(0, char.velocityX + friction * dt);
-    }
-  }
-
-  _applyVerticalPhysics(dt, char) {
-    if (char.playerState === 'AIRBORNE') {
-      char.velocityY -= GRAVITY * dt;
-      if (char.velocityY < -TERMINAL_VELOCITY) {
-        char.velocityY = -TERMINAL_VELOCITY;
-      }
-    }
-  }
-
-  // ---- Position, wrap, and collision ----
-
-  _applyPositionAndWrap(dt, char) {
-    const prevX = char.positionX;
-    const prevY = char.positionY;
-
-    char.positionX += char.velocityX * dt;
-    char.positionY += char.velocityY * dt;
-
-    // Platform collision detection
-    this._checkPlatformCollisions(char, prevX, prevY);
-
-    // Ceiling clamp
-    if (char.positionY > this._orthoTop - HEAD_OFFSET - 0.1) {
-      char.positionY = this._orthoTop - HEAD_OFFSET - 0.1;
-      char.velocityY = 0;
-    }
-
-    // Lava kill zone
-    if (char.positionY < this._orthoBottom + 1.0) {
-      char.hitLava = true;
-    }
-
-    // Screen wrap
-    if (char.positionX > ORTHO_RIGHT + CHAR_HALF_WIDTH) {
-      char.positionX = ORTHO_LEFT - CHAR_HALF_WIDTH;
-    } else if (char.positionX < ORTHO_LEFT - CHAR_HALF_WIDTH) {
-      char.positionX = ORTHO_RIGHT + CHAR_HALF_WIDTH;
-    }
-
-    // Update root position
-    if (char.birdRig?.root) {
-      char.birdRig.root.position.x = char.positionX;
-    }
-
-    // Turn animation
-    this._updateTurn(dt, char);
-  }
-
-  _checkPlatformCollisions(char, prevX, prevY) {
-    const feetY = char.positionY - FEET_OFFSET;
-    const prevFeetY = prevY - FEET_OFFSET;
-    const headY = char.positionY + HEAD_OFFSET;
-    const prevHeadY = prevY + HEAD_OFFSET;
-    const charLeft = char.positionX - CHAR_HALF_WIDTH;
-    const charRight = char.positionX + CHAR_HALF_WIDTH;
-
-    // Edge fall-off: grounded character walks off current platform
-    if (char.playerState === 'GROUNDED' && char.currentPlatform) {
-      const plat = char.currentPlatform;
-      if (charRight < plat.left || charLeft > plat.right) {
-        char.playerState = 'AIRBORNE';
-        char.currentPlatform = null;
-      }
-    }
-
-    // Landing check: falling onto a platform top
-    if (char.velocityY <= 0) {
-      for (const plat of this._platforms) {
-        if (charRight < plat.left || charLeft > plat.right) {
-          continue;
+    // Solo mode: tick internal simulation and sync rendering
+    if (this._soloSimulation) {
+      const input = this._inputReader
+        ? this._inputReader.sample()
+        : { left: false, right: false, flap: false };
+      const encoded = (input.left ? 0x01 : 0) | (input.right ? 0x02 : 0) | (input.flap ? 0x04 : 0);
+      this._soloSimulation.tick([encoded]);
+      const state = this._soloSimulation.getState();
+      if (state) {
+        // Sync humans
+        for (const human of state.humans) {
+          this._syncCharSlot(human, 'human', dt);
         }
-        if (prevFeetY >= plat.top && feetY < plat.top) {
-          char.positionY = plat.top + FEET_OFFSET;
-          char.velocityY = 0;
-          char.playerState = 'GROUNDED';
-          char.currentPlatform = plat;
-          break;
+        // Sync enemies
+        for (const enemy of state.enemies) {
+          this._syncCharSlot(enemy, 'enemy', dt);
         }
+        // Sync eggs
+        this._syncEggs(state.eggs, dt);
+        // Sync HUD
+        this._syncHUD(state);
+        // Sync banners
+        this._syncBanners(state);
+        // Save state for next-frame diffing
+        this._prevState = this._snapshotState(state);
       }
     }
-
-    // Head bump check: rising into platform underside
-    if (char.velocityY > 0) {
-      for (const plat of this._platforms) {
-        if (charRight < plat.left || charLeft > plat.right) {
-          continue;
-        }
-        if (prevHeadY <= plat.bottom && headY > plat.bottom) {
-          char.positionY = plat.bottom - HEAD_OFFSET;
-          char.velocityY = 0;
-          break;
-        }
-      }
-    }
-
-    // Side collision: horizontal blocking against platform edges
-    const currentFeetY = char.positionY - FEET_OFFSET;
-    const currentHeadY = char.positionY + HEAD_OFFSET;
-    const prevCharLeft = prevX - CHAR_HALF_WIDTH;
-    const prevCharRight = prevX + CHAR_HALF_WIDTH;
-
-    for (const plat of this._platforms) {
-      // Vertical extent must overlap the platform body
-      if (currentFeetY >= plat.top || currentHeadY <= plat.bottom) {
-        continue;
-      }
-
-      // Moving right into left edge of platform
-      if (prevCharRight <= plat.left && charRight > plat.left) {
-        char.positionX = plat.left - CHAR_HALF_WIDTH;
-        char.velocityX = 0;
-      }
-      // Moving left into right edge of platform
-      if (prevCharLeft >= plat.right && charLeft < plat.right) {
-        char.positionX = plat.right + CHAR_HALF_WIDTH;
-        char.velocityX = 0;
-      }
-    }
-  }
-
-  _checkJoustCollisions() {
-    // Check every unique pair of characters
-    for (let a = 0; a < this._chars.length; a++) {
-      for (let b = a + 1; b < this._chars.length; b++) {
-        this._checkJoustPair(a, b);
-      }
-    }
-  }
-
-  _checkJoustPair(idxA, idxB) {
-    const charA = this._chars[idxA];
-    const charB = this._chars[idxB];
-
-    if (!charA || !charB) {
-      return;
-    }
-
-    // Skip if either is dead, materializing, invincible, or in joust cooldown
-    if (charA.dead || charB.dead) {
-      return;
-    }
-    if (charA.materializing || charB.materializing) {
-      return;
-    }
-    if (charA.invincible || charB.invincible) {
-      return;
-    }
-    if (charA.joustCooldown > 0 || charB.joustCooldown > 0) {
-      return;
-    }
-
-    // Standard AABB overlap check
-    const aLeft = charA.positionX - CHAR_HALF_WIDTH;
-    const aRight = charA.positionX + CHAR_HALF_WIDTH;
-    const aFeet = charA.positionY - FEET_OFFSET;
-    const aHead = charA.positionY + HEAD_OFFSET;
-
-    const bLeft = charB.positionX - CHAR_HALF_WIDTH;
-    const bRight = charB.positionX + CHAR_HALF_WIDTH;
-    const bFeet = charB.positionY - FEET_OFFSET;
-    const bHead = charB.positionY + HEAD_OFFSET;
-
-    let collided = !(aRight < bLeft || aLeft > bRight || aHead < bFeet || aFeet > bHead);
-
-    // Crossing detection: catch tunneling when characters pass through each
-    // other in a single frame.
-    if (!collided) {
-      const prevRelX = charA.prevPositionX - charB.prevPositionX;
-      const currRelX = charA.positionX - charB.positionX;
-      const signFlipped = (prevRelX > 0 && currRelX < 0) || (prevRelX < 0 && currRelX > 0);
-
-      if (signFlipped) {
-        const aDeltaX = Math.abs(charA.positionX - charA.prevPositionX);
-        const bDeltaX = Math.abs(charB.positionX - charB.prevPositionX);
-        const noWrap = aDeltaX < ORTHO_WIDTH / 2 && bDeltaX < ORTHO_WIDTH / 2;
-
-        if (noWrap) {
-          const aMinY = Math.min(charA.positionY, charA.prevPositionY) - FEET_OFFSET;
-          const aMaxY = Math.max(charA.positionY, charA.prevPositionY) + HEAD_OFFSET;
-          const bMinY = Math.min(charB.positionY, charB.prevPositionY) - FEET_OFFSET;
-          const bMaxY = Math.max(charB.positionY, charB.prevPositionY) + HEAD_OFFSET;
-          collided = aMaxY > bMinY && aMinY < bMaxY;
-        }
-      }
-    }
-
-    if (!collided) {
-      return;
-    }
-
-    // Collision detected — compare heights
-    const heightDiff = charA.positionY - charB.positionY;
-    const pushA = charA.positionX <= charB.positionX ? -1 : 1;
-
-    if (Math.abs(heightDiff) < JOUST_HEIGHT_DEADZONE) {
-      // Deadzone — both bounce apart, no winner
-      const overlap = CHAR_HALF_WIDTH * 2 - Math.abs(charA.positionX - charB.positionX);
-      if (overlap > 0) {
-        charA.positionX += pushA * (overlap / 2 + 0.01);
-        charB.positionX += -pushA * (overlap / 2 + 0.01);
-      }
-
-      const bothGrounded = charA.playerState === 'GROUNDED' && charB.playerState === 'GROUNDED';
-      if (bothGrounded) {
-        charA.velocityX = pushA * JOUST_KNOCKBACK_X * 0.5;
-        charB.velocityX = -pushA * JOUST_KNOCKBACK_X * 0.5;
-      } else {
-        charA.velocityX = pushA * JOUST_KNOCKBACK_X;
-        charA.velocityY = JOUST_KNOCKBACK_Y;
-        charA.playerState = 'AIRBORNE';
-        charA.currentPlatform = null;
-
-        charB.velocityX = -pushA * JOUST_KNOCKBACK_X;
-        charB.velocityY = JOUST_KNOCKBACK_Y;
-        charB.playerState = 'AIRBORNE';
-        charB.currentPlatform = null;
-      }
-
-      this._startTurn(charA, pushA);
-      this._startTurn(charB, -pushA);
-
-      charA.joustCooldown = 0.15;
-      charB.joustCooldown = 0.15;
-    } else {
-      // Higher character wins
-      const winner = heightDiff > 0 ? charA : charB;
-      const loser = heightDiff > 0 ? charB : charA;
-      const loserIdx = heightDiff > 0 ? idxB : idxA;
-      const loserKnockDir = winner.positionX < loser.positionX ? 1 : -1;
-
-      winner.velocityY = JOUST_KNOCKBACK_Y;
-      winner.velocityX = loserKnockDir * -JOUST_KNOCKBACK_X * 0.3;
-      winner.playerState = 'AIRBORNE';
-      winner.currentPlatform = null;
-
-      this._killCharacter(loser, loserIdx, loserKnockDir);
-    }
-  }
-
-  _startTurn(char, newFacingDir) {
-    char.facingDir = newFacingDir;
-    char.isTurning = true;
-    char.turnTimer = 0;
-    if (newFacingDir === -1) {
-      char.turnFrom = 0;
-      char.turnTo = Math.PI;
-    } else {
-      char.turnFrom = Math.PI;
-      char.turnTo = 0;
-    }
+    // Renderer mode (external draw() provides state) — cosmetic updates only
   }
 
   _updateTurn(dt, char) {
@@ -1848,33 +1565,6 @@ export class Level1Scene {
     });
   }
 
-  _updateHUD() {
-    if (this._hudScoreText) {
-      this._hudScoreText.text = String(this._score).padStart(6, '0');
-    }
-    if (this._hudLivesText) {
-      this._hudLivesText.text = 'x' + this._lives;
-    }
-    if (this._hudWaveText) {
-      this._hudWaveText.text = 'WAVE ' + this._waveNumber;
-    }
-  }
-
-  _addScore(points) {
-    if (this._gameOverActive) {
-      return;
-    }
-    this._score += points;
-
-    // Extra life check
-    if (this._score >= this._nextLifeScore) {
-      this._lives += 1;
-      this._nextLifeScore += EXTRA_LIFE_THRESHOLD;
-    }
-
-    this._updateHUD();
-  }
-
   _showBanner(text, duration, callback) {
     if (!this._hudBannerText) {
       if (callback) {
@@ -1910,152 +1600,7 @@ export class Level1Scene {
     }
   }
 
-  _gameOver() {
-    this._gameOverActive = true;
-    this._showBanner('GAME OVER', 3, () => {
-      if (this._onQuitToMenu) {
-        this._onQuitToMenu();
-      }
-    });
-  }
-
-  // ---- Death / Explosion / Egg ----
-
-  _killCharacter(char, charIdx, knockDir) {
-    char.dead = true;
-    char.respawnTimer = RESPAWN_DELAY;
-
-    // Spawn egg at character position with their velocity
-    const enemyType = charIdx > 0 ? (char.enemyType !== undefined ? char.enemyType : ENEMY_TYPE_BOUNDER) : -1;
-    this._spawnEgg(char.positionX, char.positionY, char.velocityX + knockDir * 2, char.velocityY, enemyType);
-
-    // Award kill points to player when they kill an enemy
-    if (charIdx > 0) {
-      this._addScore(getKillPoints(enemyType));
-    }
-
-    // Player death: decrement lives
-    if (charIdx === 0) {
-      this._lives -= 1;
-      this._playerDiedThisWave = true;
-      if (this._lives <= 0) {
-        this._lives = 0;
-        // Explode but don't respawn — game over
-        this._explodeCharacter(char, charIdx);
-        this._disposeCharMeshes(char);
-        this._updateHUD();
-        this._gameOver();
-        return;
-      }
-    }
-
-    // Explode character into voxel debris (cosmetic only)
-    this._explodeCharacter(char, charIdx);
-
-    // Hide the character meshes
-    this._disposeCharMeshes(char);
-  }
-
-  _lavaDeath(char, charIdx) {
-    char.dead = true;
-    char.respawnTimer = RESPAWN_DELAY;
-
-    // Player death: decrement lives
-    if (charIdx === 0) {
-      this._lives -= 1;
-      this._playerDiedThisWave = true;
-      if (this._lives <= 0) {
-        this._lives = 0;
-        this._explodeCharacter(char, charIdx);
-        this._spawnLavaBurst();
-        this._disposeCharMeshes(char);
-        this._updateHUD();
-        this._gameOver();
-        return;
-      }
-    }
-
-    // Explode into lava — no egg
-    this._explodeCharacter(char, charIdx);
-    this._spawnLavaBurst();
-
-    // Hide the character meshes
-    this._disposeCharMeshes(char);
-  }
-
-  _respawnCharacter(char, charIdx) {
-    // Enemies don't respawn — they become eggs/hatch via wave system
-    if (charIdx > 0) {
-      return;
-    }
-
-    // Pick a random spawn point not occupied by another character
-    const occupiedFilter = 1.5;
-    const available = SPAWN_POINTS.filter(sp => {
-      for (let i = 0; i < this._chars.length; i++) {
-        if (i === charIdx) {
-          continue;
-        }
-        const other = this._chars[i];
-        if (other && !other.dead) {
-          const dist = Math.abs(other.positionX - sp.x);
-          if (dist < occupiedFilter) {
-            return false;
-          }
-        }
-      }
-      return true;
-    });
-
-    const spawn = available.length > 0
-      ? available[Math.floor(Math.random() * available.length)]
-      : SPAWN_POINTS[Math.floor(Math.random() * SPAWN_POINTS.length)];
-
-    const platform = this._platforms.find(p => p.id === spawn.platformId);
-
-    // Rebuild player character meshes
-    const VS = VOXEL_SIZE;
-    const notLit = true;
-
-    char.wingMode = 'updown';
-    char.birdRig = buildRig(this.scene, ostrichModel, VS, notLit);
-    const mergedPalette = buildKnightPalette(this._paletteIndex);
-    char.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS, notLit);
-    char.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
-
-    this._assembleCharacter(char, VS);
-
-    // Reset state
-    char.positionX = spawn.x;
-    char.positionY = platform.top + FEET_OFFSET;
-    char.velocityX = 0;
-    char.velocityY = 0;
-    char.playerState = 'GROUNDED';
-    char.currentPlatform = platform;
-    char.facingDir = 1;
-    char.isTurning = false;
-    char.turnTimer = 0;
-    char.stridePhase = 0;
-    char.isFlapping = false;
-    char.flapTimer = 0;
-    char.dead = false;
-    char.respawnTimer = 0;
-    char.invincible = true;
-    char.invincibleTimer = INVINCIBLE_DURATION;
-
-    // Start materialization
-    char.materializing = true;
-    char.materializeTimer = 0;
-    char.materializeDuration = MATERIALIZE_DURATION;
-    char.materializeQuickEnd = false;
-
-    if (char.birdRig.root) {
-      char.birdRig.root.position = new Vector3(char.positionX, char.positionY, 0);
-    }
-
-    this._setCharAlpha(char, 0);
-    this._createMaterializeParticles(char);
-  }
+  // ---- Death / Explosion ----
 
   _explodeCharacter(char, charIdx) {
     // Determine the correct model definitions and palettes for each rig
@@ -2194,351 +1739,5 @@ export class Level1Scene {
     });
   }
 
-  _spawnEgg(x, y, vx, vy, enemyType) {
-    const VS = VOXEL_SIZE;
-    const rig = buildRig(this.scene, eggModel, VS, true);
 
-    if (rig.root) {
-      rig.root.position = new Vector3(x, y, 0);
-    }
-
-    this._eggs.push({
-      positionX: x,
-      positionY: y,
-      velocityX: vx,
-      velocityY: vy,
-      rig,
-      onPlatform: false,
-      bounceCount: 0,
-      enemyType: enemyType !== undefined ? enemyType : ENEMY_TYPE_BOUNDER,
-      // Hatching state
-      hatchState: 'EGG_FALLING',
-      hatchTimer: 0,
-    });
-  }
-
-  _updateEggs(dt) {
-    const lavaY = this._orthoBottom + 1.0;
-    const player = this._chars[0];
-
-    for (let i = this._eggs.length - 1; i >= 0; i--) {
-      const egg = this._eggs[i];
-
-      // Only apply physics to eggs in falling/platform states
-      if (egg.hatchState === 'EGG_FALLING' || egg.hatchState === 'EGG_ON_PLATFORM' || egg.hatchState === 'EGG_WOBBLING') {
-        // Gravity
-        egg.velocityY -= GRAVITY * dt;
-        if (egg.velocityY < -TERMINAL_VELOCITY) {
-          egg.velocityY = -TERMINAL_VELOCITY;
-        }
-
-        // Friction
-        if (egg.onPlatform) {
-          if (egg.velocityX > 0) {
-            egg.velocityX = Math.max(0, egg.velocityX - FRICTION * dt);
-          } else if (egg.velocityX < 0) {
-            egg.velocityX = Math.min(0, egg.velocityX + FRICTION * dt);
-          }
-        }
-
-        egg.positionX += egg.velocityX * dt;
-        egg.positionY += egg.velocityY * dt;
-
-        // Platform collision for egg
-        const eggRadius = 2 * VOXEL_SIZE;
-        const eggFeet = egg.positionY - eggRadius;
-        const prevEggFeet = eggFeet - egg.velocityY * dt;
-        const wasOnPlatform = egg.onPlatform;
-        egg.onPlatform = false;
-
-        if (egg.velocityY <= 0) {
-          for (const plat of this._platforms) {
-            if (egg.positionX + eggRadius < plat.left || egg.positionX - eggRadius > plat.right) {
-              continue;
-            }
-            if (prevEggFeet >= plat.top && eggFeet < plat.top) {
-              egg.positionY = plat.top + eggRadius;
-              if (Math.abs(egg.velocityY) > 0.5) {
-                egg.velocityY *= -0.5;
-                egg.bounceCount += 1;
-              } else {
-                egg.velocityY = 0;
-                egg.onPlatform = true;
-                if (egg.hatchState === 'EGG_FALLING') {
-                  egg.hatchState = 'EGG_ON_PLATFORM';
-                  egg.hatchTimer = 0;
-                }
-              }
-              break;
-            }
-          }
-        }
-
-        // Keep platform state for already-landed eggs
-        if (wasOnPlatform && !egg.onPlatform && egg.velocityY === 0) {
-          egg.onPlatform = true;
-        }
-
-        // Screen wrap
-        if (egg.positionX > ORTHO_RIGHT + eggRadius) {
-          egg.positionX = ORTHO_LEFT - eggRadius;
-        } else if (egg.positionX < ORTHO_LEFT - eggRadius) {
-          egg.positionX = ORTHO_RIGHT + eggRadius;
-        }
-
-        // Destroy if fallen into lava — with explosion
-        if (egg.positionY < lavaY) {
-          this._spawnLavaBurst();
-          this._disposeEgg(egg);
-          this._eggs.splice(i, 1);
-          continue;
-        }
-
-        // Player-egg collection check
-        if (player && !player.dead && !player.materializing) {
-          const pLeft = player.positionX - CHAR_HALF_WIDTH;
-          const pRight = player.positionX + CHAR_HALF_WIDTH;
-          const pFeet = player.positionY - FEET_OFFSET;
-          const pHead = player.positionY + HEAD_OFFSET;
-
-          const eLeft = egg.positionX - eggRadius;
-          const eRight = egg.positionX + eggRadius;
-          const eBottom = egg.positionY - eggRadius;
-          const eTop = egg.positionY + eggRadius;
-
-          if (pRight > eLeft && pLeft < eRight && pHead > eBottom && pFeet < eTop) {
-            // Collect the egg
-            const midAir = !egg.onPlatform;
-            const basePoints = getEggPoints(this._eggsCollectedThisWave);
-            const bonus = midAir ? POINTS_EGG_MID_AIR : 0;
-            this._addScore(basePoints + bonus);
-            this._eggsCollectedThisWave += 1;
-
-            // Spawn collection effect
-            this._spawnEggCollectEffect(egg.positionX, egg.positionY, player);
-
-            this._disposeEgg(egg);
-            this._eggs.splice(i, 1);
-            continue;
-          }
-        }
-      }
-
-      // Hatch timer for platform eggs (only enemy eggs hatch)
-      if (egg.enemyType >= 0 && (egg.hatchState === 'EGG_ON_PLATFORM' || egg.hatchState === 'EGG_WOBBLING')) {
-        egg.hatchTimer += dt;
-
-        // Transition to wobbling
-        if (egg.hatchState === 'EGG_ON_PLATFORM' && egg.hatchTimer >= WOBBLE_START) {
-          egg.hatchState = 'EGG_WOBBLING';
-        }
-
-        // Wobble animation
-        if (egg.hatchState === 'EGG_WOBBLING' && egg.rig && egg.rig.root) {
-          const wobbleProgress = (egg.hatchTimer - WOBBLE_START) / (HATCH_TIME - WOBBLE_START);
-          const amplitude = 0.2 + wobbleProgress * 0.5;
-          const frequency = 8 + wobbleProgress * 12;
-          egg.rig.root.rotation.z = Math.sin(egg.hatchTimer * frequency) * amplitude;
-        }
-
-        // Hatch!
-        if (egg.hatchTimer >= HATCH_TIME) {
-          this._hatchEgg(egg);
-          this._disposeEgg(egg);
-          this._eggs.splice(i, 1);
-          continue;
-        }
-      }
-
-      // Update visual position
-      if (egg.rig && egg.rig.root) {
-        egg.rig.root.position.x = egg.positionX;
-        egg.rig.root.position.y = egg.positionY;
-      }
-    }
-  }
-
-  _hatchEgg(egg) {
-    // Egg explosion effect — gold particles burst outward
-    const tex = new DynamicTexture('hatchTex', 64, this.scene, false);
-    const ctx = tex.getContext();
-    ctx.clearRect(0, 0, 64, 64);
-    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-    gradient.addColorStop(0, 'rgba(255, 215, 0, 1)');
-    gradient.addColorStop(0.5, 'rgba(218, 165, 32, 0.8)');
-    gradient.addColorStop(1, 'rgba(184, 134, 11, 0)');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, 64, 64);
-    tex.update(false);
-    tex.hasAlpha = true;
-
-    const ps = new ParticleSystem('hatchBurst', 30, this.scene);
-    ps.particleTexture = tex;
-    ps.emitter = new Vector3(egg.positionX, egg.positionY, 0);
-    ps.direction1 = new Vector3(-2, 1, 0);
-    ps.direction2 = new Vector3(2, 4, 0);
-    ps.gravity = new Vector3(0, -4, 0);
-    ps.minSize = 0.05;
-    ps.maxSize = 0.15;
-    ps.minLifeTime = 0.3;
-    ps.maxLifeTime = 0.6;
-    ps.manualEmitCount = 20;
-    ps.color1 = new Color4(1.0, 0.85, 0.2, 1);
-    ps.color2 = new Color4(1.0, 0.65, 0.1, 1);
-    ps.colorDead = new Color4(0.8, 0.5, 0.0, 0);
-    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
-    ps.targetStopDuration = 0.2;
-    ps.disposeOnStop = true;
-    ps.start();
-
-    // Spawn a new enemy at the egg's position
-    // Upgrade enemy type after long time on platform (optional — keep same type for now)
-    const spawnType = egg.enemyType;
-    this._spawnEnemy(spawnType, egg.positionX, egg.positionY + 0.5);
-  }
-
-  _disposeEgg(egg) {
-    if (egg.rig) {
-      if (egg.rig.root) {
-        egg.rig.root.dispose();
-      }
-      for (const part of Object.values(egg.rig.parts)) {
-        if (part.mesh) {
-          part.mesh.dispose();
-        }
-      }
-    }
-  }
-
-  _spawnEggCollectEffect(x, y, player) {
-    // Gold sparkle particles that spiral toward the player
-    const tex = new DynamicTexture('eggCollectTex', 64, this.scene, false);
-    const ctx = tex.getContext();
-    ctx.clearRect(0, 0, 64, 64);
-    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-    gradient.addColorStop(0, 'rgba(255, 230, 100, 1)');
-    gradient.addColorStop(0.5, 'rgba(255, 200, 50, 0.8)');
-    gradient.addColorStop(1, 'rgba(255, 170, 0, 0)');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, 64, 64);
-    tex.update(false);
-    tex.hasAlpha = true;
-
-    const ps = new ParticleSystem('eggCollect', 40, this.scene);
-    ps.particleTexture = tex;
-    ps.emitter = new Vector3(x, y, 0);
-
-    ps.minEmitBox = new Vector3(-0.2, -0.2, 0);
-    ps.maxEmitBox = new Vector3(0.2, 0.2, 0);
-
-    // Spiral upward
-    ps.direction1 = new Vector3(-1, 1, 0);
-    ps.direction2 = new Vector3(1, 2, 0);
-    ps.gravity = new Vector3(0, 2, 0);
-
-    ps.minSize = 0.04;
-    ps.maxSize = 0.12;
-    ps.minLifeTime = 0.3;
-    ps.maxLifeTime = 0.7;
-    ps.emitRate = 60;
-    ps.manualEmitCount = 25;
-
-    ps.color1 = new Color4(1.0, 0.9, 0.4, 1);
-    ps.color2 = new Color4(1.0, 0.75, 0.2, 1);
-    ps.colorDead = new Color4(1.0, 0.6, 0.0, 0);
-
-    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
-    ps.targetStopDuration = 0.3;
-    ps.disposeOnStop = true;
-    ps.start();
-
-    // Brief golden aura on player — boost emissive
-    if (player && player.knightRig) {
-      const originalEmissives = [];
-      for (const part of Object.values(player.knightRig.parts)) {
-        if (part.mesh && part.mesh.material) {
-          originalEmissives.push({
-            mat: part.mesh.material,
-            original: part.mesh.material.emissiveColor ? part.mesh.material.emissiveColor.clone() : new Color3(0, 0, 0),
-          });
-          part.mesh.material.emissiveColor = new Color3(0.8, 0.65, 0.1);
-        }
-      }
-
-      // Fade back over 0.8s
-      let auraTime = 0;
-      const auraObs = this.scene.onBeforeRenderObservable.add(() => {
-        const frameDt = this.engine.getDeltaTime() / 1000;
-        auraTime += frameDt;
-        const t = Math.min(auraTime / 0.8, 1);
-        for (const entry of originalEmissives) {
-          if (entry.mat) {
-            entry.mat.emissiveColor = Color3.Lerp(
-              new Color3(0.8, 0.65, 0.1),
-              entry.original,
-              t
-            );
-          }
-        }
-        if (t >= 1) {
-          this.scene.onBeforeRenderObservable.remove(auraObs);
-        }
-      });
-    }
-  }
-
-  _disposeCharMeshes(char) {
-    // Dispose materialization particles
-    if (char.materializeParticles) {
-      char.materializeParticles.stop();
-      char.materializeParticles.dispose();
-      char.materializeParticles = null;
-    }
-
-    // Dispose all TransformNodes we created
-    const nodes = [
-      char.leftHipPivot, char.rightHipPivot,
-      char.leftKneePivot, char.rightKneePivot,
-      char.leftWingPivot, char.rightWingPivot,
-      char.leftShoulderNode, char.rightShoulderNode,
-      char.leftHipNode, char.rightHipNode,
-    ];
-    for (const node of nodes) {
-      if (node) {
-        node.dispose();
-      }
-    }
-
-    // Dispose rig meshes
-    if (char.birdRig) {
-      for (const part of Object.values(char.birdRig.parts)) {
-        if (part.mesh) {
-          part.mesh.dispose();
-        }
-      }
-      if (char.birdRig.root) {
-        char.birdRig.root.dispose();
-      }
-    }
-    if (char.knightRig) {
-      for (const part of Object.values(char.knightRig.parts)) {
-        if (part.mesh) {
-          part.mesh.dispose();
-        }
-      }
-      if (char.knightRig.root) {
-        char.knightRig.root.dispose();
-      }
-    }
-    if (char.lanceRig) {
-      for (const part of Object.values(char.lanceRig.parts)) {
-        if (part.mesh) {
-          part.mesh.dispose();
-        }
-      }
-      if (char.lanceRig.root) {
-        char.lanceRig.root.dispose();
-      }
-    }
-  }
 }

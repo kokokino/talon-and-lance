@@ -1,54 +1,70 @@
 // Enemy AI — produces input decisions for enemy characters
 // Returns { left, right, flap } matching player input format.
 // Three behavior types: Bounder (random), Hunter (tracker), Shadow Lord (predator).
+// All randomness flows through the DeterministicRNG passed to decide().
+// All timers are frame counts (integers). All thresholds are FP integers.
 
 import {
   ENEMY_TYPE_BOUNDER, ENEMY_TYPE_HUNTER, ENEMY_TYPE_SHADOW_LORD,
 } from './scoring.js';
 
-// Minimum height — AI avoids going below this (relative to ortho bottom)
-const LAVA_AVOIDANCE_Y = -3.0;
-const DIRECTION_CHANGE_INTERVAL = 1.5;
+import { FP_SCALE } from './physics/stateLayout.js';
+
+// FP thresholds (precomputed)
+const FP_DX_THRESHOLD = Math.round(0.5 * FP_SCALE);       // 128
+const FP_DX_THRESHOLD_SMALL = Math.round(0.3 * FP_SCALE);  // 77
+const FP_DY_THRESHOLD = Math.round(0.5 * FP_SCALE);        // 128
+const FP_DY_ABOVE_THRESHOLD = Math.round(2.0 * FP_SCALE);  // 512
+const FP_DY_NEAR_THRESHOLD = Math.round(0.5 * FP_SCALE);   // 128
+const FP_LAVA_AVOID = Math.round(2.5 * FP_SCALE);          // 640
+const FP_FALL_SPEED_THRESHOLD = Math.round(4.0 * FP_SCALE); // 1024
+const FP_FALL_SPEED_FAST = Math.round(5.0 * FP_SCALE);     // 1280
+
+// Frame-count timer intervals
+const DIR_CHANGE_FRAMES = 90;          // 1.5s * 60
+const BOUNDER_FLAP_INTERVAL = 12;     // 0.2s * 60
+const HUNTER_FLAP_INTERVAL = 9;       // 0.15s * 60
+const SHADOW_FLAP_INTERVAL = 7;       // 0.12s * 60
 
 export class EnemyAI {
-  constructor(enemyType) {
+  constructor(enemyType, initialDirTimer, initialCurrentDir) {
     this.enemyType = enemyType;
-    this._dirTimer = Math.random() * DIRECTION_CHANGE_INTERVAL;
-    this._currentDir = Math.random() > 0.5 ? 1 : -1;
-    this._flapAccum = 0;
+    this._dirTimer = initialDirTimer;     // frame count
+    this._currentDir = initialCurrentDir;
+    this._flapAccum = 0;                  // frame count
   }
 
   /**
    * Decide the next input for this enemy.
-   * @param {Object} enemy — enemy character state { positionX, positionY, velocityX, velocityY, playerState }
-   * @param {Object|null} player — player character state (null if player is dead)
-   * @param {number} orthoBottom — bottom of the view
-   * @param {number} dt — frame delta time in seconds
+   * @param {Object} enemy — enemy character state (FP integer positions/velocities)
+   * @param {Object|null} player — player character state (FP integers, null if dead)
+   * @param {number} orthoBottomFP — bottom of the view (FP integer)
+   * @param {DeterministicRNG} rng — seedable PRNG for determinism
    * @returns {{ left: boolean, right: boolean, flap: boolean }}
    */
-  decide(enemy, player, orthoBottom, dt) {
+  decide(enemy, player, orthoBottomFP, rng) {
     if (this.enemyType === ENEMY_TYPE_BOUNDER) {
-      return this._decideBounder(enemy, player, orthoBottom, dt);
+      return this._decideBounder(enemy, player, orthoBottomFP, rng);
     }
     if (this.enemyType === ENEMY_TYPE_HUNTER) {
-      return this._decideHunter(enemy, player, orthoBottom, dt);
+      return this._decideHunter(enemy, player, orthoBottomFP, rng);
     }
-    return this._decideShadowLord(enemy, player, orthoBottom, dt);
+    return this._decideShadowLord(enemy, player, orthoBottomFP, rng);
   }
 
   /**
    * Bounder — Wanderer: random movement, occasional flaps, avoids lava.
    */
-  _decideBounder(enemy, player, orthoBottom, dt) {
+  _decideBounder(enemy, player, orthoBottomFP, rng) {
     let flap = false;
     let left = false;
     let right = false;
 
-    // Random direction changes
-    this._dirTimer -= dt;
+    // Random direction changes (frame count)
+    this._dirTimer -= 1;
     if (this._dirTimer <= 0) {
-      this._dirTimer = DIRECTION_CHANGE_INTERVAL + Math.random() * 1.5;
-      this._currentDir = Math.random() > 0.5 ? 1 : -1;
+      this._dirTimer = DIR_CHANGE_FRAMES + rng.nextInt(90);
+      this._currentDir = rng.nextInt(2) === 1 ? 1 : -1;
     }
 
     if (this._currentDir > 0) {
@@ -57,22 +73,22 @@ export class EnemyAI {
       left = true;
     }
 
-    // Occasional flapping (20% chance per second)
-    this._flapAccum += dt;
-    if (this._flapAccum > 0.2) {
+    // Occasional flapping (20% chance per check, checked every 12 frames)
+    this._flapAccum += 1;
+    if (this._flapAccum > BOUNDER_FLAP_INTERVAL) {
       this._flapAccum = 0;
-      if (Math.random() < 0.20) {
+      if (rng.nextInt(100) < 20) {
         flap = true;
       }
     }
 
-    // Lava avoidance — forced flap when too low
-    if (enemy.positionY < orthoBottom + 2.5) {
+    // Lava avoidance (FP comparison)
+    if (enemy.positionY < orthoBottomFP + FP_LAVA_AVOID) {
       flap = true;
     }
 
-    // Also flap if falling fast
-    if (enemy.velocityY < -4.0) {
+    // Anti-fall flap (FP comparison)
+    if (enemy.velocityY < -FP_FALL_SPEED_THRESHOLD) {
       flap = true;
     }
 
@@ -82,49 +98,48 @@ export class EnemyAI {
   /**
    * Hunter — Tracker: seeks player horizontally, tries to gain height advantage.
    */
-  _decideHunter(enemy, player, orthoBottom, dt) {
+  _decideHunter(enemy, player, orthoBottomFP, rng) {
     let flap = false;
     let left = false;
     let right = false;
 
     if (!player) {
-      // No target — wander like a bounder
-      return this._decideBounder(enemy, player, orthoBottom, dt);
+      return this._decideBounder(enemy, player, orthoBottomFP, rng);
     }
 
-    // Move toward player horizontally
+    // Move toward player horizontally (FP comparison)
     const dx = player.positionX - enemy.positionX;
-    if (dx > 0.5) {
+    if (dx > FP_DX_THRESHOLD) {
       right = true;
-    } else if (dx < -0.5) {
+    } else if (dx < -FP_DX_THRESHOLD) {
       left = true;
     }
 
-    // Try to gain height advantage
+    // Try to gain height advantage (FP comparison)
     const dy = player.positionY - enemy.positionY;
-    this._flapAccum += dt;
-    if (this._flapAccum > 0.15) {
+    this._flapAccum += 1;
+    if (this._flapAccum > HUNTER_FLAP_INTERVAL) {
       this._flapAccum = 0;
-      // Flap more when below player
-      if (dy > 0.5) {
-        if (Math.random() < 0.55) {
+      if (dy > FP_DY_THRESHOLD) {
+        // Below player — flap more
+        if (rng.nextInt(100) < 55) {
           flap = true;
         }
       } else {
-        // Above player — flap occasionally to maintain height
-        if (Math.random() < 0.20) {
+        // Above player — flap occasionally
+        if (rng.nextInt(100) < 20) {
           flap = true;
         }
       }
     }
 
     // Lava avoidance
-    if (enemy.positionY < orthoBottom + 2.5) {
+    if (enemy.positionY < orthoBottomFP + FP_LAVA_AVOID) {
       flap = true;
     }
 
-    // Anti-fall flap
-    if (enemy.velocityY < -5.0) {
+    // Anti-fall
+    if (enemy.velocityY < -FP_FALL_SPEED_FAST) {
       flap = true;
     }
 
@@ -134,55 +149,56 @@ export class EnemyAI {
   /**
    * Shadow Lord — Predator: aggressively hunts player from above, leads target.
    */
-  _decideShadowLord(enemy, player, orthoBottom, dt) {
+  _decideShadowLord(enemy, player, orthoBottomFP, rng) {
     let flap = false;
     let left = false;
     let right = false;
 
     if (!player) {
-      return this._decideBounder(enemy, player, orthoBottom, dt);
+      return this._decideBounder(enemy, player, orthoBottomFP, rng);
     }
 
-    // Lead the player's movement slightly
-    const leadFactor = 0.3;
-    const predictedX = player.positionX + player.velocityX * leadFactor;
+    // Lead the player's movement: predictedX = playerX + playerVelX * 0.3
+    // In FP: (velX * 3 / 10) | 0
+    const leadX = (player.velocityX * 3 / 10) | 0;
+    const predictedX = player.positionX + leadX;
     const dx = predictedX - enemy.positionX;
 
-    if (dx > 0.3) {
+    if (dx > FP_DX_THRESHOLD_SMALL) {
       right = true;
-    } else if (dx < -0.3) {
+    } else if (dx < -FP_DX_THRESHOLD_SMALL) {
       left = true;
     }
 
-    // Aggressively stay above player
+    // Aggressively stay above player (FP comparison)
     const dy = player.positionY - enemy.positionY;
-    this._flapAccum += dt;
-    if (this._flapAccum > 0.12) {
+    this._flapAccum += 1;
+    if (this._flapAccum > SHADOW_FLAP_INTERVAL) {
       this._flapAccum = 0;
-      if (dy > -0.5) {
+      if (dy > -FP_DY_NEAR_THRESHOLD) {
         // Below or near player — flap aggressively
-        if (Math.random() < 0.70) {
+        if (rng.nextInt(100) < 70) {
           flap = true;
         }
-      } else if (dy < -2.0) {
-        // Well above player — can dive, flap less
-        if (Math.random() < 0.10) {
+      } else if (dy < -FP_DY_ABOVE_THRESHOLD) {
+        // Well above player — can dive
+        if (rng.nextInt(100) < 10) {
           flap = true;
         }
       } else {
-        if (Math.random() < 0.35) {
+        if (rng.nextInt(100) < 35) {
           flap = true;
         }
       }
     }
 
     // Lava avoidance
-    if (enemy.positionY < orthoBottom + 2.5) {
+    if (enemy.positionY < orthoBottomFP + FP_LAVA_AVOID) {
       flap = true;
     }
 
     // Anti-fall
-    if (enemy.velocityY < -5.0) {
+    if (enemy.velocityY < -FP_FALL_SPEED_FAST) {
       flap = true;
     }
 

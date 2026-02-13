@@ -31,7 +31,9 @@ export function initGeckosRelay() {
 
     // Parse authorization metadata
     try {
-      const auth = JSON.parse(channel.userData || '{}');
+      const auth = typeof channel.userData === 'string'
+        ? JSON.parse(channel.userData || '{}')
+        : (channel.userData || {});
       roomId = auth.roomId;
       userId = auth.userId;
     } catch (err) {

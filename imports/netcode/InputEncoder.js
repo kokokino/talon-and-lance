@@ -9,6 +9,7 @@ export const MessageType = {
   SYNC_RESPONSE: 0x04,
   QUALITY_REPORT: 0x05,
   QUALITY_REPLY: 0x06,
+  STATE_SYNC: 0x07,
 };
 
 // Input bits
@@ -104,6 +105,25 @@ export class InputEncoder {
     return buffer;
   }
 
+  // Encode a state sync message: [type(1B), frame(4B), stateData(NB)]
+  static encodeStateSyncMessage(frame, stateBuffer) {
+    const stateBytes = new Uint8Array(stateBuffer);
+    const buffer = new ArrayBuffer(5 + stateBytes.length);
+    const view = new DataView(buffer);
+    view.setUint8(0, MessageType.STATE_SYNC);
+    view.setUint32(1, frame, true);
+    new Uint8Array(buffer).set(stateBytes, 5);
+    return buffer;
+  }
+
+  // Decode a state sync message
+  static decodeStateSyncMessage(buffer) {
+    const view = new DataView(buffer);
+    const frame = view.getUint32(1, true);
+    const stateData = buffer.slice(5);
+    return { type: MessageType.STATE_SYNC, frame, stateData };
+  }
+
   // Get message type from any buffer
   static getMessageType(buffer) {
     const view = new DataView(buffer);
@@ -138,6 +158,9 @@ export class InputEncoder {
 
       case MessageType.QUALITY_REPLY:
         return { type, pong: view.getUint16(1, true) };
+
+      case MessageType.STATE_SYNC:
+        return InputEncoder.decodeStateSyncMessage(buffer);
 
       default:
         return { type };

@@ -1,6 +1,7 @@
 import { Meteor } from 'meteor/meteor';
 import { UsedNonces, SubscriptionCache } from '../imports/api/collections.js';
 import { GameRooms } from '../imports/lib/collections/gameRooms.js';
+import { HighScores } from '../imports/lib/collections/highScores.js';
 
 Meteor.startup(async () => {
   // SSO user lookup index
@@ -22,4 +23,9 @@ Meteor.startup(async () => {
   await GameRooms.createIndexAsync({ status: 1, createdAt: -1 });
   await GameRooms.createIndexAsync({ 'players.userId': 1 });
   await GameRooms.createIndexAsync({ hostId: 1 });
+  await GameRooms.createIndexAsync({ gameMode: 1, status: 1 });
+
+  // HighScores indexes
+  await HighScores.createIndexAsync({ score: -1 });
+  await HighScores.createIndexAsync({ userId: 1, gameMode: 1 });
 });

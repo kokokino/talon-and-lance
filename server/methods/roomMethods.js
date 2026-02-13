@@ -77,7 +77,7 @@ Meteor.methods({
       throw new Meteor.Error('not-found', 'Room not found');
     }
 
-    if (room.status !== RoomStatus.WAITING) {
+    if (room.status !== RoomStatus.WAITING && room.status !== RoomStatus.PLAYING) {
       throw new Meteor.Error('room-not-joinable', 'This room is no longer accepting players');
     }
 
@@ -142,29 +142,19 @@ Meteor.methods({
       throw new Meteor.Error('not-in-room', 'You are not in this room');
     }
 
-    // If the host leaves and room is waiting, close the room or migrate host
-    if (room.hostId === this.userId) {
-      const remainingPlayers = room.players.filter(p => p.userId !== this.userId);
+    const remainingPlayers = room.players.filter(p => p.userId !== this.userId);
 
-      if (remainingPlayers.length === 0 || room.status === RoomStatus.WAITING) {
-        if (remainingPlayers.length > 0) {
-          // Migrate host to the next player
-          await GameRooms.updateAsync(roomId, {
-            $set: { hostId: remainingPlayers[0].userId },
-            $pull: { players: { userId: this.userId } },
-          });
-        } else {
-          // No players left, mark room as finished
-          await GameRooms.updateAsync(roomId, {
-            $set: { status: RoomStatus.FINISHED, finishedAt: new Date() },
-          });
-        }
-      } else {
-        // Game is in progress — just remove the player
-        await GameRooms.updateAsync(roomId, {
-          $pull: { players: { userId: this.userId } },
-        });
-      }
+    if (remainingPlayers.length === 0) {
+      // No players left — mark room as finished
+      await GameRooms.updateAsync(roomId, {
+        $set: { status: RoomStatus.FINISHED, finishedAt: new Date() },
+      });
+    } else if (room.hostId === this.userId) {
+      // Host leaving — migrate host to next player (works in any status)
+      await GameRooms.updateAsync(roomId, {
+        $set: { hostId: remainingPlayers[0].userId },
+        $pull: { players: { userId: this.userId } },
+      });
     } else {
       // Non-host leaves
       await GameRooms.updateAsync(roomId, {

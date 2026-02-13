@@ -1,6 +1,7 @@
 // Fixed-timestep game loop for rollback netcode integration
 // Runs the game simulation at a fixed 60fps tick rate
 // Decouples rendering from simulation (render can run at display refresh rate)
+// Supports solo mode (no rollback) and multiplayer mode (with rollback)
 
 import { InputEncoder } from '../netcode/InputEncoder.js';
 
@@ -10,20 +11,21 @@ const TICK_MS = 1000 / TICK_RATE;
 export class GameLoop {
   constructor(config) {
     const {
-      session,       // RollbackSession instance
       game,          // Game simulation (must implement serialize/deserialize/tick)
       renderer,      // Renderer (must implement draw(state))
       inputReader,   // InputReader instance
-      transport,     // TransportManager instance
-      localPlayerIndex,
+      localPlayerIndex = 0,
     } = config;
 
-    this.session = session;
     this.game = game;
     this.renderer = renderer;
     this.inputReader = inputReader;
-    this.transport = transport;
     this.localPlayerIndex = localPlayerIndex;
+
+    // Solo mode: no rollback session, direct tick
+    this.soloMode = true;
+    this.session = null;
+    this.transport = null;
 
     this.accumulator = 0;
     this.lastTime = 0;
@@ -55,6 +57,25 @@ export class GameLoop {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
     }
+  }
+
+  /**
+   * Transition from solo mode to multiplayer mode.
+   * Called when a remote player connects.
+   */
+  transitionToMultiplayer(session, transport) {
+    this.session = session;
+    this.transport = transport;
+    this.soloMode = false;
+  }
+
+  /**
+   * Return to solo mode (e.g., all remote players disconnected).
+   */
+  transitionToSolo() {
+    this.soloMode = true;
+    this.session = null;
+    this.transport = null;
   }
 
   // --- Private ---
@@ -92,6 +113,15 @@ export class GameLoop {
     const rawInput = this.inputReader.sample();
     const encodedInput = InputEncoder.encodeInput(rawInput);
 
+    if (this.soloMode) {
+      // Solo mode: tick directly with just local player input
+      const inputs = [0, 0, 0, 0]; // 4 human slots, only local is active
+      inputs[this.localPlayerIndex] = encodedInput;
+      this.game.tick(inputs);
+      return;
+    }
+
+    // Multiplayer mode: use rollback session
     // 2. Feed to rollback session
     this.session.addLocalInput(encodedInput);
     const requests = this.session.advanceFrame();
@@ -129,8 +159,7 @@ export class GameLoop {
     // 5. Send checksum periodically for desync detection
     const checksumData = this.session.getCurrentChecksum();
     if (checksumData) {
-      // Send checksum as a quality report piggyback (or separate message)
-      // For now, checksums are verified locally when remote checksums arrive
+      // Checksums are verified locally when remote checksums arrive
     }
 
     // 6. Handle network events
@@ -154,7 +183,6 @@ export class GameLoop {
   _handleNetworkEvent(event) {
     switch (event.type) {
       case 'WaitRecommendation':
-        // Skip frames — the session already handles this by returning empty requests
         break;
 
       case 'DesyncDetected':

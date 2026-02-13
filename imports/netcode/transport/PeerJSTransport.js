@@ -71,7 +71,7 @@ export class PeerJSTransport extends Transport {
 
     const connection = this.peer.connect(peerId, {
       reliable: false, // unreliable for lower latency
-      serialization: 'none', // raw binary, no BinaryPack overhead
+      serialization: 'raw', // raw binary, no BinaryPack overhead
     });
 
     this._setupConnection(connection);

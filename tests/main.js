@@ -2,15 +2,19 @@ import assert from "assert";
 import { Meteor } from "meteor/meteor";
 import { Random } from "meteor/random";
 
+// Import game logic tests (pure modules, no Meteor/Babylon deps)
+import "../imports/game/tests/CollisionSystem.test.js";
+import "../imports/game/tests/GameSimulation.test.js";
+
 // Import server modules to ensure methods are registered
 if (Meteor.isServer) {
   require("../server/methods.js");
 }
 
-describe("spoke_app_skeleton", function () {
+describe("talon-and-lance", function () {
   it("package.json has correct name", async function () {
     const { name } = await import("../package.json");
-    assert.strictEqual(name, "spoke_app_skeleton");
+    assert.strictEqual(name, "talon-and-lance");
   });
 
   if (Meteor.isClient) {

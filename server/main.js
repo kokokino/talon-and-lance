@@ -10,7 +10,10 @@ import './migrations/0_steps.js';
 
 // Import game room methods and publications
 import './methods/roomMethods.js';
+import './methods/matchmakingMethods.js';
+import './methods/highScoreMethods.js';
 import './publications/roomPublications.js';
+import './publications/highScorePublications.js';
 
 // Import geckos.io relay bridge
 import { initGeckosRelay } from './relay/geckosBridge.js';

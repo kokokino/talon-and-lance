@@ -24,6 +24,8 @@ export class RollbackSession {
       maxPredictionWindow = DEFAULT_MAX_PREDICTION,
       inputDelay = DEFAULT_INPUT_DELAY,
       disconnectTimeout = DEFAULT_DISCONNECT_TIMEOUT,
+      startFrame = 0,
+      autoInputSlots = new Set(),
     } = config;
 
     this.numPlayers = numPlayers;
@@ -31,20 +33,24 @@ export class RollbackSession {
     this.maxPredictionWindow = maxPredictionWindow;
     this.inputDelay = inputDelay;
     this.disconnectTimeout = disconnectTimeout;
+    this.autoInputSlots = autoInputSlots; // Set of slot indices that always return input=0
 
-    // Per-player input queues
+    // Per-player input queues (confirmedFrame starts at startFrame-1 so
+    // prediction gap begins at 0 for drop-in sessions that start mid-game)
     this.inputQueues = [];
     for (let i = 0; i < numPlayers; i++) {
-      this.inputQueues.push(new InputQueue());
+      const queue = new InputQueue();
+      queue.confirmedFrame = startFrame - 1;
+      this.inputQueues.push(queue);
     }
 
     this.stateBuffer = new StateBuffer();
     this.timeSync = new TimeSync(numPlayers, localPlayerIndex);
 
     // Frame tracking
-    this.currentFrame = 0;
-    this.syncFrame = -1; // highest frame where all inputs are confirmed
-    this.lastSavedFrame = -1;
+    this.currentFrame = startFrame;
+    this.syncFrame = startFrame - 1; // highest frame where all inputs are confirmed
+    this.lastSavedFrame = startFrame - 1;
 
     // Event queue
     this.events = [];
@@ -64,6 +70,9 @@ export class RollbackSession {
 
     // Local input for this frame (set via addLocalInput)
     this.pendingLocalInput = null;
+
+    // Track the frame of the last local input added (for getLocalInput)
+    this.lastLocalInputFrame = -1;
 
     // Checksum tracking for desync detection
     this.lastChecksumFrame = -1;
@@ -134,6 +143,7 @@ export class RollbackSession {
     const inputFrame = this.currentFrame + this.inputDelay;
     if (this.pendingLocalInput !== null) {
       this.inputQueues[this.localPlayerIndex].addInput(inputFrame, this.pendingLocalInput, false);
+      this.lastLocalInputFrame = inputFrame;
       this.pendingLocalInput = null;
     }
 
@@ -220,10 +230,12 @@ export class RollbackSession {
 
   // Get the local input that should be sent to remote peers this frame
   getLocalInput() {
-    const inputFrame = this.currentFrame + this.inputDelay;
-    const result = this.inputQueues[this.localPlayerIndex].getInput(inputFrame);
+    if (this.lastLocalInputFrame < 0) {
+      return null;
+    }
+    const result = this.inputQueues[this.localPlayerIndex].getInput(this.lastLocalInputFrame);
     return {
-      frame: inputFrame,
+      frame: this.lastLocalInputFrame,
       input: result.input,
     };
   }
@@ -257,7 +269,11 @@ export class RollbackSession {
   _gatherInputs(frame) {
     const inputs = new Array(this.numPlayers);
     for (let i = 0; i < this.numPlayers; i++) {
-      inputs[i] = this.inputQueues[i].getInput(frame).input;
+      if (this.autoInputSlots.has(i)) {
+        inputs[i] = 0; // auto-input slots always return 0 (no input)
+      } else {
+        inputs[i] = this.inputQueues[i].getInput(frame).input;
+      }
     }
     return inputs;
   }
@@ -303,6 +319,9 @@ export class RollbackSession {
       }
       if (this.peerDisconnected[i]) {
         continue;
+      }
+      if (this.autoInputSlots.has(i)) {
+        continue; // auto-input slots never cause stalls
       }
 
       const confirmed = this.inputQueues[i].getConfirmedFrame();
