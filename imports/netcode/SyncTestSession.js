@@ -24,6 +24,7 @@ export class SyncTestSession {
     this.stateBuffer = new StateBuffer();
     this.checksumLog = []; // record of frame -> checksum for debugging
     this.errors = [];
+    this._inputHistory = new Map();
   }
 
   // Advance one frame with forced rollback for testing determinism
@@ -33,6 +34,9 @@ export class SyncTestSession {
 
     // Normalize inputs to array
     const inputArray = Array.isArray(inputs) ? inputs : [inputs];
+
+    // Store inputs for this frame so resimulation uses the correct inputs
+    this._inputHistory.set(this.currentFrame, inputArray.slice());
 
     // Save current state before advancing
     requests.push({
@@ -61,12 +65,12 @@ export class SyncTestSession {
         cell: this.stateBuffer.createCell(rollbackTarget),
       });
 
-      // Resimulate forward to current frame
-      // The game must apply the same inputs in the same order
+      // Resimulate forward to current frame using stored per-frame inputs
       for (let f = rollbackTarget; f < this.currentFrame; f++) {
+        const frameInputs = this._inputHistory.get(f) || inputArray;
         requests.push({
           type: 'AdvanceFrame',
-          inputs: inputArray, // same inputs
+          inputs: frameInputs,
         });
       }
 
@@ -76,6 +80,14 @@ export class SyncTestSession {
         type: 'SaveGameState',
         cell: this._createVerificationCell(this.currentFrame),
       });
+
+      // Prune old input history entries
+      const pruneThreshold = this.currentFrame - this.rollbackDepth - 1;
+      for (const frame of this._inputHistory.keys()) {
+        if (frame < pruneThreshold) {
+          this._inputHistory.delete(frame);
+        }
+      }
     }
 
     return requests;
@@ -123,6 +135,7 @@ export class SyncTestSession {
     this.checksumLog = [];
     this.errors = [];
     this._pendingVerification = null;
+    this._inputHistory = new Map();
   }
 
   // --- Private ---

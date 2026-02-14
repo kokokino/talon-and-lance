@@ -15,7 +15,7 @@ import {
   FP_GRAVITY_PF, FP_TERMINAL_VELOCITY, FP_FRICTION_PF,
   FP_FEET_OFFSET, FP_HEAD_OFFSET, FP_CHAR_HALF_WIDTH,
   FP_EGG_RADIUS, FP_ORTHO_LEFT, FP_ORTHO_RIGHT,
-  FP_LAVA_OFFSET, FP_BOUNCE_THRESHOLD, FP_OCCUPY_FILTER,
+  FP_LAVA_OFFSET, FP_BOUNCE_THRESHOLD,
   FP_MAX_SPEED, FP_EGG_HATCH_LIFT, FP_KILL_KNOCK_VX,
   SPAWN_POINTS_FP, ENEMY_SPAWN_POINTS_FP,
   GAME_MODE_TEAM, GAME_MODE_PVP,
@@ -51,7 +51,7 @@ import {
   AI_DIR_TIMER, AI_CURRENT_DIR, AI_FLAP_ACCUM, AI_ENEMY_TYPE,
   E_ACTIVE, E_POS_X, E_POS_Y, E_VEL_X, E_VEL_Y,
   E_ON_PLATFORM, E_ENEMY_TYPE, E_HATCH_STATE, E_HATCH_TIMER,
-  E_BOUNCE_COUNT, E_HIT_LAVA,
+  E_BOUNCE_COUNT, E_PREV_POS_Y, E_HIT_LAVA,
   WAVE_SPAWNING, WAVE_PLAYING, WAVE_TRANSITION,
   HATCH_FALLING, HATCH_ON_PLATFORM, HATCH_WOBBLING,
   STATE_GROUNDED, STATE_AIRBORNE,
@@ -124,24 +124,9 @@ export class GameSimulation {
     char.paletteIndex = paletteIndex;
     char.enemyType = -1;
 
-    // Spawn at a random point not occupied by another character (FP coordinates)
-    const available = SPAWN_POINTS_FP.filter(sp => {
-      for (let i = 0; i < this._chars.length; i++) {
-        if (i === slot) {
-          continue;
-        }
-        const other = this._chars[i];
-        if (other.active && !other.dead) {
-          if (Math.abs(other.positionX - sp.x) < FP_OCCUPY_FILTER) {
-            return false;
-          }
-        }
-      }
-      return true;
-    });
-    const spawn = available.length > 0
-      ? available[this._rng.nextInt(available.length)]
-      : SPAWN_POINTS_FP[this._rng.nextInt(SPAWN_POINTS_FP.length)];
+    // Pick spawn purely from RNG (no position-dependent filtering).
+    // Player has invincibility so overlapping at spawn is safe.
+    const spawn = SPAWN_POINTS_FP[this._rng.nextInt(SPAWN_POINTS_FP.length)];
     const platform = this._platforms.find(p => p.id === spawn.platformId);
     char.positionX = spawn.x;
     char.positionY = platform.top + FP_FEET_OFFSET;
@@ -473,6 +458,7 @@ export class GameSimulation {
       hatchState: HATCH_FALLING,
       hatchTimer: 0,                // frame count
       bounceCount: 0,
+      prevPositionY: 0,             // FP integer
       hitLava: false,
     };
   }
@@ -851,6 +837,7 @@ export class GameSimulation {
     egg.active = true;
     egg.positionX = x;
     egg.positionY = y;
+    egg.prevPositionY = y;
     egg.velocityX = vx;
     egg.velocityY = vy;
     egg.onPlatform = false;
@@ -870,6 +857,9 @@ export class GameSimulation {
 
       // Physics for falling/platform eggs
       if (egg.hatchState === HATCH_FALLING || egg.hatchState === HATCH_ON_PLATFORM || egg.hatchState === HATCH_WOBBLING) {
+        // Save pre-movement position for landing detection
+        egg.prevPositionY = egg.positionY;
+
         // Gravity (per-frame, FP integer)
         egg.velocityY -= FP_GRAVITY_PF;
         if (egg.velocityY < -FP_TERMINAL_VELOCITY) {
@@ -897,7 +887,7 @@ export class GameSimulation {
 
         // Platform collision
         const eggFeet = egg.positionY - FP_EGG_RADIUS;
-        const prevEggFeet = eggFeet - ((egg.velocityY / 60) | 0);
+        const prevEggFeet = egg.prevPositionY - FP_EGG_RADIUS;
         const wasOnPlatform = egg.onPlatform;
         egg.onPlatform = false;
 
@@ -926,7 +916,15 @@ export class GameSimulation {
         }
 
         if (wasOnPlatform && !egg.onPlatform && egg.velocityY === 0) {
-          egg.onPlatform = true;
+          const feet = egg.positionY - FP_EGG_RADIUS;
+          for (const plat of this._platforms) {
+            if (egg.positionX + FP_EGG_RADIUS >= plat.left &&
+                egg.positionX - FP_EGG_RADIUS <= plat.right &&
+                Math.abs(feet - plat.top) <= 1) {
+              egg.onPlatform = true;
+              break;
+            }
+          }
         }
 
         // Screen wrap (FP)
@@ -1082,6 +1080,7 @@ export class GameSimulation {
     buf[offset + E_HATCH_STATE] = egg.hatchState;
     buf[offset + E_HATCH_TIMER] = egg.hatchTimer;
     buf[offset + E_BOUNCE_COUNT] = egg.bounceCount;
+    buf[offset + E_PREV_POS_Y] = egg.prevPositionY;
     buf[offset + E_HIT_LAVA] = egg.hitLava ? 1 : 0;
   }
 
@@ -1096,6 +1095,7 @@ export class GameSimulation {
     egg.hatchState = buf[offset + E_HATCH_STATE];
     egg.hatchTimer = buf[offset + E_HATCH_TIMER];
     egg.bounceCount = buf[offset + E_BOUNCE_COUNT];
+    egg.prevPositionY = buf[offset + E_PREV_POS_Y];
     egg.hitLava = buf[offset + E_HIT_LAVA] === 1;
   }
 

@@ -52,6 +52,7 @@ export class MultiplayerManager {
     this._connectedPeers = new Map(); // peerId -> playerSlot
     this._preSessionInputBuffer = [];
     this._incomingMessageBuffer = [];
+    this._incomingPeerEvents = [];
     this._lastResyncTime = 0;
     this._destroyed = false;
   }
@@ -156,6 +157,7 @@ export class MultiplayerManager {
 
     this._simulation = null;
     this._session = null;
+    this._incomingPeerEvents = [];
   }
 
   /**
@@ -225,13 +227,14 @@ export class MultiplayerManager {
     // Initiate WebRTC connection
     this._transport.connectToPeers([player.peerJsId]);
 
-    // Set up connection callback
+    // Buffer peer events so they are processed during drainMessages(),
+    // not mid-tick from a WebRTC callback.
     this._transport.onPeerConnected = (peerId) => {
-      this._handlePeerConnected(peerId);
+      this._incomingPeerEvents.push({ type: 'connected', peerId });
     };
 
     this._transport.onPeerDisconnected = (peerId) => {
-      this._handlePeerDisconnected(peerId);
+      this._incomingPeerEvents.push({ type: 'disconnected', peerId });
     };
   }
 
@@ -277,9 +280,16 @@ export class MultiplayerManager {
     // Deactivate player in simulation
     this._simulation.deactivatePlayer(playerSlot);
 
-    // Mark slot as auto-input in session
+    // Mark slot as auto-input in session and clear stale checksums
     if (this._session) {
       this._session.autoInputSlots.add(playerSlot);
+
+      for (const [frame, peerChecksums] of this._session.remoteChecksums) {
+        peerChecksums.delete(playerSlot);
+        if (peerChecksums.size === 0) {
+          this._session.remoteChecksums.delete(frame);
+        }
+      }
     }
 
     this._connectedPeers.delete(peerId);
@@ -357,45 +367,69 @@ export class MultiplayerManager {
    * reducing unnecessary rollbacks.
    */
   drainMessages() {
+    // Process buffered peer lifecycle events before network messages
+    const peerEvents = this._incomingPeerEvents;
+    this._incomingPeerEvents = [];
+    for (const event of peerEvents) {
+      try {
+        if (event.type === 'connected') {
+          this._handlePeerConnected(event.peerId);
+        } else if (event.type === 'disconnected') {
+          this._handlePeerDisconnected(event.peerId);
+        }
+      } catch (err) {
+        console.error('[MultiplayerManager] Peer event error:', event.type, err);
+      }
+    }
+
     const messages = this._incomingMessageBuffer;
     this._incomingMessageBuffer = [];
 
     for (const { peerId, data } of messages) {
-      const buffer = data instanceof ArrayBuffer ? data : data.buffer;
-      const msgType = InputEncoder.getMessageType(buffer);
+      try {
+        const buffer = data instanceof ArrayBuffer ? data : data.buffer;
+        const msgType = InputEncoder.getMessageType(buffer);
 
-      if (msgType === MessageType.INPUT) {
-        const msg = InputEncoder.decodeInputMessage(buffer);
-        if (this._session) {
-          // Process redundant inputs oldest-first so confirmInput sees them in order
-          const inputs = msg.inputs || [{ frame: msg.frame, input: msg.input }];
-          for (let i = inputs.length - 1; i >= 0; i--) {
-            this._session.addRemoteInput(msg.playerIndex, inputs[i].frame, inputs[i].input);
+        if (msgType === MessageType.INPUT) {
+          const msg = InputEncoder.decodeInputMessage(buffer);
+          if (this._session) {
+            // Process redundant inputs oldest-first so confirmInput sees them in order
+            const inputs = msg.inputs || [{ frame: msg.frame, input: msg.input }];
+            for (let i = inputs.length - 1; i >= 0; i--) {
+              this._session.addRemoteInput(msg.playerIndex, inputs[i].frame, inputs[i].input);
+            }
+            this._session.peerLastRecvTime[msg.playerIndex] = Date.now();
+          } else {
+            // Buffer inputs arriving before session is set up (e.g., before STATE_SYNC)
+            this._preSessionInputBuffer.push(msg);
           }
-          this._session.peerLastRecvTime[msg.playerIndex] = Date.now();
-        } else {
-          // Buffer inputs arriving before session is set up (e.g., before STATE_SYNC)
-          this._preSessionInputBuffer.push(msg);
-        }
-      } else if (msgType === MessageType.STATE_SYNC) {
-        const msg = InputEncoder.decodeStateSyncMessage(buffer);
-        // Received state sync from host — load it
-        this._simulation.deserialize(msg.stateData);
-        // Set up rollback from this frame
-        if (this._gameLoop.soloMode) {
-          this._setupRollbackSession();
-        } else if (this._session) {
-          this._session.resetToFrame(msg.frame);
-          console.warn('[MultiplayerManager] Resync received, reset to frame', msg.frame);
-        }
-      } else if (msgType === MessageType.CHECKSUM) {
-        if (this._session) {
-          const msg = InputEncoder.decodeChecksumMessage(buffer);
-          const peerSlot = this._connectedPeers.get(peerId);
-          if (peerSlot !== undefined) {
-            this._session.addRemoteChecksum(peerSlot, msg.frame, msg.checksum);
+        } else if (msgType === MessageType.STATE_SYNC) {
+          const msg = InputEncoder.decodeStateSyncMessage(buffer);
+          if (!this._gameLoop.soloMode && this._session && msg.frame < this._simulation._frame) {
+            console.warn('[MultiplayerManager] Ignoring stale STATE_SYNC frame', msg.frame, '(current:', this._simulation._frame, ')');
+          } else {
+            // Received state sync from host — load it
+            this._simulation.deserialize(msg.stateData);
+            // Set up rollback from this frame
+            if (this._gameLoop.soloMode) {
+              this._setupRollbackSession();
+            } else if (this._session) {
+              this._session.resetToFrame(msg.frame);
+              console.warn('[MultiplayerManager] Resync received, reset to frame', msg.frame);
+            }
+          }
+        } else if (msgType === MessageType.CHECKSUM) {
+          if (this._session) {
+            const msg = InputEncoder.decodeChecksumMessage(buffer);
+            const peerSlot = this._connectedPeers.get(peerId);
+            if (peerSlot !== undefined) {
+              this._session.addRemoteChecksum(peerSlot, msg.frame, msg.checksum);
+              this._session.peerLastRecvTime[peerSlot] = Date.now();
+            }
           }
         }
+      } catch (err) {
+        console.warn('[MultiplayerManager] Bad message from', peerId, ':', err);
       }
     }
   }

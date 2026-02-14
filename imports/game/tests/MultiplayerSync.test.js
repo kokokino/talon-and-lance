@@ -129,7 +129,7 @@ const AI_FIELD_NAMES = ['DIR_TIMER', 'CURRENT_DIR', 'FLAP_ACCUM', 'ENEMY_TYPE'];
 const EGG_FIELD_NAMES = [
   'ACTIVE', 'POS_X', 'POS_Y', 'VEL_X', 'VEL_Y', 'ON_PLATFORM',
   'ENEMY_TYPE', 'HATCH_STATE', 'HATCH_TIMER', 'BOUNCE_COUNT',
-  'CURRENT_PLATFORM', 'HIT_LAVA',
+  'PREV_POS_Y', 'HIT_LAVA',
 ];
 
 function describeStateIndex(index) {

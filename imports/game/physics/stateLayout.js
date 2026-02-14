@@ -82,7 +82,7 @@ export const E_ENEMY_TYPE = 6;
 export const E_HATCH_STATE = 7;     // 0=FALLING, 1=ON_PLATFORM, 2=WOBBLING
 export const E_HATCH_TIMER = 8;     // fixed-point
 export const E_BOUNCE_COUNT = 9;
-export const E_CURRENT_PLATFORM = 10; // platform index or -1
+export const E_PREV_POS_Y = 10; // previous Y position for landing detection
 export const E_HIT_LAVA = 11;
 
 // ---- Compute total size and section offsets ----
