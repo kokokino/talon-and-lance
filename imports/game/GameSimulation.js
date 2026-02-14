@@ -780,25 +780,11 @@ export class GameSimulation {
       return;
     }
 
-    // Pick a spawn point not occupied by another character (FP comparison)
-    const available = SPAWN_POINTS_FP.filter(sp => {
-      for (let i = 0; i < this._chars.length; i++) {
-        if (i === charIdx) {
-          continue;
-        }
-        const other = this._chars[i];
-        if (other.active && !other.dead) {
-          if (Math.abs(other.positionX - sp.x) < FP_OCCUPY_FILTER) {
-            return false;
-          }
-        }
-      }
-      return true;
-    });
-
-    const spawn = available.length > 0
-      ? available[this._rng.nextInt(available.length)]
-      : SPAWN_POINTS_FP[this._rng.nextInt(SPAWN_POINTS_FP.length)];
+    // Pick a spawn point purely from the RNG (no position-dependent filtering).
+    // Filtering by other characters' positions causes desync in multiplayer because
+    // predicted positions differ between peers during rollback. The respawning player
+    // has invincibility so overlapping at spawn is safe.
+    const spawn = SPAWN_POINTS_FP[this._rng.nextInt(SPAWN_POINTS_FP.length)];
 
     const platform = this._platforms.find(p => p.id === spawn.platformId);
 

@@ -39,13 +39,14 @@ class MockNetwork {
     this._queue = [];
     this._dropRate = options.dropRate || 0;
     this._dropRng = options.dropRate ? new DeterministicRNG(seed + 999) : null;
+    this._maxDelay = options.maxDelay || 2;
   }
 
   send(currentTick, frame, input) {
     if (this._dropRate > 0 && this._dropRng.nextInt(1000) < this._dropRate * 1000) {
       return; // packet dropped
     }
-    const delay = 1 + this._rng.nextInt(2); // 1 or 2 frames
+    const delay = 1 + this._rng.nextInt(this._maxDelay); // 1 to maxDelay frames
     this._queue.push({ deliveryTick: currentTick + delay, frame, input });
   }
 
@@ -55,7 +56,7 @@ class MockNetwork {
     if (this._dropRate > 0 && this._dropRng.nextInt(1000) < this._dropRate * 1000) {
       return; // packet dropped
     }
-    const delay = 1 + this._rng.nextInt(2);
+    const delay = 1 + this._rng.nextInt(this._maxDelay);
     for (const inp of inputs) {
       this._queue.push({ deliveryTick: currentTick + delay, frame: inp.frame, input: inp.input });
     }
@@ -275,7 +276,7 @@ function createSim() {
 // ---- Main test harness ----
 
 function runMultiplayerSyncTest(totalFrames, options = {}) {
-  const { dropRate = 0, useRedundancy = false } = options;
+  const { dropRate = 0, useRedundancy = false, maxDelay = 2 } = options;
 
   // Two complete game stacks
   const simA = createSim();
@@ -302,8 +303,8 @@ function runMultiplayerSyncTest(totalFrames, options = {}) {
   simB.startGame();
 
   // Mock networks with independent delay RNGs
-  const netAtoB = new MockNetwork(300, { dropRate });
-  const netBtoA = new MockNetwork(400, { dropRate });
+  const netAtoB = new MockNetwork(300, { dropRate, maxDelay });
+  const netBtoA = new MockNetwork(400, { dropRate, maxDelay });
 
   // Per-player input RNGs
   const rngP0 = new DeterministicRNG(100);
