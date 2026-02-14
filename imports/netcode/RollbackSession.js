@@ -74,6 +74,10 @@ export class RollbackSession {
     // Track the frame of the last local input added (for getLocalInput)
     this.lastLocalInputFrame = -1;
 
+    // Misprediction-driven rollback tracking
+    this.needsRollback = false;
+    this.rollbackTargetFrame = -1;
+
     // Checksum tracking for desync detection
     this.lastChecksumFrame = -1;
     this.remoteChecksums = new Map(); // frame -> { peerIndex -> checksum }
@@ -102,9 +106,13 @@ export class RollbackSession {
       this.events.push({ type: 'NetworkResumed', peer: peerIndex });
     }
 
-    // If this input caused a misprediction, we need to rollback
+    // If this input caused a misprediction, record the earliest rollback target
     if (mispredicted) {
-      return true; // signals that a rollback will be needed
+      if (!this.needsRollback || frame < this.rollbackTargetFrame) {
+        this.rollbackTargetFrame = frame;
+      }
+      this.needsRollback = true;
+      return true;
     }
 
     return false;
@@ -280,33 +288,20 @@ export class RollbackSession {
 
   // Find the earliest frame that needs rollback due to misprediction
   _findRollbackFrame() {
-    let rollbackFrame = -1;
-
-    for (let i = 0; i < this.numPlayers; i++) {
-      if (i === this.localPlayerIndex) {
-        continue;
-      }
-
-      const confirmedFrame = this.inputQueues[i].getConfirmedFrame();
-
-      // Check each frame from syncFrame+1 to confirmedFrame for mispredictions
-      for (let f = this.syncFrame + 1; f <= confirmedFrame; f++) {
-        const result = this.inputQueues[i].getInput(f);
-        // If this frame's input is now confirmed, the prediction phase is over for it
-        // We need to check if the saved state at this frame was simulated with a different input
-        if (!result.predicted) {
-          if (rollbackFrame < 0 || f < rollbackFrame) {
-            // Check if we have a saved state to rollback to
-            const savedState = this.stateBuffer.load(f);
-            if (savedState !== null) {
-              rollbackFrame = f;
-            }
-          }
-        }
-      }
+    if (!this.needsRollback) {
+      return -1;
     }
 
-    return rollbackFrame;
+    const frame = this.rollbackTargetFrame;
+    this.needsRollback = false;
+    this.rollbackTargetFrame = -1;
+
+    const savedState = this.stateBuffer.load(frame);
+    if (savedState !== null) {
+      return frame;
+    }
+
+    return -1;
   }
 
   // Get the minimum confirmed frame across all remote players
@@ -418,6 +413,8 @@ export class RollbackSession {
     this.events = [];
     this.pendingLocalInput = null;
     this.running = false;
+    this.needsRollback = false;
+    this.rollbackTargetFrame = -1;
     this.lastChecksumFrame = -1;
     this.remoteChecksums.clear();
 

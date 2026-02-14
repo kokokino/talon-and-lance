@@ -36,25 +36,43 @@ export class InputEncoder {
     };
   }
 
-  // Encode an input message: [type(1B), frame(4B), playerIndex(1B), input(1B)]
-  static encodeInputMessage(frame, playerIndex, input) {
-    const buffer = new ArrayBuffer(7);
+  // Encode an input message with redundancy:
+  // [type(1B), frame(4B), playerIndex(1B), count(1B), input0(1B), ..., inputN-1(1B)]
+  // input0 = input for `frame`, input1 = input for `frame-1`, etc.
+  // Accepts a single input (number/object) or an array of inputs (newest first).
+  static encodeInputMessage(frame, playerIndex, inputs) {
+    const inputArray = Array.isArray(inputs) ? inputs : [inputs];
+    const count = inputArray.length;
+    const buffer = new ArrayBuffer(7 + count);
     const view = new DataView(buffer);
     view.setUint8(0, MessageType.INPUT);
     view.setUint32(1, frame, true); // little-endian
     view.setUint8(5, playerIndex);
-    view.setUint8(6, typeof input === 'number' ? input : InputEncoder.encodeInput(input));
+    view.setUint8(6, count);
+    for (let i = 0; i < count; i++) {
+      view.setUint8(7 + i, typeof inputArray[i] === 'number'
+        ? inputArray[i]
+        : InputEncoder.encodeInput(inputArray[i]));
+    }
     return buffer;
   }
 
-  // Decode an input message
+  // Decode an input message with redundancy
   static decodeInputMessage(buffer) {
     const view = new DataView(buffer);
+    const frame = view.getUint32(1, true);
+    const playerIndex = view.getUint8(5);
+    const count = view.getUint8(6);
+    const inputs = [];
+    for (let i = 0; i < count; i++) {
+      inputs.push({ frame: frame - i, input: view.getUint8(7 + i) });
+    }
     return {
       type: view.getUint8(0),
-      frame: view.getUint32(1, true),
-      playerIndex: view.getUint8(5),
-      input: view.getUint8(6),
+      frame,
+      playerIndex,
+      input: view.getUint8(7), // backward compat: first input
+      inputs,
     };
   }
 

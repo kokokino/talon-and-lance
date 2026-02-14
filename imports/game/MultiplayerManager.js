@@ -50,6 +50,7 @@ export class MultiplayerManager {
     this._roomSubscription = null;
     this._roomComputation = null;
     this._connectedPeers = new Map(); // peerId -> playerSlot
+    this._preSessionInputBuffer = [];
     this._destroyed = false;
   }
 
@@ -325,6 +326,17 @@ export class MultiplayerManager {
     // Start immediately (skip sync handshake for drop-in)
     this._session.running = true;
 
+    // Drain any input messages that arrived before the session was created
+    for (const msg of this._preSessionInputBuffer) {
+      const inputs = msg.inputs || [{ frame: msg.frame, input: msg.input }];
+      for (let i = inputs.length - 1; i >= 0; i--) {
+        if (inputs[i].frame >= this._simulation._frame) {
+          this._session.addRemoteInput(msg.playerIndex, inputs[i].frame, inputs[i].input);
+        }
+      }
+    }
+    this._preSessionInputBuffer = [];
+
     this._gameLoop.transitionToMultiplayer(this._session, this._transport);
   }
 
@@ -339,7 +351,15 @@ export class MultiplayerManager {
     if (msgType === MessageType.INPUT) {
       const msg = InputEncoder.decodeInputMessage(buffer);
       if (this._session) {
-        this._session.addRemoteInput(msg.playerIndex, msg.frame, msg.input);
+        // Process redundant inputs oldest-first so confirmInput sees them in order
+        const inputs = msg.inputs || [{ frame: msg.frame, input: msg.input }];
+        for (let i = inputs.length - 1; i >= 0; i--) {
+          this._session.addRemoteInput(msg.playerIndex, inputs[i].frame, inputs[i].input);
+        }
+        this._session.peerLastRecvTime[msg.playerIndex] = Date.now();
+      } else {
+        // Buffer inputs arriving before session is set up (e.g., before STATE_SYNC)
+        this._preSessionInputBuffer.push(InputEncoder.decodeInputMessage(buffer));
       }
     } else if (msgType === MessageType.STATE_SYNC) {
       const msg = InputEncoder.decodeStateSyncMessage(buffer);

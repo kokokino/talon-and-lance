@@ -66,8 +66,11 @@ export class InputQueue {
     }
 
     const index = frame % QUEUE_SIZE;
-    const wasPredicted = this.predicted[index];
-    const oldInput = this.inputs[index];
+    // If this frame was never written to the buffer, the slot contains stale
+    // data from a wrapped-around frame. Treat it as predicted with lastUserInput
+    // (matching what getInput() would have returned during simulation).
+    const wasPredicted = (frame > this.lastAddedFrame) ? true : this.predicted[index];
+    const oldInput = (frame > this.lastAddedFrame) ? this.lastUserInput : this.inputs[index];
 
     this.inputs[index] = input;
     this.predicted[index] = false;

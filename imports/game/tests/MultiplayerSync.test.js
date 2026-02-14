@@ -27,19 +27,38 @@ const NUM_PLAYERS = 4;
 const INPUT_DELAY = 2;
 const AUTO_INPUT_SLOTS = new Set([2, 3]);
 const CHECK_INTERVAL = 600; // 10 seconds at 60fps
+const INPUT_REDUNDANCY = 5;
 
 // ---- MockNetwork ----
 // FIFO queue with per-message 1-2 frame delivery delay (via its own PRNG).
+// Supports optional packet loss via dropRate (0.0-1.0).
 
 class MockNetwork {
-  constructor(seed) {
+  constructor(seed, options = {}) {
     this._rng = new DeterministicRNG(seed);
     this._queue = [];
+    this._dropRate = options.dropRate || 0;
+    this._dropRng = options.dropRate ? new DeterministicRNG(seed + 999) : null;
   }
 
   send(currentTick, frame, input) {
+    if (this._dropRate > 0 && this._dropRng.nextInt(1000) < this._dropRate * 1000) {
+      return; // packet dropped
+    }
     const delay = 1 + this._rng.nextInt(2); // 1 or 2 frames
     this._queue.push({ deliveryTick: currentTick + delay, frame, input });
+  }
+
+  // Send a batch of inputs as a single packet (for redundancy).
+  // The entire batch is either delivered or dropped together.
+  sendBatch(currentTick, inputs) {
+    if (this._dropRate > 0 && this._dropRng.nextInt(1000) < this._dropRate * 1000) {
+      return; // packet dropped
+    }
+    const delay = 1 + this._rng.nextInt(2);
+    for (const inp of inputs) {
+      this._queue.push({ deliveryTick: currentTick + delay, frame: inp.frame, input: inp.input });
+    }
   }
 
   receive(currentTick) {
@@ -232,14 +251,15 @@ function processRequests(sim, requests) {
 
 // ---- Factories ----
 
-function createSession(localPlayerIndex) {
+function createSession(localPlayerIndex, startFrame = 0) {
   return new RollbackSession({
     numPlayers: NUM_PLAYERS,
     localPlayerIndex,
     inputDelay: INPUT_DELAY,
-    autoInputSlots: AUTO_INPUT_SLOTS,
+    autoInputSlots: new Set(AUTO_INPUT_SLOTS),
     maxPredictionWindow: 8,
     disconnectTimeout: 60000, // large to prevent spurious disconnects
+    startFrame,
   });
 }
 
@@ -254,7 +274,9 @@ function createSim() {
 
 // ---- Main test harness ----
 
-function runMultiplayerSyncTest(totalFrames) {
+function runMultiplayerSyncTest(totalFrames, options = {}) {
+  const { dropRate = 0, useRedundancy = false } = options;
+
   // Two complete game stacks
   const simA = createSim();
   const simB = createSim();
@@ -280,12 +302,16 @@ function runMultiplayerSyncTest(totalFrames) {
   simB.startGame();
 
   // Mock networks with independent delay RNGs
-  const netAtoB = new MockNetwork(300);
-  const netBtoA = new MockNetwork(400);
+  const netAtoB = new MockNetwork(300, { dropRate });
+  const netBtoA = new MockNetwork(400, { dropRate });
 
   // Per-player input RNGs
   const rngP0 = new DeterministicRNG(100);
   const rngP1 = new DeterministicRNG(200);
+
+  // Input history for redundancy
+  const historyA = [];
+  const historyB = [];
 
   let desyncReport = null;
 
@@ -319,12 +345,28 @@ function runMultiplayerSyncTest(totalFrames) {
     // 4. Send local inputs over network
     const localA = sessionA.getLocalInput();
     if (localA) {
-      netAtoB.send(tick, localA.frame, localA.input);
+      if (useRedundancy) {
+        historyA.push({ frame: localA.frame, input: localA.input });
+        if (historyA.length > INPUT_REDUNDANCY) {
+          historyA.shift();
+        }
+        netAtoB.sendBatch(tick, historyA);
+      } else {
+        netAtoB.send(tick, localA.frame, localA.input);
+      }
     }
 
     const localB = sessionB.getLocalInput();
     if (localB) {
-      netBtoA.send(tick, localB.frame, localB.input);
+      if (useRedundancy) {
+        historyB.push({ frame: localB.frame, input: localB.input });
+        if (historyB.length > INPUT_REDUNDANCY) {
+          historyB.shift();
+        }
+        netBtoA.sendBatch(tick, historyB);
+      } else {
+        netBtoA.send(tick, localB.frame, localB.input);
+      }
     }
 
     // 5. Drain events to prevent queue buildup
@@ -353,6 +395,114 @@ function runMultiplayerSyncTest(totalFrames) {
   return desyncReport;
 }
 
+// ---- Staggered join test harness ----
+// Player 0 runs solo for soloFrames, then player 1 joins via state sync.
+
+function runStaggeredJoinSyncTest(soloFrames, multiplayerFrames) {
+  const simA = createSim();
+  const rngP0 = new DeterministicRNG(100);
+
+  // Player 0 runs solo
+  simA.activatePlayer(0, 0);
+  simA.startGame();
+
+  for (let tick = 0; tick < soloFrames; tick++) {
+    const input = generateInput(rngP0);
+    const inputs = [input, 0, 0, 0];
+    simA.tick(inputs);
+  }
+
+  // Player 1 joins: host activates player 1, serializes, joiner deserializes
+  simA.activatePlayer(1, 1);
+  const stateBuffer = simA.serialize();
+  const joinFrame = simA._frame;
+
+  const simB = createSim();
+  simB.deserialize(stateBuffer);
+
+  // Both create rollback sessions starting at the join frame
+  const sessionA = createSession(0, joinFrame);
+  const sessionB = createSession(1, joinFrame);
+
+  for (let i = 0; i < NUM_PLAYERS; i++) {
+    sessionA.setPeerConnected(i, true);
+    sessionB.setPeerConnected(i, true);
+    sessionA.peerSynchronized[i] = true;
+    sessionB.peerSynchronized[i] = true;
+  }
+  sessionA.running = true;
+  sessionB.running = true;
+
+  // Mock networks
+  const netAtoB = new MockNetwork(300);
+  const netBtoA = new MockNetwork(400);
+
+  const rngP1 = new DeterministicRNG(200);
+
+  let desyncReport = null;
+
+  for (let tick = 0; tick < multiplayerFrames; tick++) {
+    // Deliver
+    const msgsForA = netBtoA.receive(tick);
+    for (const msg of msgsForA) {
+      sessionA.addRemoteInput(1, msg.frame, msg.input);
+      sessionA.peerLastRecvTime[1] = Date.now();
+    }
+
+    const msgsForB = netAtoB.receive(tick);
+    for (const msg of msgsForB) {
+      sessionB.addRemoteInput(0, msg.frame, msg.input);
+      sessionB.peerLastRecvTime[0] = Date.now();
+    }
+
+    // Inputs
+    const inputP0 = generateInput(rngP0);
+    const inputP1 = generateInput(rngP1);
+
+    sessionA.addLocalInput(inputP0);
+    const reqsA = sessionA.advanceFrame();
+    processRequests(simA, reqsA);
+
+    sessionB.addLocalInput(inputP1);
+    const reqsB = sessionB.advanceFrame();
+    processRequests(simB, reqsB);
+
+    // Send
+    const localA = sessionA.getLocalInput();
+    if (localA) {
+      netAtoB.send(tick, localA.frame, localA.input);
+    }
+
+    const localB = sessionB.getLocalInput();
+    if (localB) {
+      netBtoA.send(tick, localB.frame, localB.input);
+    }
+
+    sessionA.pollEvents();
+    sessionB.pollEvents();
+
+    // Periodic check
+    if ((tick + 1) % CHECK_INTERVAL === 0) {
+      const bufA = new Int32Array(simA.serialize());
+      const bufB = new Int32Array(simB.serialize());
+      const report = compareStates(bufA, bufB, `tick ${tick + 1} (frame ${bufA[G_FRAME]})`);
+      if (report) {
+        desyncReport = report;
+        break;
+      }
+    }
+  }
+
+  // Final comparison
+  if (!desyncReport) {
+    const bufA = new Int32Array(simA.serialize());
+    const bufB = new Int32Array(simB.serialize());
+    desyncReport = compareStates(bufA, bufB, `final (tick ${multiplayerFrames}, frame ${bufA[G_FRAME]})`);
+  }
+
+  return desyncReport;
+}
+
 // ---- Mocha test suite ----
 
 describe('Multiplayer Sync', function () {
@@ -366,5 +516,23 @@ describe('Multiplayer Sync', function () {
     this.timeout(360000);
     const report = runMultiplayerSyncTest(18000);
     assert.strictEqual(report, null, report || 'Simulations should be in sync');
+  });
+
+  it('desyncs when packets are lost without redundancy', function () {
+    this.timeout(60000);
+    const report = runMultiplayerSyncTest(3600, { dropRate: 0.02 });
+    assert.notStrictEqual(report, null, 'Should desync without input redundancy under packet loss');
+  });
+
+  it('stays in sync with 2% packet loss using input redundancy', function () {
+    this.timeout(60000);
+    const report = runMultiplayerSyncTest(3600, { dropRate: 0.02, useRedundancy: true });
+    assert.strictEqual(report, null, report || 'Should stay in sync with redundant inputs');
+  });
+
+  it('stays in sync with staggered join', function () {
+    this.timeout(60000);
+    const report = runStaggeredJoinSyncTest(300, 3600);
+    assert.strictEqual(report, null, report || 'Should stay in sync after staggered join');
   });
 });

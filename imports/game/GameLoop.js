@@ -7,6 +7,7 @@ import { InputEncoder } from '../netcode/InputEncoder.js';
 
 const TICK_RATE = 60;
 const TICK_MS = 1000 / TICK_RATE;
+const INPUT_REDUNDANCY = 5;
 
 export class GameLoop {
   constructor(config) {
@@ -31,6 +32,9 @@ export class GameLoop {
     this.lastTime = 0;
     this.running = false;
     this.animationFrameId = null;
+
+    // Recent local inputs for redundancy (packet loss resilience)
+    this._recentLocalInputs = [];
 
     // Event handler (set by consumer)
     this.onNetworkEvent = null;
@@ -67,6 +71,7 @@ export class GameLoop {
     this.session = session;
     this.transport = transport;
     this.soloMode = false;
+    this._recentLocalInputs = [];
   }
 
   /**
@@ -76,6 +81,7 @@ export class GameLoop {
     this.soloMode = true;
     this.session = null;
     this.transport = null;
+    this._recentLocalInputs = [];
   }
 
   // --- Private ---
@@ -145,13 +151,24 @@ export class GameLoop {
       }
     }
 
-    // 4. Send local input to all peers
+    // 4. Send local input to all peers (with redundancy for packet loss resilience)
     const localInput = this.session.getLocalInput();
     if (localInput && this.transport) {
+      this._recentLocalInputs.push({ frame: localInput.frame, input: localInput.input });
+      if (this._recentLocalInputs.length > INPUT_REDUNDANCY) {
+        this._recentLocalInputs.shift();
+      }
+
+      // Build inputs array newest-first: [current, prev, prev-1, ...]
+      const inputsNewestFirst = [];
+      for (let i = this._recentLocalInputs.length - 1; i >= 0; i--) {
+        inputsNewestFirst.push(this._recentLocalInputs[i].input);
+      }
+
       const message = InputEncoder.encodeInputMessage(
         localInput.frame,
         this.localPlayerIndex,
-        localInput.input
+        inputsNewestFirst
       );
       this._broadcastToAllPeers(message);
     }

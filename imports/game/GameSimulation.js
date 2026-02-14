@@ -124,8 +124,24 @@ export class GameSimulation {
     char.paletteIndex = paletteIndex;
     char.enemyType = -1;
 
-    // Spawn at a random point (FP coordinates)
-    const spawn = SPAWN_POINTS_FP[this._rng.nextInt(SPAWN_POINTS_FP.length)];
+    // Spawn at a random point not occupied by another character (FP coordinates)
+    const available = SPAWN_POINTS_FP.filter(sp => {
+      for (let i = 0; i < this._chars.length; i++) {
+        if (i === slot) {
+          continue;
+        }
+        const other = this._chars[i];
+        if (other.active && !other.dead) {
+          if (Math.abs(other.positionX - sp.x) < FP_OCCUPY_FILTER) {
+            return false;
+          }
+        }
+      }
+      return true;
+    });
+    const spawn = available.length > 0
+      ? available[this._rng.nextInt(available.length)]
+      : SPAWN_POINTS_FP[this._rng.nextInt(SPAWN_POINTS_FP.length)];
     const platform = this._platforms.find(p => p.id === spawn.platformId);
     char.positionX = spawn.x;
     char.positionY = platform.top + FP_FEET_OFFSET;
