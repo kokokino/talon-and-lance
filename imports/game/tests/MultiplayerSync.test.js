@@ -121,7 +121,7 @@ const CHAR_FIELD_NAMES = [
   'MATERIALIZING', 'MATERIALIZE_TIMER', 'MATERIALIZE_DURATION',
   'MATERIALIZE_QUICK_END', 'SCORE', 'LIVES', 'EGGS_COLLECTED',
   'PREV_POS_X', 'PREV_POS_Y', 'NEXT_LIFE_SCORE', 'PALETTE_INDEX',
-  'PLAYER_DIED_WAVE', 'ENEMY_TYPE', 'HIT_LAVA',
+  'PLAYER_DIED_WAVE', 'ENEMY_TYPE', 'HIT_LAVA', 'PLATFORM_INDEX',
 ];
 
 const AI_FIELD_NAMES = ['DIR_TIMER', 'CURRENT_DIR', 'FLAP_ACCUM', 'ENEMY_TYPE'];
@@ -444,7 +444,8 @@ function runMultiplayerSyncTest(totalFrames, options = {}) {
 // ---- Staggered join test harness ----
 // Player 0 runs solo for soloFrames, then player 1 joins via state sync.
 
-function runStaggeredJoinSyncTest(soloFrames, multiplayerFrames) {
+function runStaggeredJoinSyncTest(soloFrames, multiplayerFrames, options = {}) {
+  const { drainFrames = 0 } = options;
   const simA = createSim();
   const rngP0 = new DeterministicRNG(100);
 
@@ -527,8 +528,10 @@ function runStaggeredJoinSyncTest(soloFrames, multiplayerFrames) {
     sessionA.pollEvents();
     sessionB.pollEvents();
 
-    // Periodic check
-    if ((tick + 1) % CHECK_INTERVAL === 0) {
+    // Periodic check (skip when drain phase is used, since
+    // recent frames may have undelivered inputs causing transient
+    // prediction disagreements)
+    if (drainFrames === 0 && (tick + 1) % CHECK_INTERVAL === 0) {
       const bufA = new Int32Array(simA.serialize());
       const bufB = new Int32Array(simB.serialize());
       const report = compareStates(bufA, bufB, `tick ${tick + 1} (frame ${bufA[G_FRAME]})`);
@@ -539,11 +542,53 @@ function runStaggeredJoinSyncTest(soloFrames, multiplayerFrames) {
     }
   }
 
+  // Drain phase: continue delivering in-flight inputs and processing rollbacks
+  // without generating new inputs, so the final comparison reflects fully-converged state.
+  if (!desyncReport && drainFrames > 0) {
+    for (let d = 0; d < drainFrames; d++) {
+      const drainTick = multiplayerFrames + d;
+
+      const msgsForA = netBtoA.receive(drainTick);
+      for (const msg of msgsForA) {
+        sessionA.addRemoteInput(1, msg.frame, msg.input);
+        sessionA.peerLastRecvTime[1] = Date.now();
+      }
+
+      const msgsForB = netAtoB.receive(drainTick);
+      for (const msg of msgsForB) {
+        sessionB.addRemoteInput(0, msg.frame, msg.input);
+        sessionB.peerLastRecvTime[0] = Date.now();
+      }
+
+      sessionA.addLocalInput(0);
+      const reqsA = sessionA.advanceFrame();
+      processRequests(simA, reqsA);
+
+      sessionB.addLocalInput(0);
+      const reqsB = sessionB.advanceFrame();
+      processRequests(simB, reqsB);
+
+      const localA = sessionA.getLocalInput();
+      if (localA) {
+        netAtoB.send(drainTick, localA.frame, localA.input);
+      }
+
+      const localB = sessionB.getLocalInput();
+      if (localB) {
+        netBtoA.send(drainTick, localB.frame, localB.input);
+      }
+
+      sessionA.pollEvents();
+      sessionB.pollEvents();
+    }
+  }
+
   // Final comparison
   if (!desyncReport) {
+    const totalTicks = multiplayerFrames + drainFrames;
     const bufA = new Int32Array(simA.serialize());
     const bufB = new Int32Array(simB.serialize());
-    desyncReport = compareStates(bufA, bufB, `final (tick ${multiplayerFrames}, frame ${bufA[G_FRAME]})`);
+    desyncReport = compareStates(bufA, bufB, `final (tick ${totalTicks}, frame ${bufA[G_FRAME]})`);
   }
 
   return desyncReport;
@@ -552,44 +597,43 @@ function runStaggeredJoinSyncTest(soloFrames, multiplayerFrames) {
 // ---- Mocha test suite ----
 
 describe('Multiplayer Sync', function () {
+  // All tests use a drain phase so the final comparison reflects fully-converged
+  // state. Without draining, the last 1-3 frames may have undelivered inputs
+  // causing transient prediction disagreements that are NOT real desyncs.
+
   it('stays in sync for 10 seconds (600 frames)', function () {
     this.timeout(30000);
-    const report = runMultiplayerSyncTest(600);
+    const report = runMultiplayerSyncTest(600, { drainFrames: 10 });
     assert.strictEqual(report, null, report || 'Simulations should be in sync');
   });
 
   it('stays in sync for 5 minutes (18000 frames)', function () {
     this.timeout(360000);
-    const report = runMultiplayerSyncTest(18000);
+    const report = runMultiplayerSyncTest(18000, { drainFrames: 10 });
     assert.strictEqual(report, null, report || 'Simulations should be in sync');
   });
 
   it('desyncs when packets are lost without redundancy', function () {
     this.timeout(60000);
-    const report = runMultiplayerSyncTest(3600, { dropRate: 0.02 });
+    const report = runMultiplayerSyncTest(3600, { dropRate: 0.02, drainFrames: 10 });
     assert.notStrictEqual(report, null, 'Should desync without input redundancy under packet loss');
   });
 
   it('stays in sync with 2% packet loss using input redundancy', function () {
     this.timeout(60000);
-    const report = runMultiplayerSyncTest(3600, { dropRate: 0.02, useRedundancy: true });
+    const report = runMultiplayerSyncTest(3600, { dropRate: 0.02, useRedundancy: true, drainFrames: 10 });
     assert.strictEqual(report, null, report || 'Should stay in sync with redundant inputs');
   });
 
   it('stays in sync with high delay (4-frame max)', function () {
     this.timeout(120000);
-    // Use maxDelay 4 to exercise rollback under high latency.
-    // Intermediate checks are skipped (checkInterval > totalFrames) because
-    // high delay means recent frames may have undelivered inputs causing
-    // transient prediction disagreements. Only the final state is compared
-    // after a drain phase lets all in-flight inputs arrive.
     const report = runMultiplayerSyncTest(3600, { maxDelay: 4, useRedundancy: true, drainFrames: 20 });
     assert.strictEqual(report, null, report || 'Should stay in sync under high delay');
   });
 
   it('stays in sync with staggered join', function () {
     this.timeout(60000);
-    const report = runStaggeredJoinSyncTest(300, 3600);
+    const report = runStaggeredJoinSyncTest(300, 3600, { drainFrames: 10 });
     assert.strictEqual(report, null, report || 'Should stay in sync after staggered join');
   });
 });

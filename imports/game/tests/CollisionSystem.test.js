@@ -6,7 +6,6 @@ import {
   applyKillToWinner,
   checkLavaKill,
   applyScreenWrap,
-  checkEggPlatformCollision,
   checkEggCollection,
 } from '../physics/CollisionSystem.js';
 import {

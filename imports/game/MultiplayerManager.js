@@ -114,6 +114,15 @@ export class MultiplayerManager {
       this._handleTransportMessage(peerId, data);
     });
 
+    // Buffer peer lifecycle events so they are processed during drainMessages(),
+    // not mid-tick from a WebRTC callback.
+    this._transport.onPeerConnected = (peerId) => {
+      this._incomingPeerEvents.push({ type: 'connected', peerId });
+    };
+    this._transport.onPeerDisconnected = (peerId) => {
+      this._incomingPeerEvents.push({ type: 'disconnected', peerId });
+    };
+
     // 6. Subscribe to room and watch for new players (after transport is ready)
     this._subscribeToRoom();
   }
@@ -226,16 +235,6 @@ export class MultiplayerManager {
 
     // Initiate WebRTC connection
     this._transport.connectToPeers([player.peerJsId]);
-
-    // Buffer peer events so they are processed during drainMessages(),
-    // not mid-tick from a WebRTC callback.
-    this._transport.onPeerConnected = (peerId) => {
-      this._incomingPeerEvents.push({ type: 'connected', peerId });
-    };
-
-    this._transport.onPeerDisconnected = (peerId) => {
-      this._incomingPeerEvents.push({ type: 'disconnected', peerId });
-    };
   }
 
   _handlePeerConnected(peerId) {

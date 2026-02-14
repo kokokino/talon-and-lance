@@ -22,8 +22,10 @@ export class DeterministicRNG {
   }
 
   // Returns an integer in [0, max) — replacement for Math.floor(Math.random() * max)
+  // Uses _advance() directly instead of going through next() to keep the
+  // seed advancement in one place.
   nextInt(max) {
-    return Math.floor(this._advance() / 4294967296 * max);
+    return (this._advance() / 4294967296 * max) | 0;
   }
 
   getSeed() {

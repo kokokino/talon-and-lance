@@ -4,9 +4,8 @@
 import {
   FP_CHAR_HALF_WIDTH, FP_FEET_OFFSET, FP_HEAD_OFFSET,
   FP_JOUST_DEADZONE, FP_JOUST_KNOCKBACK_X, FP_JOUST_KNOCKBACK_Y,
-  FP_ORTHO_WIDTH, FP_EGG_RADIUS, FP_FRICTION_PF,
-  FP_TERMINAL_VELOCITY, FP_GRAVITY_PF,
-  FP_LAVA_OFFSET, FP_OVERLAP_PUSH, FP_BOUNCE_THRESHOLD,
+  FP_ORTHO_WIDTH, FP_EGG_RADIUS,
+  FP_LAVA_OFFSET, FP_OVERLAP_PUSH,
   JOUST_COOLDOWN_FRAMES,
   GAME_MODE_TEAM,
 } from './constants.js';
@@ -238,47 +237,6 @@ export function applyScreenWrap(char, orthoLeftFP, orthoRightFP) {
   } else if (char.positionX < orthoLeftFP - FP_CHAR_HALF_WIDTH) {
     char.positionX = orthoRightFP + FP_CHAR_HALF_WIDTH;
   }
-}
-
-/**
- * Check egg-platform collision. FP integers. Mutates egg in place.
- * Returns true if egg landed on a platform this frame.
- */
-export function checkEggPlatformCollision(egg, platforms) {
-  const eggFeet = egg.positionY - FP_EGG_RADIUS;
-  // Approximate prev from velocity: prevFeet = feet + vel/60 (since we subtracted vel/60)
-  const prevEggFeet = eggFeet - ((egg.velocityY / 60) | 0);
-  const wasOnPlatform = egg.onPlatform;
-  egg.onPlatform = false;
-  let landed = false;
-
-  if (egg.velocityY <= 0) {
-    for (const plat of platforms) {
-      if (egg.positionX + FP_EGG_RADIUS < plat.left || egg.positionX - FP_EGG_RADIUS > plat.right) {
-        continue;
-      }
-      if (prevEggFeet >= plat.top && eggFeet < plat.top) {
-        egg.positionY = plat.top + FP_EGG_RADIUS;
-        if (Math.abs(egg.velocityY) > FP_BOUNCE_THRESHOLD) {
-          // Bounce: vel = -(vel / 2) — integer division
-          egg.velocityY = -((egg.velocityY / 2) | 0);
-          egg.bounceCount += 1;
-        } else {
-          egg.velocityY = 0;
-          egg.onPlatform = true;
-          landed = true;
-        }
-        break;
-      }
-    }
-  }
-
-  // Keep platform state for already-landed eggs
-  if (wasOnPlatform && !egg.onPlatform && egg.velocityY === 0) {
-    egg.onPlatform = true;
-  }
-
-  return landed;
 }
 
 /**

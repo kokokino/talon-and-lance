@@ -165,7 +165,6 @@ export const FP_LAVA_OFFSET = Math.round(1.0 * FP);
 export const FP_CEILING_GAP = Math.round(0.1 * FP);
 export const FP_OVERLAP_PUSH = Math.round(0.01 * FP);
 export const FP_BOUNCE_THRESHOLD = Math.round(0.5 * FP);
-export const FP_OCCUPY_FILTER = Math.round(1.5 * FP);
 export const FP_PLATFORM_EPSILON = Math.round(0.1 * FP);
 export const FP_EGG_HATCH_LIFT = Math.round(0.5 * FP);
 export const FP_KILL_KNOCK_VX = Math.round(2 * FP);
