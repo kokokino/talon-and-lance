@@ -8,6 +8,8 @@ import { InputEncoder } from '../netcode/InputEncoder.js';
 const TICK_RATE = 60;
 const TICK_MS = 1000 / TICK_RATE;
 const INPUT_REDUNDANCY = 5;
+const MAX_TICKS_PER_FRAME = 10;
+const CATASTROPHIC_CAP_MS = TICK_MS * 300;
 
 export class GameLoop {
   constructor(config) {
@@ -95,15 +97,20 @@ export class GameLoop {
     this.lastTime = now;
     this.accumulator += delta;
 
-    // Cap accumulator to prevent spiral of death (e.g., after tab was backgrounded)
-    if (this.accumulator > TICK_MS * 10) {
-      this.accumulator = TICK_MS * 10;
+    // Catastrophic cap: hard-clamp after extreme durations (5 seconds).
+    // Covers tab backgrounding or system sleep. Everything under 5s
+    // is handled by rate-limited catch-up that preserves remainder.
+    if (this.accumulator > CATASTROPHIC_CAP_MS) {
+      this.accumulator = TICK_MS * MAX_TICKS_PER_FRAME;
     }
 
-    // Fixed timestep: may run multiple ticks per render frame
-    while (this.accumulator >= TICK_MS) {
+    // Fixed timestep: up to MAX_TICKS_PER_FRAME ticks per render frame.
+    // Remainder stays in accumulator for next render frame (catch-up).
+    let ticksThisFrame = 0;
+    while (this.accumulator >= TICK_MS && ticksThisFrame < MAX_TICKS_PER_FRAME) {
       this._tick();
       this.accumulator -= TICK_MS;
+      ticksThisFrame++;
     }
 
     // Render current state (outside fixed timestep, at display refresh rate)
