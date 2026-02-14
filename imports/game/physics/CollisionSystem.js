@@ -29,12 +29,14 @@ export function checkPlatformCollisions(char, prevX, prevY, platforms) {
     if (charRight < plat.left || charLeft > plat.right) {
       char.playerState = 'AIRBORNE';
       char.currentPlatform = null;
+      char.platformIndex = -1;
     }
   }
 
   // Landing check: falling onto a platform top
   if (char.velocityY <= 0) {
-    for (const plat of platforms) {
+    for (let pi = 0; pi < platforms.length; pi++) {
+      const plat = platforms[pi];
       if (charRight < plat.left || charLeft > plat.right) {
         continue;
       }
@@ -43,6 +45,7 @@ export function checkPlatformCollisions(char, prevX, prevY, platforms) {
         char.velocityY = 0;
         char.playerState = 'GROUNDED';
         char.currentPlatform = plat;
+        char.platformIndex = pi;
         break;
       }
     }
@@ -194,11 +197,13 @@ export function applyBounce(charA, charB, pushDir) {
     charA.velocityY = FP_JOUST_KNOCKBACK_Y;
     charA.playerState = 'AIRBORNE';
     charA.currentPlatform = null;
+    charA.platformIndex = -1;
 
     charB.velocityX = -pushDir * FP_JOUST_KNOCKBACK_X;
     charB.velocityY = FP_JOUST_KNOCKBACK_Y;
     charB.playerState = 'AIRBORNE';
     charB.currentPlatform = null;
+    charB.platformIndex = -1;
   }
 
   charA.joustCooldown = JOUST_COOLDOWN_FRAMES;
@@ -214,6 +219,7 @@ export function applyKillToWinner(winner, loserKnockDir) {
   winner.velocityX = loserKnockDir * -((FP_JOUST_KNOCKBACK_X * 77 / 256) | 0);
   winner.playerState = 'AIRBORNE';
   winner.currentPlatform = null;
+  winner.platformIndex = -1;
 }
 
 /**

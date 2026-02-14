@@ -34,6 +34,7 @@ function makeChar(overrides = {}) {
     prevPositionX: 0,
     prevPositionY: 0,
     currentPlatform: null,
+    platformIndex: -1,
     isTurning: false,
     turnTimer: 0,
     ...overrides,

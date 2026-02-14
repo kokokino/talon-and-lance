@@ -27,7 +27,7 @@ export const G_SPAWN_QUEUE_START = 9;
 export const G_SPAWN_QUEUE_MAX = 10;
 
 // ---- Character slot (shared between humans and enemies) ----
-export const CHAR_SIZE = 31;
+export const CHAR_SIZE = 32;
 // Indices within a character slot:
 export const C_ACTIVE = 0;
 export const C_POS_X = 1;           // fixed-point
@@ -61,6 +61,7 @@ export const C_PLAYER_DIED_WAVE = 28;
 // Enemy-specific fields:
 export const C_ENEMY_TYPE = 29;      // -1 for human, 0/1/2 for enemy types
 export const C_HIT_LAVA = 30;
+export const C_PLATFORM_INDEX = 31;  // index into platforms array, or -1
 
 // ---- Enemy AI state slot (parallel to enemy character slots) ----
 export const AI_SIZE = 4;
@@ -90,7 +91,7 @@ export const ENEMIES_OFFSET = HUMANS_OFFSET + MAX_HUMANS * CHAR_SIZE;
 export const ENEMY_AI_OFFSET = ENEMIES_OFFSET + MAX_ENEMIES * CHAR_SIZE;
 export const EGGS_OFFSET = ENEMY_AI_OFFSET + MAX_ENEMIES * AI_SIZE;
 export const TOTAL_INTS = EGGS_OFFSET + MAX_EGGS * EGG_SIZE;
-// ~420 ints = ~1680 bytes
+// ~532 ints = ~2128 bytes
 
 // ---- Wave state enum ----
 export const WAVE_SPAWNING = 0;

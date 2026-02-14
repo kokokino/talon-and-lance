@@ -47,7 +47,7 @@ import {
   C_MATERIALIZING, C_MATERIALIZE_TIMER, C_MATERIALIZE_DURATION,
   C_MATERIALIZE_QUICK_END,
   C_SCORE, C_LIVES, C_EGGS_COLLECTED, C_PREV_POS_X, C_PREV_POS_Y,
-  C_NEXT_LIFE_SCORE, C_PALETTE_INDEX, C_PLAYER_DIED_WAVE, C_ENEMY_TYPE, C_HIT_LAVA,
+  C_NEXT_LIFE_SCORE, C_PALETTE_INDEX, C_PLAYER_DIED_WAVE, C_ENEMY_TYPE, C_HIT_LAVA, C_PLATFORM_INDEX,
   AI_DIR_TIMER, AI_CURRENT_DIR, AI_FLAP_ACCUM, AI_ENEMY_TYPE,
   E_ACTIVE, E_POS_X, E_POS_Y, E_VEL_X, E_VEL_Y,
   E_ON_PLATFORM, E_ENEMY_TYPE, E_HATCH_STATE, E_HATCH_TIMER,
@@ -149,6 +149,7 @@ export class GameSimulation {
     char.velocityY = 0;
     char.playerState = 'GROUNDED';
     char.currentPlatform = platform;
+    char.platformIndex = this._platforms.indexOf(platform);
     char.facingDir = 1;
     char.materializing = true;
     char.materializeTimer = 0;
@@ -458,6 +459,7 @@ export class GameSimulation {
       playerDiedThisWave: false,
       enemyType: -1,
       currentPlatform: null,
+      platformIndex: -1,
     };
   }
 
@@ -587,6 +589,7 @@ export class GameSimulation {
     char.velocityY = 0;
     char.playerState = 'AIRBORNE';
     char.currentPlatform = null;
+    char.platformIndex = -1;
     char.facingDir = 1;
     char.isTurning = false;
     char.turnTimer = 0;
@@ -794,6 +797,7 @@ export class GameSimulation {
     char.velocityY = 0;
     char.playerState = 'GROUNDED';
     char.currentPlatform = platform;
+    char.platformIndex = this._platforms.indexOf(platform);
     char.facingDir = 1;
     char.isTurning = false;
     char.turnTimer = 0;
@@ -1024,6 +1028,7 @@ export class GameSimulation {
     buf[offset + C_PLAYER_DIED_WAVE] = char.playerDiedThisWave ? 1 : 0;
     buf[offset + C_ENEMY_TYPE] = char.enemyType;
     buf[offset + C_HIT_LAVA] = char.hitLava ? 1 : 0;
+    buf[offset + C_PLATFORM_INDEX] = char.platformIndex;
   }
 
   _deserializeChar(buf, offset, char) {
@@ -1058,11 +1063,12 @@ export class GameSimulation {
     char.playerDiedThisWave = buf[offset + C_PLAYER_DIED_WAVE] === 1;
     char.enemyType = buf[offset + C_ENEMY_TYPE];
     char.hitLava = buf[offset + C_HIT_LAVA] === 1;
-    // Re-resolve platform reference for grounded characters
-    char.currentPlatform = null;
-    if (char.active && !char.dead && char.playerState === 'GROUNDED') {
-      char.currentPlatform = this._findPlatformUnder(char);
-    }
+    // Restore platform reference from serialized index
+    const platIdx = buf[offset + C_PLATFORM_INDEX];
+    char.platformIndex = platIdx;
+    char.currentPlatform = (platIdx >= 0 && platIdx < this._platforms.length)
+      ? this._platforms[platIdx]
+      : null;
   }
 
   _serializeEgg(buf, offset, egg) {
@@ -1091,25 +1097,6 @@ export class GameSimulation {
     egg.hatchTimer = buf[offset + E_HATCH_TIMER];
     egg.bounceCount = buf[offset + E_BOUNCE_COUNT];
     egg.hitLava = buf[offset + E_HIT_LAVA] === 1;
-  }
-
-  /**
-   * Find the platform a grounded character is standing on (FP integer comparison).
-   */
-  _findPlatformUnder(char) {
-    const feetY = char.positionY - FP_FEET_OFFSET;
-    const charLeft = char.positionX - FP_CHAR_HALF_WIDTH;
-    const charRight = char.positionX + FP_CHAR_HALF_WIDTH;
-
-    for (const plat of this._platforms) {
-      if (charRight < plat.left || charLeft > plat.right) {
-        continue;
-      }
-      if (Math.abs(feetY - plat.top) < 26) { // ~0.1 in FP
-        return plat;
-      }
-    }
-    return null;
   }
 
   // ---- Build render state ----

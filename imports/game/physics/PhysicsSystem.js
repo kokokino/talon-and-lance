@@ -35,6 +35,7 @@ export function applyInput(char, input, platforms, orthoTopFP, orthoBottomFP) {
     char.velocityY = FP_FLAP_IMPULSE;
     char.playerState = 'AIRBORNE';
     char.currentPlatform = null;
+    char.platformIndex = -1;
     char.isFlapping = true;
     char.flapTimer = 0;
   }
