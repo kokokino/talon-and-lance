@@ -81,6 +81,7 @@ export class RollbackSession {
     // Checksum tracking for desync detection
     this.lastChecksumFrame = -1;
     this.remoteChecksums = new Map(); // frame -> { peerIndex -> checksum }
+    this.checksumSuppressUntilFrame = -1;
   }
 
   // Add local input for the current frame
@@ -250,6 +251,9 @@ export class RollbackSession {
 
   // Get the checksum for the current frame (for sending to peers)
   getCurrentChecksum() {
+    if (this.currentFrame < this.checksumSuppressUntilFrame) {
+      return null;
+    }
     if (this.currentFrame > 0 && this.currentFrame % CHECKSUM_INTERVAL === 0) {
       const checksum = this.stateBuffer.getChecksum(this.currentFrame);
       if (checksum !== null) {
@@ -354,7 +358,18 @@ export class RollbackSession {
 
   // Check for desync by comparing local and remote checksums
   _checkDesync() {
+    if (this.currentFrame < this.checksumSuppressUntilFrame) {
+      return;
+    }
+
     for (const [frame, peerChecksums] of this.remoteChecksums) {
+      // Only compare checksums for frames where ALL inputs are confirmed.
+      // Frames beyond syncFrame have predicted inputs and will legitimately
+      // differ between peers.
+      if (frame > this.syncFrame) {
+        continue;
+      }
+
       const localChecksum = this.stateBuffer.getChecksum(frame);
       if (localChecksum === null) {
         continue;
@@ -430,6 +445,7 @@ export class RollbackSession {
     this.needsRollback = false;
     this.rollbackTargetFrame = -1;
     this.remoteChecksums.clear();
+    this.checksumSuppressUntilFrame = frame + CHECKSUM_INTERVAL * 2;
     this.stateBuffer.reset();
     for (let i = 0; i < this.numPlayers; i++) {
       this.inputQueues[i].reset();
@@ -450,6 +466,7 @@ export class RollbackSession {
     this.rollbackTargetFrame = -1;
     this.lastChecksumFrame = -1;
     this.remoteChecksums.clear();
+    this.checksumSuppressUntilFrame = -1;
 
     for (let i = 0; i < this.numPlayers; i++) {
       this.inputQueues[i].reset();

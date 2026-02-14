@@ -10,6 +10,7 @@ import {
   FP_ORTHO_LEFT, FP_ORTHO_RIGHT,
 } from './constants.js';
 import { checkPlatformCollisions, checkLavaKill, applyScreenWrap } from './CollisionSystem.js';
+import { velPerFrame } from './stateLayout.js';
 
 /**
  * Apply player/AI input to a character. Handles flap, horizontal physics,
@@ -131,9 +132,9 @@ export function applyGravity(char) {
  * All values are FP integers. Mutates in place.
  */
 export function applyPositionAndCollisions(char, platforms, orthoTopFP, orthoBottomFP) {
-  // Position update: vel is FP/sec, divide by 60 for per-frame, truncate to int
-  char.positionX += (char.velocityX / 60) | 0;
-  char.positionY += (char.velocityY / 60) | 0;
+  // Position update: vel is FP/sec, divide by 60 for per-frame (integer-only)
+  char.positionX += velPerFrame(char.velocityX);
+  char.positionY += velPerFrame(char.velocityY);
 
   // Platform collision detection
   checkPlatformCollisions(char, char.prevPositionX, char.prevPositionY, platforms);

@@ -79,11 +79,11 @@ export function getWaveComposition(waveNumber) {
     // Wave 16-21: mixed with shadow lords
     bounders = Math.max(0, 3 - (waveNumber - WAVE_SHADOW_LORD_INTRO));
     hunters = 2;
-    shadowLords = 1 + Math.floor((waveNumber - WAVE_SHADOW_LORD_INTRO) / 2);
+    shadowLords = 1 + ((waveNumber - WAVE_SHADOW_LORD_INTRO) >> 1);
   } else if (waveNumber >= WAVE_HUNTER_INTRO) {
     // Wave 4-15: bounders + hunters
-    bounders = Math.max(1, 5 - Math.floor((waveNumber - WAVE_HUNTER_INTRO) / 3));
-    hunters = 2 + Math.floor((waveNumber - WAVE_HUNTER_INTRO) / 2);
+    bounders = Math.max(1, 5 - (((waveNumber - WAVE_HUNTER_INTRO) / 3) | 0));
+    hunters = 2 + ((waveNumber - WAVE_HUNTER_INTRO) >> 1);
   } else {
     // Wave 1-3: bounders only
     bounders = waveNumber + 2; // 3, 4, 5

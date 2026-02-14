@@ -7,6 +7,7 @@ export class InputQueue {
   constructor() {
     this.inputs = new Array(QUEUE_SIZE);
     this.predicted = new Array(QUEUE_SIZE);
+    this.frames = new Array(QUEUE_SIZE);
     this.confirmedFrame = -1;
     this.lastAddedFrame = -1;
     this.lastUserInput = 0;
@@ -14,6 +15,7 @@ export class InputQueue {
     for (let i = 0; i < QUEUE_SIZE; i++) {
       this.inputs[i] = 0;
       this.predicted[i] = false;
+      this.frames[i] = -1;
     }
   }
 
@@ -22,6 +24,7 @@ export class InputQueue {
     const index = frame % QUEUE_SIZE;
     this.inputs[index] = input;
     this.predicted[index] = isPredicted;
+    this.frames[index] = frame;
 
     if (!isPredicted) {
       this.confirmedFrame = Math.max(this.confirmedFrame, frame);
@@ -42,6 +45,15 @@ export class InputQueue {
     const index = frame % QUEUE_SIZE;
 
     if (frame <= this.lastAddedFrame) {
+      // Defense-in-depth: if the slot contains data from a wrapped-around
+      // frame (stale), overwrite with a fresh prediction. Skip constructor-
+      // initialized slots (frames=-1) which have safe default values.
+      if (this.frames[index] !== -1 && this.frames[index] !== frame) {
+        this.inputs[index] = this.lastUserInput;
+        this.predicted[index] = true;
+        this.frames[index] = frame;
+        return { input: this.lastUserInput, predicted: true };
+      }
       if (!this.predicted[index]) {
         // Confirmed input — update prediction baseline so subsequent
         // predicted frames use this value. This is critical during rollback
@@ -62,6 +74,7 @@ export class InputQueue {
       const fillIndex = f % QUEUE_SIZE;
       this.inputs[fillIndex] = this.lastUserInput;
       this.predicted[fillIndex] = true;
+      this.frames[fillIndex] = f;
     }
     this.lastAddedFrame = frame;
 
@@ -79,18 +92,22 @@ export class InputQueue {
         const fillIndex = f % QUEUE_SIZE;
         this.inputs[fillIndex] = this.lastUserInput;
         this.predicted[fillIndex] = true;
+        this.frames[fillIndex] = f;
       }
     }
 
     const index = frame % QUEUE_SIZE;
-    // If this frame was never written to the buffer, the slot contains stale
-    // data from a wrapped-around frame. Treat it as predicted with lastUserInput
+    // If this frame was never written to the buffer, or the slot contains stale
+    // data from a wrapped-around frame, treat it as predicted with lastUserInput
     // (matching what getInput() would have returned during simulation).
-    const wasPredicted = (frame > this.lastAddedFrame) ? true : this.predicted[index];
-    const oldInput = (frame > this.lastAddedFrame) ? this.lastUserInput : this.inputs[index];
+    // Skip constructor-initialized slots (frames=-1) for the aliasing check.
+    const isStale = (frame > this.lastAddedFrame) || (this.frames[index] !== -1 && this.frames[index] !== frame);
+    const wasPredicted = isStale ? true : this.predicted[index];
+    const oldInput = isStale ? this.lastUserInput : this.inputs[index];
 
     this.inputs[index] = input;
     this.predicted[index] = false;
+    this.frames[index] = frame;
     this.confirmedFrame = Math.max(this.confirmedFrame, frame);
 
     // Track the highest frame written to the ring buffer
@@ -119,6 +136,7 @@ export class InputQueue {
     for (let i = 0; i < QUEUE_SIZE; i++) {
       this.inputs[i] = 0;
       this.predicted[i] = false;
+      this.frames[i] = -1;
     }
     this.confirmedFrame = -1;
     this.lastAddedFrame = -1;

@@ -451,13 +451,12 @@ export class MultiplayerManager {
           const stateBuffer = this._simulation.serialize();
           const frame = this._simulation._frame;
           const syncMsg = InputEncoder.encodeStateSyncMessage(frame, stateBuffer);
-          for (const [peerId, slot] of this._connectedPeers) {
-            if (slot === event.peer) {
-              this._transport.send(peerId, syncMsg);
-              break;
-            }
+          // Broadcast to ALL connected peers so everyone converges to the
+          // same authoritative state (critical for 3-4 player games)
+          for (const [peerId] of this._connectedPeers) {
+            this._transport.send(peerId, syncMsg);
           }
-          console.warn('[MultiplayerManager] Resync sent to peer', event.peer, 'at frame', frame);
+          console.warn('[MultiplayerManager] Resync broadcast to all peers at frame', frame);
         }
       }
     }

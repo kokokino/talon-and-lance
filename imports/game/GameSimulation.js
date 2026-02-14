@@ -55,7 +55,7 @@ import {
   WAVE_SPAWNING, WAVE_PLAYING, WAVE_TRANSITION,
   HATCH_FALLING, HATCH_ON_PLATFORM, HATCH_WOBBLING,
   STATE_GROUNDED, STATE_AIRBORNE,
-  toFP, fromFP,
+  toFP, fromFP, velPerFrame,
 } from './physics/stateLayout.js';
 
 const NUM_HUMAN_SLOTS = MAX_HUMANS;
@@ -900,9 +900,9 @@ export class GameSimulation {
           }
         }
 
-        // Position update (vel/60, integer division)
-        egg.positionX += (egg.velocityX / 60) | 0;
-        egg.positionY += (egg.velocityY / 60) | 0;
+        // Position update (vel/60, integer-only via reciprocal multiply)
+        egg.positionX += velPerFrame(egg.velocityX);
+        egg.positionY += velPerFrame(egg.velocityY);
 
         // Platform collision
         const eggFeet = egg.positionY - FP_EGG_RADIUS;
@@ -918,8 +918,8 @@ export class GameSimulation {
             if (prevEggFeet >= plat.top && eggFeet < plat.top) {
               egg.positionY = plat.top + FP_EGG_RADIUS;
               if (Math.abs(egg.velocityY) > FP_BOUNCE_THRESHOLD) {
-                // Bounce: integer division
-                egg.velocityY = -((egg.velocityY / 2) | 0);
+                // Bounce: negate then halve via shift (velocityY is always negative here)
+                egg.velocityY = (-egg.velocityY) >> 1;
                 egg.bounceCount += 1;
               } else {
                 egg.velocityY = 0;

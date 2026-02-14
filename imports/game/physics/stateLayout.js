@@ -130,3 +130,17 @@ export function fpDiv(a, b) {
 export function idiv(a, b) {
   return (a / b) | 0;
 }
+
+/**
+ * Divide velocity by 60 (per-frame) using reciprocal-multiply — no float division.
+ * S=20, M=ceil(2^20/60)=17477. Max intermediate: 2560 * 17477 = 44,741,120 (Int32-safe).
+ * Handles negative values by negating before shift to match | 0 truncation-toward-zero
+ * (since >> rounds toward -infinity).
+ * First disagreement vs true (v/60)|0 at v ≈ 547,000 — far beyond max velocity (2560).
+ */
+export function velPerFrame(vel) {
+  if (vel >= 0) {
+    return (vel * 17477) >> 20;
+  }
+  return -((-vel * 17477) >> 20);
+}

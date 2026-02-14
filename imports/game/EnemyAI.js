@@ -8,7 +8,7 @@ import {
   ENEMY_TYPE_BOUNDER, ENEMY_TYPE_HUNTER, ENEMY_TYPE_SHADOW_LORD,
 } from './scoring.js';
 
-import { FP_SCALE } from './physics/stateLayout.js';
+import { FP_SCALE, idiv } from './physics/stateLayout.js';
 
 // FP thresholds (precomputed)
 const FP_DX_THRESHOLD = Math.round(0.5 * FP_SCALE);       // 128
@@ -159,8 +159,8 @@ export class EnemyAI {
     }
 
     // Lead the player's movement: predictedX = playerX + playerVelX * 0.3
-    // In FP: (velX * 3 / 10) | 0
-    const leadX = (player.velocityX * 3 / 10) | 0;
+    // In FP: idiv(velX * 3, 10) — explicit integer division, no float intermediates
+    const leadX = idiv(player.velocityX * 3, 10);
     const predictedX = player.positionX + leadX;
     const dx = predictedX - enemy.positionX;
 
