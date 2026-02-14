@@ -245,16 +245,25 @@ export class MultiplayerManager {
 
     console.log('[MultiplayerManager] Peer connected:', peerId, 'slot:', playerSlot);
 
-    // Only the lower-slot player (host) sends state sync.
-    // The higher-slot player (joiner) waits to receive STATE_SYNC
-    // before transitioning to multiplayer. This avoids both clients
-    // swapping states and ending up with different simulations.
-    if (this._playerSlot < playerSlot) {
+    // Only the host (slot 0) activates joining players and sends state sync.
+    // This prevents multiple peers from independently activating the same joiner
+    // at different simulation frames (which would diverge RNG state).
+    // The joiner waits to receive STATE_SYNC before transitioning to multiplayer.
+    if (this._playerSlot === 0) {
       // Host: activate the joiner in the simulation, send state, start rollback
       const room = GameRooms.findOne(this._roomId);
       const playerData = room?.players.find(p => p.peerJsId === peerId);
       const palette = playerData?.paletteIndex ?? 0;
       this._simulation.activatePlayer(playerSlot, palette);
+
+      // Force-save post-activation state so that if a rollback is triggered
+      // later in this same drain cycle, it loads the state WITH the new player
+      // already activated (activatePlayer runs outside the tick loop and
+      // wouldn't be replayed during resimulation).
+      if (this._session) {
+        const cell = this._session.stateBuffer.createCell(this._simulation._frame);
+        cell.save(this._simulation.serialize());
+      }
 
       const stateBuffer = this._simulation.serialize();
       const frame = this._simulation._frame;
@@ -403,6 +412,12 @@ export class MultiplayerManager {
             this._preSessionInputBuffer.push(msg);
           }
         } else if (msgType === MessageType.STATE_SYNC) {
+          // Only accept STATE_SYNC from the host (slot 0)
+          const senderSlot = this._connectedPeers.get(peerId);
+          if (senderSlot !== undefined && senderSlot !== 0) {
+            console.warn('[MultiplayerManager] Ignoring STATE_SYNC from non-host peer', senderSlot);
+            continue;
+          }
           const msg = InputEncoder.decodeStateSyncMessage(buffer);
           if (!this._gameLoop.soloMode && this._session && msg.frame < this._simulation._frame) {
             console.warn('[MultiplayerManager] Ignoring stale STATE_SYNC frame', msg.frame, '(current:', this._simulation._frame, ')');
@@ -444,8 +459,10 @@ export class MultiplayerManager {
         }
       }
     } else if (event.type === 'DesyncDetected') {
-      // Only the host (lower slot) sends authoritative state
-      if (this._playerSlot < event.peer) {
+      // Only the host (slot 0) sends authoritative resync state.
+      // This prevents multiple lower-slot peers from independently sending
+      // competing resyncs in 3+ player games.
+      if (this._playerSlot === 0) {
         const now = Date.now();
         if (!this._lastResyncTime || (now - this._lastResyncTime) > 3000) {
           this._lastResyncTime = now;

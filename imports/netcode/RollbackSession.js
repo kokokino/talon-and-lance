@@ -387,10 +387,9 @@ export class RollbackSession {
         }
       }
 
-      // Clean up old checksums we've already compared
-      if (frame < this.syncFrame) {
-        this.remoteChecksums.delete(frame);
-      }
+      // Clean up checksums we've already compared (including frame === syncFrame)
+      // to prevent repeated DesyncDetected events for the same frame.
+      this.remoteChecksums.delete(frame);
     }
   }
 

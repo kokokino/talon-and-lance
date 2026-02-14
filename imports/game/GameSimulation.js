@@ -165,6 +165,9 @@ export class GameSimulation {
     char.materializeQuickEnd = false;
     char.invincible = false;
     char.invincibleTimer = 0;
+    char.prevPositionX = char.positionX;
+    char.prevPositionY = char.positionY;
+    char.hitLava = false;
   }
 
   /**
@@ -611,6 +614,9 @@ export class GameSimulation {
     char.isFlapping = false;
     char.flapTimer = 0;
     char.stridePhase = 0;
+    char.prevPositionX = x;
+    char.prevPositionY = y;
+    char.hitLava = false;
 
     // AI timers are now frame counts
     const initialDirTimer = 90 + this._rng.nextInt(90); // ~1.5s + random up to 1.5s in frames

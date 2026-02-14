@@ -132,7 +132,7 @@ export const FP_JOUST_KNOCKBACK_Y = Math.round(JOUST_KNOCKBACK_Y * FP);
 // Winner recoil after a kill: 0.3 × knockback, precomputed in FP.
 // 77/256 ≈ 0.30078 (closest integer ratio to 0.3 in 8-bit fixed-point).
 // 1536 * 77 / 256 = 461.8125 → 461 in integer.
-export const FP_KILL_RECOIL_VX = (FP_JOUST_KNOCKBACK_X * 77 / 256) | 0;
+export const FP_KILL_RECOIL_VX = (FP_JOUST_KNOCKBACK_X * 77) >> 8;
 
 // ---- Per-frame deltas (constant * FP / 60) ----
 export const FP_ACCEL_PF = Math.round(ACCELERATION * FP / 60);
