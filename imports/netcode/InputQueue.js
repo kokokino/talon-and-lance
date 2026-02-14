@@ -34,28 +34,45 @@ export class InputQueue {
   }
 
   // Get input for a specific frame. If no input exists, predict using last confirmed.
+  // Predictions are always (re-)computed from the current lastUserInput and written
+  // to the ring buffer. This serves two purposes:
+  //   1. confirmInput() can compare against the actual prediction for misprediction detection
+  //   2. Rollback resimulation gets fresh predictions reflecting any newly confirmed inputs
   getInput(frame) {
     const index = frame % QUEUE_SIZE;
 
     if (frame <= this.lastAddedFrame) {
-      return {
-        input: this.inputs[index],
-        predicted: this.predicted[index],
-      };
+      if (!this.predicted[index]) {
+        // Confirmed input — update prediction baseline so subsequent
+        // predicted frames use this value. This is critical during rollback
+        // resimulation where frames are processed sequentially: predictions
+        // after a confirmed frame should repeat that confirmed input, not
+        // a globally-latest confirmed input from a future frame.
+        this.lastUserInput = this.inputs[index];
+        return { input: this.inputs[index], predicted: false };
+      }
+      // Predicted frame — re-predict with current lastUserInput (may have
+      // changed since original prediction due to newly confirmed inputs)
+      this.inputs[index] = this.lastUserInput;
+      return { input: this.lastUserInput, predicted: true };
     }
 
-    // Frame not yet received — predict by repeating last known input
-    return {
-      input: this.lastUserInput,
-      predicted: true,
-    };
+    // Frame beyond buffer — write predictions for gap and target frame
+    for (let f = this.lastAddedFrame + 1; f <= frame; f++) {
+      const fillIndex = f % QUEUE_SIZE;
+      this.inputs[fillIndex] = this.lastUserInput;
+      this.predicted[fillIndex] = true;
+    }
+    this.lastAddedFrame = frame;
+
+    return { input: this.lastUserInput, predicted: true };
   }
 
   // Add a confirmed input, replacing any prediction that was there
   confirmInput(frame, input) {
-    // Backfill gap frames with predicted values before processing.
-    // Uses the current lastUserInput (before updating it), which matches
-    // what getInput() would have returned during original simulation.
+    // Backfill any gap frames that getInput() hasn't reached yet.
+    // Since getInput() now writes predictions to the ring buffer, gaps
+    // only exist for frames beyond lastAddedFrame.
     if (frame > this.lastAddedFrame + 1) {
       const fillStart = this.lastAddedFrame + 1;
       for (let f = fillStart; f < frame; f++) {
@@ -81,9 +98,11 @@ export class InputQueue {
       this.lastAddedFrame = frame;
     }
 
-    // Only update lastUserInput for the newest frame — out-of-order
-    // arrivals for older frames must not regress the prediction baseline
-    if (frame >= this.lastAddedFrame) {
+    // Only update lastUserInput for the newest confirmed frame — out-of-order
+    // arrivals for older frames must not regress the prediction baseline.
+    // Uses confirmedFrame (not lastAddedFrame) because getInput() now
+    // advances lastAddedFrame via predictions.
+    if (frame >= this.confirmedFrame) {
       this.lastUserInput = input;
     }
 

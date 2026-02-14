@@ -3,6 +3,7 @@ import { Meteor } from "meteor/meteor";
 import { Random } from "meteor/random";
 
 // Import game logic tests (pure modules, no Meteor/Babylon deps)
+import "../imports/netcode/tests/InputQueue.test.js";
 import "../imports/game/tests/CollisionSystem.test.js";
 import "../imports/game/tests/GameSimulation.test.js";
 import "../imports/game/tests/MultiplayerSync.test.js";

@@ -276,7 +276,7 @@ function createSim() {
 // ---- Main test harness ----
 
 function runMultiplayerSyncTest(totalFrames, options = {}) {
-  const { dropRate = 0, useRedundancy = false, maxDelay = 2 } = options;
+  const { dropRate = 0, useRedundancy = false, maxDelay = 2, drainFrames = 0 } = options;
 
   // Two complete game stacks
   const simA = createSim();
@@ -374,8 +374,9 @@ function runMultiplayerSyncTest(totalFrames, options = {}) {
     sessionA.pollEvents();
     sessionB.pollEvents();
 
-    // 6. Periodic state comparison
-    if ((tick + 1) % CHECK_INTERVAL === 0) {
+    // 6. Periodic state comparison (skipped when drain phase is used,
+    //    since high-delay configs can have transient prediction disagreements)
+    if (drainFrames === 0 && (tick + 1) % CHECK_INTERVAL === 0) {
       const bufA = new Int32Array(simA.serialize());
       const bufB = new Int32Array(simB.serialize());
       const report = compareStates(bufA, bufB, `tick ${tick + 1} (frame ${bufA[G_FRAME]})`);
@@ -386,11 +387,55 @@ function runMultiplayerSyncTest(totalFrames, options = {}) {
     }
   }
 
+  // Drain phase: continue delivering in-flight inputs and processing rollbacks
+  // without generating new inputs. This lets all delayed packets arrive so the
+  // final comparison reflects fully-converged state.
+  if (!desyncReport && drainFrames > 0) {
+    for (let d = 0; d < drainFrames; d++) {
+      const drainTick = totalFrames + d;
+
+      const msgsForA = netBtoA.receive(drainTick);
+      for (const msg of msgsForA) {
+        sessionA.addRemoteInput(1, msg.frame, msg.input);
+        sessionA.peerLastRecvTime[1] = Date.now();
+      }
+
+      const msgsForB = netAtoB.receive(drainTick);
+      for (const msg of msgsForB) {
+        sessionB.addRemoteInput(0, msg.frame, msg.input);
+        sessionB.peerLastRecvTime[0] = Date.now();
+      }
+
+      // Feed idle inputs (0) so sessions can still advance and process rollbacks
+      sessionA.addLocalInput(0);
+      const reqsA = sessionA.advanceFrame();
+      processRequests(simA, reqsA);
+
+      sessionB.addLocalInput(0);
+      const reqsB = sessionB.advanceFrame();
+      processRequests(simB, reqsB);
+
+      // Still send local inputs during drain so the remote side can confirm
+      const localA = sessionA.getLocalInput();
+      if (localA) {
+        netAtoB.send(drainTick, localA.frame, localA.input);
+      }
+
+      const localB = sessionB.getLocalInput();
+      if (localB) {
+        netBtoA.send(drainTick, localB.frame, localB.input);
+      }
+
+      sessionA.pollEvents();
+      sessionB.pollEvents();
+    }
+  }
+
   // Final comparison
   if (!desyncReport) {
     const bufA = new Int32Array(simA.serialize());
     const bufB = new Int32Array(simB.serialize());
-    desyncReport = compareStates(bufA, bufB, `final (tick ${totalFrames}, frame ${bufA[G_FRAME]})`);
+    desyncReport = compareStates(bufA, bufB, `final (tick ${totalFrames + drainFrames}, frame ${bufA[G_FRAME]})`);
   }
 
   return desyncReport;
@@ -529,6 +574,17 @@ describe('Multiplayer Sync', function () {
     this.timeout(60000);
     const report = runMultiplayerSyncTest(3600, { dropRate: 0.02, useRedundancy: true });
     assert.strictEqual(report, null, report || 'Should stay in sync with redundant inputs');
+  });
+
+  it('stays in sync with high delay (4-frame max)', function () {
+    this.timeout(120000);
+    // Use maxDelay 4 to exercise rollback under high latency.
+    // Intermediate checks are skipped (checkInterval > totalFrames) because
+    // high delay means recent frames may have undelivered inputs causing
+    // transient prediction disagreements. Only the final state is compared
+    // after a drain phase lets all in-flight inputs arrive.
+    const report = runMultiplayerSyncTest(3600, { maxDelay: 4, useRedundancy: true, drainFrames: 20 });
+    assert.strictEqual(report, null, report || 'Should stay in sync under high delay');
   });
 
   it('stays in sync with staggered join', function () {
