@@ -183,7 +183,10 @@ export class GameLoop {
     // 5. Send checksum periodically for desync detection
     const checksumData = this.session.getCurrentChecksum();
     if (checksumData) {
-      // Checksums are verified locally when remote checksums arrive
+      const checksumMsg = InputEncoder.encodeChecksumMessage(
+        checksumData.frame, checksumData.checksum
+      );
+      this._broadcastToAllPeers(checksumMsg);
     }
 
     // 6. Handle network events

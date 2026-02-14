@@ -10,6 +10,7 @@ export const MessageType = {
   QUALITY_REPORT: 0x05,
   QUALITY_REPLY: 0x06,
   STATE_SYNC: 0x07,
+  CHECKSUM: 0x08,
 };
 
 // Input bits
@@ -142,6 +143,26 @@ export class InputEncoder {
     return { type: MessageType.STATE_SYNC, frame, stateData };
   }
 
+  // Encode a checksum message: [type(1B), frame(4B), checksum(4B)]
+  static encodeChecksumMessage(frame, checksum) {
+    const buffer = new ArrayBuffer(9);
+    const view = new DataView(buffer);
+    view.setUint8(0, MessageType.CHECKSUM);
+    view.setUint32(1, frame, true);
+    view.setUint32(5, checksum, true);
+    return buffer;
+  }
+
+  // Decode a checksum message
+  static decodeChecksumMessage(buffer) {
+    const view = new DataView(buffer);
+    return {
+      type: MessageType.CHECKSUM,
+      frame: view.getUint32(1, true),
+      checksum: view.getUint32(5, true),
+    };
+  }
+
   // Get message type from any buffer
   static getMessageType(buffer) {
     const view = new DataView(buffer);
@@ -179,6 +200,9 @@ export class InputEncoder {
 
       case MessageType.STATE_SYNC:
         return InputEncoder.decodeStateSyncMessage(buffer);
+
+      case MessageType.CHECKSUM:
+        return InputEncoder.decodeChecksumMessage(buffer);
 
       default:
         return { type };

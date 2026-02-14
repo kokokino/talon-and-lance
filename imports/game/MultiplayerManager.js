@@ -51,6 +51,7 @@ export class MultiplayerManager {
     this._roomComputation = null;
     this._connectedPeers = new Map(); // peerId -> playerSlot
     this._preSessionInputBuffer = [];
+    this._lastResyncTime = 0;
     this._destroyed = false;
   }
 
@@ -368,6 +369,17 @@ export class MultiplayerManager {
       // Set up rollback from this frame
       if (this._gameLoop.soloMode) {
         this._setupRollbackSession();
+      } else if (this._session) {
+        this._session.resetToFrame(msg.frame);
+        console.warn('[MultiplayerManager] Resync received, reset to frame', msg.frame);
+      }
+    } else if (msgType === MessageType.CHECKSUM) {
+      if (this._session) {
+        const msg = InputEncoder.decodeChecksumMessage(buffer);
+        const peerSlot = this._connectedPeers.get(peerId);
+        if (peerSlot !== undefined) {
+          this._session.addRemoteChecksum(peerSlot, msg.frame, msg.checksum);
+        }
       }
     }
   }
@@ -379,6 +391,24 @@ export class MultiplayerManager {
         if (slot === event.peer) {
           this._handlePeerDisconnected(peerId);
           break;
+        }
+      }
+    } else if (event.type === 'DesyncDetected') {
+      // Only the host (lower slot) sends authoritative state
+      if (this._playerSlot < event.peer) {
+        const now = Date.now();
+        if (!this._lastResyncTime || (now - this._lastResyncTime) > 3000) {
+          this._lastResyncTime = now;
+          const stateBuffer = this._simulation.serialize();
+          const frame = this._simulation._frame;
+          const syncMsg = InputEncoder.encodeStateSyncMessage(frame, stateBuffer);
+          for (const [peerId, slot] of this._connectedPeers) {
+            if (slot === event.peer) {
+              this._transport.send(peerId, syncMsg);
+              break;
+            }
+          }
+          console.warn('[MultiplayerManager] Resync sent to peer', event.peer, 'at frame', frame);
         }
       }
     }

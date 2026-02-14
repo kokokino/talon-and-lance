@@ -405,6 +405,23 @@ export class RollbackSession {
     return true;
   }
 
+  // Reset frame-related state to a specific frame (used when receiving authoritative state from host).
+  // Preserves running, peer connection state, and autoInputSlots.
+  resetToFrame(frame) {
+    this.currentFrame = frame;
+    this.syncFrame = frame - 1;
+    this.lastSavedFrame = frame - 1;
+    this.needsRollback = false;
+    this.rollbackTargetFrame = -1;
+    this.remoteChecksums.clear();
+    this.stateBuffer.reset();
+    for (let i = 0; i < this.numPlayers; i++) {
+      this.inputQueues[i].reset();
+      this.inputQueues[i].confirmedFrame = frame - 1;
+    }
+    this.timeSync.setLocalFrame(frame);
+  }
+
   // Reset the entire session
   reset() {
     this.currentFrame = 0;
