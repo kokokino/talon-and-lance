@@ -60,6 +60,10 @@ import {
 
 const NUM_HUMAN_SLOTS = MAX_HUMANS;
 
+// Precomputed divisor for stride phase calculation (integer constant).
+// = FP_MAX_SPEED * 60 = 2560 * 60 = 153600
+const STRIDE_DIVISOR = FP_MAX_SPEED * 60;
+
 export class GameSimulation {
   /**
    * @param {{ gameMode: string, seed: number, orthoBottom: number, orthoTop: number }} config
@@ -274,13 +278,10 @@ export class GameSimulation {
 
       // Advance stride phase for running animation (FP integer)
       if (char.playerState === 'GROUNDED') {
-        // speedRatio as FP: abs(vel) / MAX_SPEED, but we need stridePhase increment
-        // strideFreq = speedRatio * 2.0, phase += freq * dt = freq/60
-        // In FP: phase += abs(vel) * 2 / (MAX_SPEED * 60) * FP_SCALE
-        // Simplified: phase += abs(vel) * 2 * FP_SCALE / (FP_MAX_SPEED * 60)
-        // = abs(vel) * 512 / (FP_MAX_SPEED * 60)
+        // phase += abs(vel) * 2 * FP_SCALE / (FP_MAX_SPEED * 60)
+        // = abs(vel) * 512 / STRIDE_DIVISOR (precomputed constant)
         const absVel = Math.abs(char.velocityX);
-        char.stridePhase += (absVel * 512 / (FP_MAX_SPEED * 60)) | 0;
+        char.stridePhase += ((absVel * 512) / STRIDE_DIVISOR) | 0;
       } else {
         char.stridePhase = 0;
       }

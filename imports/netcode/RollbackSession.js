@@ -293,15 +293,30 @@ export class RollbackSession {
       return -1;
     }
 
-    const frame = this.rollbackTargetFrame;
     this.needsRollback = false;
+    let frame = this.rollbackTargetFrame;
     this.rollbackTargetFrame = -1;
 
-    const savedState = this.stateBuffer.load(frame);
-    if (savedState !== null) {
-      return frame;
+    // Future-frame misprediction: the confirmed input is already in the
+    // queue and will be used when we actually simulate that frame.
+    // No rollback needed — we haven't simulated it yet.
+    if (frame >= this.currentFrame) {
+      return -1;
     }
 
+    // Search forward for the earliest frame with a saved state.
+    // The exact target may have been evicted from the ring buffer,
+    // but a later state is still better than no rollback at all.
+    while (frame < this.currentFrame) {
+      if (this.stateBuffer.getChecksum(frame) !== null) {
+        return frame;
+      }
+      frame++;
+    }
+
+    // All states evicted — shouldn't happen with default buffer size
+    // of 16 slots and maxPredictionWindow of 8, but log for debugging.
+    console.warn('[RollbackSession] Rollback state unavailable, all snapshots evicted');
     return -1;
   }
 
