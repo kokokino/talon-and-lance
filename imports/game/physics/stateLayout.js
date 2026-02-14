@@ -116,15 +116,6 @@ export function fromFP(val) {
   return val / FP_SCALE;
 }
 
-/** Fixed-point multiply: result = (a * b) / FP_SCALE, truncated to int */
-export function fpMul(a, b) {
-  return (a * b / FP_SCALE) | 0;
-}
-
-/** Fixed-point divide: result = (a * FP_SCALE) / b, truncated to int */
-export function fpDiv(a, b) {
-  return (a * FP_SCALE / b) | 0;
-}
 
 /** Integer division truncating toward zero */
 export function idiv(a, b) {

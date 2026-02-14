@@ -414,6 +414,7 @@ export class MultiplayerManager {
               this._setupRollbackSession();
             } else if (this._session) {
               this._session.resetToFrame(msg.frame);
+              this._gameLoop._recentLocalInputs = [];
               console.warn('[MultiplayerManager] Resync received, reset to frame', msg.frame);
             }
           }

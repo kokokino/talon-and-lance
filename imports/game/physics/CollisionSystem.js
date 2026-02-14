@@ -3,7 +3,7 @@
 
 import {
   FP_CHAR_HALF_WIDTH, FP_FEET_OFFSET, FP_HEAD_OFFSET,
-  FP_JOUST_DEADZONE, FP_JOUST_KNOCKBACK_X, FP_JOUST_KNOCKBACK_Y,
+  FP_JOUST_DEADZONE, FP_JOUST_KNOCKBACK_X, FP_JOUST_KNOCKBACK_Y, FP_KILL_RECOIL_VX,
   FP_ORTHO_WIDTH, FP_EGG_RADIUS,
   FP_LAVA_OFFSET, FP_OVERLAP_PUSH,
   JOUST_COOLDOWN_FRAMES,
@@ -214,8 +214,8 @@ export function applyBounce(charA, charB, pushDir) {
  */
 export function applyKillToWinner(winner, loserKnockDir) {
   winner.velocityY = FP_JOUST_KNOCKBACK_Y;
-  // 0.3 * knockback: (knockback * 77 / 256) | 0 ≈ 0.3 * knockback
-  winner.velocityX = loserKnockDir * -((FP_JOUST_KNOCKBACK_X * 77 / 256) | 0);
+  // 0.3 × knockback recoil, precomputed as FP_KILL_RECOIL_VX
+  winner.velocityX = -(loserKnockDir * FP_KILL_RECOIL_VX);
   winner.playerState = 'AIRBORNE';
   winner.currentPlatform = null;
   winner.platformIndex = -1;
