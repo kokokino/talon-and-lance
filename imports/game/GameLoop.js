@@ -41,6 +41,9 @@ export class GameLoop {
     // Event handler (set by consumer)
     this.onNetworkEvent = null;
 
+    // Message drain callback (set by MultiplayerManager)
+    this.messageDrain = null;
+
     this._loop = this._loop.bind(this);
   }
 
@@ -102,6 +105,12 @@ export class GameLoop {
     // is handled by rate-limited catch-up that preserves remainder.
     if (this.accumulator > CATASTROPHIC_CAP_MS) {
       this.accumulator = TICK_MS * MAX_TICKS_PER_FRAME;
+    }
+
+    // Drain pending network messages before running ticks so that
+    // all catch-up ticks have access to the freshest confirmed inputs.
+    if (this.messageDrain) {
+      this.messageDrain();
     }
 
     // Fixed timestep: up to MAX_TICKS_PER_FRAME ticks per render frame.
