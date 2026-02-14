@@ -25,7 +25,7 @@ export class DeterministicRNG {
   // Uses _advance() directly instead of going through next() to keep the
   // seed advancement in one place.
   nextInt(max) {
-    return (this._advance() / 4294967296 * max) | 0;
+    return this._advance() % max;
   }
 
   getSeed() {

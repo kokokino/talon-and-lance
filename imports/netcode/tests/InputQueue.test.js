@@ -218,13 +218,26 @@ describe('InputQueue', function () {
       const mis0 = queue.confirmInput(0, 0x02);
       assert.strictEqual(mis0, true, 'frame 0 mispredicted');
 
-      // Now lastUserInput should be 0x02, so prediction for frame 1 is 0x02
+      // confirmInput does NOT update lastUserInput — only getInput does.
+      // So the prediction for frame 1 uses the stale lastUserInput (0).
+      // This is correct: in the real rollback system, the misprediction at
+      // frame 0 triggers a rollback, and during resimulation getInput(0)
+      // reads the confirmed 0x02 and updates lastUserInput before getInput(1).
       const result1 = queue.getInput(1);
-      assert.strictEqual(result1.input, 0x02, 'frame 1 should predict 0x02');
+      assert.strictEqual(result1.input, 0, 'frame 1 predicts 0 (stale, pre-rollback)');
       assert.strictEqual(result1.predicted, true);
 
+      // After rollback resimulation: re-reading frames sequentially fixes predictions
+      const reread0 = queue.getInput(0);
+      assert.strictEqual(reread0.input, 0x02, 'frame 0 confirmed as 0x02');
+      assert.strictEqual(reread0.predicted, false);
+
+      const reread1 = queue.getInput(1);
+      assert.strictEqual(reread1.input, 0x02, 'frame 1 now predicts 0x02 after sequential re-read');
+      assert.strictEqual(reread1.predicted, true);
+
       const mis1 = queue.confirmInput(1, 0x02);
-      assert.strictEqual(mis1, false, 'frame 1 prediction was correct');
+      assert.strictEqual(mis1, false, 'frame 1 prediction was correct after re-read');
 
       // Confirm frame 2 with different input
       const result2 = queue.getInput(2);

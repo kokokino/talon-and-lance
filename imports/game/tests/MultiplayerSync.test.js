@@ -234,7 +234,7 @@ function compareStates(bufA, bufB, label) {
 // ---- Request processor ----
 // Mirrors GameLoop._tick(): handles SaveGameState, LoadGameState, AdvanceFrame.
 
-function processRequests(sim, requests) {
+function processRequests(sim, requests, inputLog) {
   for (const req of requests) {
     switch (req.type) {
       case 'SaveGameState':
@@ -244,6 +244,10 @@ function processRequests(sim, requests) {
         sim.deserialize(req.cell.load());
         break;
       case 'AdvanceFrame':
+        if (inputLog) {
+          // Record the final inputs used for each frame (post-rollback overwrites earlier entries)
+          inputLog.set(sim._frame, req.inputs.slice());
+        }
         sim.tick(req.inputs);
         break;
     }
@@ -635,5 +639,173 @@ describe('Multiplayer Sync', function () {
     this.timeout(60000);
     const report = runStaggeredJoinSyncTest(300, 3600, { drainFrames: 10 });
     assert.strictEqual(report, null, report || 'Should stay in sync after staggered join');
+  });
+
+  // ---- Diagnostic: input-level divergence finder ----
+  // When a sync test fails, change `it.skip` to `it` to find the exact frame
+  // and player where the final (post-rollback) inputs diverge between sessions.
+  // The output shows the first divergent frame, surrounding context, and totals.
+
+  it.skip('DIAGNOSTIC: find first frame of input divergence', function () {
+    this.timeout(60000);
+    const totalFrames = 600;
+    const drainFrames = 100;
+
+    const simA = createSim();
+    const simB = createSim();
+    const sessionA = createSession(0);
+    const sessionB = createSession(1);
+
+    for (let i = 0; i < NUM_PLAYERS; i++) {
+      sessionA.setPeerConnected(i, true);
+      sessionB.setPeerConnected(i, true);
+      sessionA.peerSynchronized[i] = true;
+      sessionB.peerSynchronized[i] = true;
+    }
+    sessionA.running = true;
+    sessionB.running = true;
+
+    simA.activatePlayer(0, 0);
+    simA.activatePlayer(1, 1);
+    simB.activatePlayer(0, 0);
+    simB.activatePlayer(1, 1);
+    simA.startGame();
+    simB.startGame();
+
+    const netAtoB = new MockNetwork(300);
+    const netBtoA = new MockNetwork(400);
+    const rngP0 = new DeterministicRNG(100);
+    const rngP1 = new DeterministicRNG(200);
+
+    const inputLogA = new Map();
+    const inputLogB = new Map();
+    let skipsA = 0;
+    let skipsB = 0;
+
+    for (let tick = 0; tick < totalFrames; tick++) {
+      const msgsForA = netBtoA.receive(tick);
+      for (const msg of msgsForA) {
+        sessionA.addRemoteInput(1, msg.frame, msg.input);
+        sessionA.peerLastRecvTime[1] = Date.now();
+      }
+      const msgsForB = netAtoB.receive(tick);
+      for (const msg of msgsForB) {
+        sessionB.addRemoteInput(0, msg.frame, msg.input);
+        sessionB.peerLastRecvTime[0] = Date.now();
+      }
+
+      const inputP0 = generateInput(rngP0);
+      const inputP1 = generateInput(rngP1);
+
+      sessionA.addLocalInput(inputP0);
+      const reqsA = sessionA.advanceFrame();
+      if (reqsA.length === 0) { skipsA++; }
+      processRequests(simA, reqsA, inputLogA);
+
+      sessionB.addLocalInput(inputP1);
+      const reqsB = sessionB.advanceFrame();
+      if (reqsB.length === 0) { skipsB++; }
+      processRequests(simB, reqsB, inputLogB);
+
+      const localA = sessionA.getLocalInput();
+      if (localA) { netAtoB.send(tick, localA.frame, localA.input); }
+      const localB = sessionB.getLocalInput();
+      if (localB) { netBtoA.send(tick, localB.frame, localB.input); }
+
+      sessionA.pollEvents();
+      sessionB.pollEvents();
+    }
+
+    // Drain: deliver remaining in-flight packets, no new gameplay inputs
+    for (let d = 0; d < drainFrames; d++) {
+      const drainTick = totalFrames + d;
+      for (const msg of netBtoA.receive(drainTick)) {
+        sessionA.addRemoteInput(1, msg.frame, msg.input);
+        sessionA.peerLastRecvTime[1] = Date.now();
+      }
+      for (const msg of netAtoB.receive(drainTick)) {
+        sessionB.addRemoteInput(0, msg.frame, msg.input);
+        sessionB.peerLastRecvTime[0] = Date.now();
+      }
+
+      sessionA.addLocalInput(0);
+      processRequests(simA, sessionA.advanceFrame(), inputLogA);
+      sessionB.addLocalInput(0);
+      processRequests(simB, sessionB.advanceFrame(), inputLogB);
+
+      const localA = sessionA.getLocalInput();
+      if (localA) { netAtoB.send(drainTick, localA.frame, localA.input); }
+      const localB = sessionB.getLocalInput();
+      if (localB) { netBtoA.send(drainTick, localB.frame, localB.input); }
+
+      sessionA.pollEvents();
+      sessionB.pollEvents();
+    }
+
+    // --- Analysis ---
+    const maxFrame = Math.max(...inputLogA.keys(), ...inputLogB.keys());
+    console.log(`\n=== Input Divergence Report ===`);
+    console.log(`Skips: A=${skipsA}, B=${skipsB}`);
+    console.log(`Final frames: A=${sessionA.currentFrame}, B=${sessionB.currentFrame}`);
+    console.log(`Input log sizes: A=${inputLogA.size}, B=${inputLogB.size}`);
+
+    let firstDivergence = -1;
+    let divergentCount = 0;
+
+    for (let f = 0; f <= maxFrame; f++) {
+      const inpA = inputLogA.get(f);
+      const inpB = inputLogB.get(f);
+
+      if (!inpA && !inpB) { continue; }
+      if (!inpA || !inpB) {
+        divergentCount++;
+        if (firstDivergence < 0) {
+          firstDivergence = f;
+          console.log(`Frame ${f}: MISSING in ${!inpA ? 'A' : 'B'}`);
+        }
+        continue;
+      }
+
+      let differs = false;
+      for (let p = 0; p < NUM_PLAYERS; p++) {
+        if (inpA[p] !== inpB[p]) { differs = true; }
+      }
+      if (differs) {
+        divergentCount++;
+        if (firstDivergence < 0) {
+          firstDivergence = f;
+          console.log(`\nFIRST DIVERGENCE at frame ${f}:`);
+          console.log(`  A: [${inpA.join(', ')}]`);
+          console.log(`  B: [${inpB.join(', ')}]`);
+          console.log(`\nSurrounding frames:`);
+          for (let ff = Math.max(0, f - 5); ff <= Math.min(maxFrame, f + 5); ff++) {
+            const a = inputLogA.get(ff);
+            const b = inputLogB.get(ff);
+            const tag = (a && b && a.every((v, i) => v === b[i])) ? 'OK' : 'DIFF';
+            const aStr = a ? `[${a.join(',')}]` : 'MISSING';
+            const bStr = b ? `[${b.join(',')}]` : 'MISSING';
+            console.log(`  frame ${ff}: A=${aStr} B=${bStr}  ${tag}`);
+          }
+        }
+      }
+    }
+
+    console.log(`\nTotal divergent frames: ${divergentCount} / ${maxFrame + 1}`);
+    if (divergentCount === 0) {
+      console.log('All inputs match — divergence is in game simulation, not input delivery.');
+    }
+    console.log('');
+
+    // Final state comparison for full context
+    const bufA = new Int32Array(simA.serialize());
+    const bufB = new Int32Array(simB.serialize());
+    const report = compareStates(bufA, bufB, `final (frame ${bufA[G_FRAME]})`);
+    if (report) {
+      console.log(report);
+    } else {
+      console.log('Final states match — no desync.');
+    }
+
+    assert.ok(true, 'Diagnostic test — see console output');
   });
 });

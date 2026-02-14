@@ -280,7 +280,8 @@ export class RollbackSession {
       if (this.autoInputSlots.has(i)) {
         inputs[i] = 0; // auto-input slots always return 0 (no input)
       } else {
-        inputs[i] = this.inputQueues[i].getInput(frame).input;
+        const result = this.inputQueues[i].getInput(frame);
+        inputs[i] = result.input;
       }
     }
     return inputs;

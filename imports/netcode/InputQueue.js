@@ -98,13 +98,12 @@ export class InputQueue {
       this.lastAddedFrame = frame;
     }
 
-    // Only update lastUserInput for the newest confirmed frame — out-of-order
-    // arrivals for older frames must not regress the prediction baseline.
-    // Uses confirmedFrame (not lastAddedFrame) because getInput() now
-    // advances lastAddedFrame via predictions.
-    if (frame >= this.confirmedFrame) {
-      this.lastUserInput = input;
-    }
+    // Do NOT update lastUserInput here. Only getInput() should update it
+    // during sequential simulation (forward or rollback resimulation).
+    // Updating it in confirmInput corrupts predictions for intervening
+    // frames that haven't been simulated yet — especially frames in the
+    // input-delay window (0 to inputDelay-1) that are never explicitly
+    // sent and thus never corrected by rollback.
 
     // Return whether this caused a misprediction
     return wasPredicted && oldInput !== input;
