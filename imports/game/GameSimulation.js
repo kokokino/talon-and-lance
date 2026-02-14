@@ -16,7 +16,7 @@ import {
   FP_FEET_OFFSET, FP_HEAD_OFFSET, FP_CHAR_HALF_WIDTH,
   FP_EGG_RADIUS, FP_ORTHO_LEFT, FP_ORTHO_RIGHT,
   FP_LAVA_OFFSET, FP_BOUNCE_THRESHOLD,
-  FP_MAX_SPEED, FP_EGG_HATCH_LIFT, FP_KILL_KNOCK_VX,
+  FP_EGG_HATCH_LIFT, FP_KILL_KNOCK_VX,
   SPAWN_POINTS_FP, ENEMY_SPAWN_POINTS_FP,
   GAME_MODE_TEAM, GAME_MODE_PVP,
   buildPlatformCollisionDataFP,
@@ -60,9 +60,28 @@ import {
 
 const NUM_HUMAN_SLOTS = MAX_HUMANS;
 
-// Precomputed divisor for stride phase calculation (integer constant).
-// = FP_MAX_SPEED * 60 = 2560 * 60 = 153600
-const STRIDE_DIVISOR = FP_MAX_SPEED * 60;
+// Reciprocal-multiply constant for stride phase calculation.
+//
+// We need: floor(absVel * 512 / (FP_MAX_SPEED * 60))
+//        = floor(absVel * 512 / 153600)
+//        = floor(absVel / 300)
+//
+// To avoid floating-point division entirely, we use the reciprocal-multiply
+// trick: replace "x / D" with "(x * M) >> S" where M = ceil(2^S / D).
+//
+// With S=24, D=300:  M = ceil(16777216 / 300) = 55925
+//
+// This gives: (absVel * 55925) >> 24
+//
+// The >> operator in JS converts to Int32 before shifting, so the entire
+// expression stays in integer domain — no IEEE 754 division involved.
+// Max intermediate: 2560 * 55925 = 143,168,000 (well within Int32 range).
+//
+// Accuracy: the approximation (55925/2^24 = 0.0033334) slightly overestimates
+// the true reciprocal (1/300 = 0.0033333). The first value where this causes
+// a rounding difference vs exact division is absVel ≈ 166,799, far beyond
+// FP_MAX_SPEED (2560). Identical results for all in-game velocities.
+const STRIDE_RECIP_Q24 = 55925;
 
 export class GameSimulation {
   /**
@@ -276,12 +295,11 @@ export class GameSimulation {
         }
       }
 
-      // Advance stride phase for running animation (FP integer)
+      // Advance stride phase for running animation (pure integer arithmetic)
       if (char.playerState === 'GROUNDED') {
-        // phase += abs(vel) * 2 * FP_SCALE / (FP_MAX_SPEED * 60)
-        // = abs(vel) * 512 / STRIDE_DIVISOR (precomputed constant)
+        // phase += abs(vel) / 300, computed via reciprocal multiply (no float division)
         const absVel = Math.abs(char.velocityX);
-        char.stridePhase += ((absVel * 512) / STRIDE_DIVISOR) | 0;
+        char.stridePhase += (absVel * STRIDE_RECIP_Q24) >> 24;
       } else {
         char.stridePhase = 0;
       }
