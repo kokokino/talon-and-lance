@@ -53,6 +53,18 @@ export class InputQueue {
 
   // Add a confirmed input, replacing any prediction that was there
   confirmInput(frame, input) {
+    // Backfill gap frames with predicted values before processing.
+    // Uses the current lastUserInput (before updating it), which matches
+    // what getInput() would have returned during original simulation.
+    if (frame > this.lastAddedFrame + 1) {
+      const fillStart = this.lastAddedFrame + 1;
+      for (let f = fillStart; f < frame; f++) {
+        const fillIndex = f % QUEUE_SIZE;
+        this.inputs[fillIndex] = this.lastUserInput;
+        this.predicted[fillIndex] = true;
+      }
+    }
+
     const index = frame % QUEUE_SIZE;
     const wasPredicted = this.predicted[index];
     const oldInput = this.inputs[index];
@@ -60,7 +72,17 @@ export class InputQueue {
     this.inputs[index] = input;
     this.predicted[index] = false;
     this.confirmedFrame = Math.max(this.confirmedFrame, frame);
-    this.lastUserInput = input;
+
+    // Track the highest frame written to the ring buffer
+    if (frame > this.lastAddedFrame) {
+      this.lastAddedFrame = frame;
+    }
+
+    // Only update lastUserInput for the newest frame — out-of-order
+    // arrivals for older frames must not regress the prediction baseline
+    if (frame >= this.lastAddedFrame) {
+      this.lastUserInput = input;
+    }
 
     // Return whether this caused a misprediction
     return wasPredicted && oldInput !== input;
