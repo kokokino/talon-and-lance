@@ -256,12 +256,12 @@ function processRequests(sim, requests, inputLog) {
 
 // ---- Factories ----
 
-function createSession(localPlayerIndex, startFrame = 0) {
+function createSession(localPlayerIndex, startFrame = 0, autoInputSlots = AUTO_INPUT_SLOTS) {
   return new RollbackSession({
     numPlayers: NUM_PLAYERS,
     localPlayerIndex,
     inputDelay: INPUT_DELAY,
-    autoInputSlots: new Set(AUTO_INPUT_SLOTS),
+    autoInputSlots: new Set(autoInputSlots),
     maxPredictionWindow: 8,
     disconnectTimeout: 60000, // large to prevent spurious disconnects
     startFrame,
@@ -275,6 +275,126 @@ function createSim() {
     orthoBottom: ORTHO_BOTTOM,
     orthoTop: ORTHO_TOP,
   });
+}
+
+// ---- 4-player helpers ----
+
+// Build a full mesh of MockNetwork channels for numPlayers.
+// nets[sender][receiver] = MockNetwork (null on diagonal).
+function buildNetworkMesh(numPlayers, baseSeed, options = {}) {
+  const nets = [];
+  for (let s = 0; s < numPlayers; s++) {
+    nets[s] = [];
+    for (let r = 0; r < numPlayers; r++) {
+      if (s === r) {
+        nets[s][r] = null;
+      } else {
+        nets[s][r] = new MockNetwork(baseSeed + s * 100 + r, options);
+      }
+    }
+  }
+  return nets;
+}
+
+// Create sessions for active player slots, pre-synchronize all peers, mark running.
+// Returns array of length NUM_PLAYERS (null for inactive slots).
+function initSessionsForPlayers(activeSlots, startFrame, autoInputSlots) {
+  const sessions = new Array(NUM_PLAYERS).fill(null);
+  for (const slot of activeSlots) {
+    sessions[slot] = createSession(slot, startFrame, autoInputSlots);
+  }
+  // Pre-synchronize: skip handshake, mark all peers as connected and synced
+  for (const slot of activeSlots) {
+    for (let i = 0; i < NUM_PLAYERS; i++) {
+      sessions[slot].setPeerConnected(i, true);
+      sessions[slot].peerSynchronized[i] = true;
+    }
+    sessions[slot].running = true;
+  }
+  return sessions;
+}
+
+// Core multiplayer tick loop for N players. Returns { desyncReport, finalTick }.
+// config: { sims, sessions, nets, inputRngs, activeSlots, numTicks, tickOffset,
+//           useRedundancy, histories, drainOnly, checkInterval, redundancyWindow }
+function runMultiplayerPhase(config) {
+  const {
+    sims, sessions, nets, inputRngs, activeSlots, numTicks, tickOffset = 0,
+    useRedundancy = false, histories = null, drainOnly = false,
+    checkInterval = 0, redundancyWindow = INPUT_REDUNDANCY,
+  } = config;
+
+  let desyncReport = null;
+
+  for (let t = 0; t < numTicks; t++) {
+    const tick = tickOffset + t;
+
+    // 1. Deliver delayed inputs from all senders to all receivers
+    for (const receiver of activeSlots) {
+      for (const sender of activeSlots) {
+        if (sender === receiver) {
+          continue;
+        }
+        const msgs = nets[sender][receiver].receive(tick);
+        for (const msg of msgs) {
+          sessions[receiver].addRemoteInput(sender, msg.frame, msg.input);
+          sessions[receiver].peerLastRecvTime[sender] = Date.now();
+        }
+      }
+    }
+
+    // 2. Generate local inputs and advance each session
+    for (const slot of activeSlots) {
+      const input = drainOnly ? 0 : generateInput(inputRngs[slot]);
+      sessions[slot].addLocalInput(input);
+      const reqs = sessions[slot].advanceFrame();
+      processRequests(sims[slot], reqs);
+    }
+
+    // 3. Send local inputs to all peers
+    for (const sender of activeSlots) {
+      const local = sessions[sender].getLocalInput();
+      if (local) {
+        if (useRedundancy && histories) {
+          histories[sender].push({ frame: local.frame, input: local.input });
+          if (histories[sender].length > redundancyWindow) {
+            histories[sender].shift();
+          }
+        }
+        for (const receiver of activeSlots) {
+          if (receiver === sender) {
+            continue;
+          }
+          if (useRedundancy && histories) {
+            nets[sender][receiver].sendBatch(tick, histories[sender]);
+          } else {
+            nets[sender][receiver].send(tick, local.frame, local.input);
+          }
+        }
+      }
+    }
+
+    // 4. Drain events
+    for (const slot of activeSlots) {
+      sessions[slot].pollEvents();
+    }
+
+    // 5. Periodic state comparison
+    if (checkInterval > 0 && (t + 1) % checkInterval === 0) {
+      const refBuf = new Int32Array(sims[activeSlots[0]].serialize());
+      for (let i = 1; i < activeSlots.length; i++) {
+        const cmpBuf = new Int32Array(sims[activeSlots[i]].serialize());
+        const report = compareStates(refBuf, cmpBuf,
+          `tick ${tick + 1} P${activeSlots[0]} vs P${activeSlots[i]}`);
+        if (report) {
+          desyncReport = report;
+          return { desyncReport, finalTick: tick };
+        }
+      }
+    }
+  }
+
+  return { desyncReport, finalTick: tickOffset + numTicks };
 }
 
 // ---- Main test harness ----
@@ -598,6 +718,200 @@ function runStaggeredJoinSyncTest(soloFrames, multiplayerFrames, options = {}) {
   return desyncReport;
 }
 
+// ---- 4-player simultaneous start harness ----
+
+function run4PlayerSyncTest(totalFrames, options = {}) {
+  const { dropRate = 0, useRedundancy = false, maxDelay = 2, drainFrames = 0 } = options;
+  const ALL_SLOTS = [0, 1, 2, 3];
+  const NO_AUTO = new Set();
+
+  // Four complete game stacks, all identical initial state
+  const sims = ALL_SLOTS.map(() => createSim());
+  for (const sim of sims) {
+    for (const slot of ALL_SLOTS) {
+      sim.activatePlayer(slot, slot);
+    }
+    sim.startGame();
+  }
+
+  // Sessions with no auto-input slots (all 4 are human-controlled)
+  const sessions = initSessionsForPlayers(ALL_SLOTS, 0, NO_AUTO);
+
+  // 12-channel network mesh
+  const nets = buildNetworkMesh(NUM_PLAYERS, 1000, { dropRate, maxDelay });
+
+  // Per-player input RNGs
+  const inputRngs = {
+    0: new DeterministicRNG(100),
+    1: new DeterministicRNG(200),
+    2: new DeterministicRNG(300),
+    3: new DeterministicRNG(400),
+  };
+
+  // Input histories for redundancy
+  const histories = { 0: [], 1: [], 2: [], 3: [] };
+
+  // Main phase
+  let { desyncReport } = runMultiplayerPhase({
+    sims, sessions, nets, inputRngs, activeSlots: ALL_SLOTS,
+    numTicks: totalFrames, tickOffset: 0,
+    useRedundancy, histories,
+    checkInterval: drainFrames === 0 ? CHECK_INTERVAL : 0,
+  });
+
+  // Drain phase: continue delivering in-flight inputs with idle local inputs.
+  // Use redundancy during drain if the main phase used it, so lossy channels
+  // can still converge (a dropped drain packet would leave a stale prediction).
+  if (!desyncReport && drainFrames > 0) {
+    ({ desyncReport } = runMultiplayerPhase({
+      sims, sessions, nets, inputRngs, activeSlots: ALL_SLOTS,
+      numTicks: drainFrames, tickOffset: totalFrames,
+      drainOnly: true, useRedundancy, histories,
+    }));
+  }
+
+  // Final comparison: P1, P2, P3 each vs P0
+  if (!desyncReport) {
+    const refBuf = new Int32Array(sims[0].serialize());
+    for (let i = 1; i < ALL_SLOTS.length; i++) {
+      const cmpBuf = new Int32Array(sims[i].serialize());
+      const report = compareStates(refBuf, cmpBuf,
+        `final P0 vs P${i} (tick ${totalFrames + drainFrames}, frame ${refBuf[G_FRAME]})`);
+      if (report) {
+        desyncReport = report;
+        break;
+      }
+    }
+  }
+
+  return desyncReport;
+}
+
+// ---- 4-player staggered join harness ----
+
+function run4PlayerStaggeredJoinSyncTest(soloFrames, joinInterval, multiplayerFrames, options = {}) {
+  const { dropRate = 0, useRedundancy = false, maxDelay = 2, drainFrames = 0, redundancyWindow = INPUT_REDUNDANCY } = options;
+
+  // Phase 1 — P0 solo (no rollback session, direct ticks)
+  const sim0 = createSim();
+  sim0.activatePlayer(0, 0);
+  sim0.startGame();
+
+  const inputRngs = {
+    0: new DeterministicRNG(100),
+    1: new DeterministicRNG(200),
+    2: new DeterministicRNG(300),
+    3: new DeterministicRNG(400),
+  };
+
+  for (let tick = 0; tick < soloFrames; tick++) {
+    const input = generateInput(inputRngs[0]);
+    sim0.tick([input, 0, 0, 0]);
+  }
+
+  // Phase 2 — P1 joins
+  sim0.activatePlayer(1, 1);
+  const state2 = sim0.serialize();
+  const joinFrame2 = sim0._frame;
+
+  const sim1 = createSim();
+  sim1.deserialize(state2);
+
+  const activeSlots2 = [0, 1];
+  const autoSlots2 = new Set([2, 3]);
+  let sessions = initSessionsForPlayers(activeSlots2, joinFrame2, autoSlots2);
+  const sims = new Array(NUM_PLAYERS).fill(null);
+  sims[0] = sim0;
+  sims[1] = sim1;
+
+  let nets = buildNetworkMesh(NUM_PLAYERS, 1000, { dropRate, maxDelay });
+  let histories = { 0: [], 1: [], 2: [], 3: [] };
+
+  let { desyncReport } = runMultiplayerPhase({
+    sims, sessions, nets, inputRngs, activeSlots: activeSlots2,
+    numTicks: joinInterval, tickOffset: 0,
+    useRedundancy, histories, redundancyWindow,
+  });
+
+  if (desyncReport) {
+    return desyncReport;
+  }
+
+  // Phase 3 — P2 joins
+  sims[0].activatePlayer(2, 2);
+  const state3 = sims[0].serialize();
+  const joinFrame3 = sims[0]._frame;
+
+  // All existing sims deserialize from host (ensures RNG + full state in sync)
+  sims[1].deserialize(state3);
+  sims[2] = createSim();
+  sims[2].deserialize(state3);
+
+  const activeSlots3 = [0, 1, 2];
+  const autoSlots3 = new Set([3]);
+  sessions = initSessionsForPlayers(activeSlots3, joinFrame3, autoSlots3);
+  nets = buildNetworkMesh(NUM_PLAYERS, 2000, { dropRate, maxDelay });
+  histories = { 0: [], 1: [], 2: [], 3: [] };
+
+  ({ desyncReport } = runMultiplayerPhase({
+    sims, sessions, nets, inputRngs, activeSlots: activeSlots3,
+    numTicks: joinInterval, tickOffset: 0,
+    useRedundancy, histories, redundancyWindow,
+  }));
+
+  if (desyncReport) {
+    return desyncReport;
+  }
+
+  // Phase 4 — P3 joins
+  sims[0].activatePlayer(3, 3);
+  const state4 = sims[0].serialize();
+  const joinFrame4 = sims[0]._frame;
+
+  // All existing sims deserialize from host
+  sims[1].deserialize(state4);
+  sims[2].deserialize(state4);
+  sims[3] = createSim();
+  sims[3].deserialize(state4);
+
+  const activeSlots4 = [0, 1, 2, 3];
+  const autoSlots4 = new Set();
+  sessions = initSessionsForPlayers(activeSlots4, joinFrame4, autoSlots4);
+  nets = buildNetworkMesh(NUM_PLAYERS, 3000, { dropRate, maxDelay });
+  histories = { 0: [], 1: [], 2: [], 3: [] };
+
+  ({ desyncReport } = runMultiplayerPhase({
+    sims, sessions, nets, inputRngs, activeSlots: activeSlots4,
+    numTicks: multiplayerFrames, tickOffset: 0,
+    useRedundancy, histories, redundancyWindow,
+  }));
+
+  // Drain phase: use redundancy if the main phase used it
+  if (!desyncReport && drainFrames > 0) {
+    ({ desyncReport } = runMultiplayerPhase({
+      sims, sessions, nets, inputRngs, activeSlots: activeSlots4,
+      numTicks: drainFrames, tickOffset: multiplayerFrames,
+      drainOnly: true, useRedundancy, histories, redundancyWindow,
+    }));
+  }
+
+  // Final comparison: P1, P2, P3 each vs P0
+  if (!desyncReport) {
+    const refBuf = new Int32Array(sims[0].serialize());
+    for (let i = 1; i < activeSlots4.length; i++) {
+      const cmpBuf = new Int32Array(sims[i].serialize());
+      const report = compareStates(refBuf, cmpBuf,
+        `final P0 vs P${i} (staggered join, frame ${refBuf[G_FRAME]})`);
+      if (report) {
+        desyncReport = report;
+        break;
+      }
+    }
+  }
+
+  return desyncReport;
+}
+
 // ---- Mocha test suite ----
 
 describe('Multiplayer Sync', function () {
@@ -639,6 +953,44 @@ describe('Multiplayer Sync', function () {
     this.timeout(60000);
     const report = runStaggeredJoinSyncTest(300, 3600, { drainFrames: 10 });
     assert.strictEqual(report, null, report || 'Should stay in sync after staggered join');
+  });
+
+  // ---- 4-player tests ----
+
+  it('4-player: stays in sync for 10 seconds (600 frames)', function () {
+    this.timeout(60000);
+    const report = run4PlayerSyncTest(600, { drainFrames: 10 });
+    assert.strictEqual(report, null, report || '4-player simulations should be in sync');
+  });
+
+  it('4-player: stays in sync for 60 seconds (3600 frames)', function () {
+    this.timeout(120000);
+    const report = run4PlayerSyncTest(3600, { drainFrames: 10 });
+    assert.strictEqual(report, null, report || '4-player simulations should be in sync');
+  });
+
+  it('4-player: stays in sync with 2% packet loss using redundancy', function () {
+    this.timeout(120000);
+    const report = run4PlayerSyncTest(3600, { dropRate: 0.02, useRedundancy: true, drainFrames: 10 });
+    assert.strictEqual(report, null, report || '4-player should stay in sync with redundant inputs');
+  });
+
+  it('4-player: stays in sync with high delay (4-frame max)', function () {
+    this.timeout(120000);
+    const report = run4PlayerSyncTest(3600, { maxDelay: 4, useRedundancy: true, drainFrames: 20 });
+    assert.strictEqual(report, null, report || '4-player should stay in sync under high delay');
+  });
+
+  it('4-player staggered join: all players converge', function () {
+    this.timeout(180000);
+    const report = run4PlayerStaggeredJoinSyncTest(300, 200, 1800, { drainFrames: 20 });
+    assert.strictEqual(report, null, report || '4-player staggered join should converge');
+  });
+
+  it('4-player staggered join: survives 2% packet loss with redundancy', function () {
+    this.timeout(180000);
+    const report = run4PlayerStaggeredJoinSyncTest(300, 200, 1800, { dropRate: 0.02, useRedundancy: true, drainFrames: 20 });
+    assert.strictEqual(report, null, report || '4-player staggered join should survive packet loss');
   });
 
   // ---- Diagnostic: input-level divergence finder ----
