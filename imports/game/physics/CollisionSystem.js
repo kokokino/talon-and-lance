@@ -136,7 +136,7 @@ export function resolveJoust(charA, charB, idxA, idxB, gameMode, numHumanSlots) 
     if (signFlipped) {
       const aDeltaX = Math.abs(charA.positionX - charA.prevPositionX);
       const bDeltaX = Math.abs(charB.positionX - charB.prevPositionX);
-      const halfWidth = (FP_ORTHO_WIDTH / 2) | 0;
+      const halfWidth = FP_ORTHO_WIDTH >> 1;
       const noWrap = aDeltaX < halfWidth && bDeltaX < halfWidth;
 
       if (noWrap) {
@@ -183,14 +183,14 @@ export function resolveJoust(charA, charB, idxA, idxB, gameMode, numHumanSlots) 
 export function applyBounce(charA, charB, pushDir) {
   const overlap = FP_CHAR_HALF_WIDTH * 2 - Math.abs(charA.positionX - charB.positionX);
   if (overlap > 0) {
-    charA.positionX += pushDir * ((overlap / 2) | 0) + pushDir * FP_OVERLAP_PUSH;
-    charB.positionX += -pushDir * ((overlap / 2) | 0) + -pushDir * FP_OVERLAP_PUSH;
+    charA.positionX += pushDir * (overlap >> 1) + pushDir * FP_OVERLAP_PUSH;
+    charB.positionX += -pushDir * (overlap >> 1) + -pushDir * FP_OVERLAP_PUSH;
   }
 
   const bothGrounded = charA.playerState === 'GROUNDED' && charB.playerState === 'GROUNDED';
   if (bothGrounded) {
-    charA.velocityX = pushDir * ((FP_JOUST_KNOCKBACK_X / 2) | 0);
-    charB.velocityX = -pushDir * ((FP_JOUST_KNOCKBACK_X / 2) | 0);
+    charA.velocityX = pushDir * (FP_JOUST_KNOCKBACK_X >> 1);
+    charB.velocityX = -pushDir * (FP_JOUST_KNOCKBACK_X >> 1);
   } else {
     charA.velocityX = pushDir * FP_JOUST_KNOCKBACK_X;
     charA.velocityY = FP_JOUST_KNOCKBACK_Y;

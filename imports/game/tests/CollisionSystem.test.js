@@ -246,7 +246,7 @@ describe('CollisionSystem', function () {
       applyBounce(charA, charB, pushDir);
 
       // Ground bounce gives half knockback, no vertical
-      assert.strictEqual(charA.velocityX, pushDir * ((FP_JOUST_KNOCKBACK_X / 2) | 0));
+      assert.strictEqual(charA.velocityX, pushDir * (FP_JOUST_KNOCKBACK_X >> 1));
       assert.strictEqual(charA.velocityY, 0);
     });
   });

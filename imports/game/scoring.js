@@ -1,3 +1,5 @@
+import { idiv } from './physics/stateLayout.js';
+
 // Scoring constants for Talon & Lance — based on arcade Joust point values
 
 // ---- Kill points by enemy type ----
@@ -82,7 +84,7 @@ export function getWaveComposition(waveNumber) {
     shadowLords = 1 + ((waveNumber - WAVE_SHADOW_LORD_INTRO) >> 1);
   } else if (waveNumber >= WAVE_HUNTER_INTRO) {
     // Wave 4-15: bounders + hunters
-    bounders = Math.max(1, 5 - (((waveNumber - WAVE_HUNTER_INTRO) / 3) | 0));
+    bounders = Math.max(1, 5 - idiv(waveNumber - WAVE_HUNTER_INTRO, 3));
     hunters = 2 + ((waveNumber - WAVE_HUNTER_INTRO) >> 1);
   } else {
     // Wave 1-3: bounders only
