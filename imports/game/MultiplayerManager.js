@@ -56,6 +56,9 @@ export class MultiplayerManager {
     this._lastResyncTime = 0;
     this._lastResyncReceivedTime = 0;
     this._resyncAuthority = 0; // lowest active slot is the resync authority
+    this._waitingForSync = false;
+    this._joinTimeoutId = null;
+    this._joiningOverlay = null;
     this._destroyed = false;
   }
 
@@ -73,6 +76,20 @@ export class MultiplayerManager {
 
     // Tell the renderer which slot is the local player (for HUD)
     this._renderer._localPlayerSlot = this._playerSlot;
+
+    // If joining an existing room, show overlay and defer rendering until STATE_SYNC
+    if (!result.isNewRoom) {
+      this._waitingForSync = true;
+      this._showJoiningOverlay();
+      this._joinTimeoutId = setTimeout(() => {
+        this._hideJoiningOverlay();
+        if (this._waitingForSync && this._gameLoop) {
+          this._gameLoop.renderer = this._renderer;
+          this._waitingForSync = false;
+          console.warn('[MultiplayerManager] Join timeout — starting without STATE_SYNC');
+        }
+      }, 15000);
+    }
 
     // 2. Create game simulation with room's shared seed (from method result, not minimongo)
     const seed = result.gameSeed;
@@ -99,10 +116,10 @@ export class MultiplayerManager {
     this._inputReader.attach(this._scene);
     this._scene.attachControl();
 
-    // 4. Create game loop in solo mode
+    // 4. Create game loop in solo mode (defer renderer if waiting for sync)
     this._gameLoop = new GameLoop({
       game: this._simulation,
-      renderer: this._renderer,
+      renderer: this._waitingForSync ? null : this._renderer,
       inputReader: this._inputReader,
       localPlayerIndex: this._playerSlot,
     });
@@ -141,6 +158,12 @@ export class MultiplayerManager {
    */
   destroy() {
     this._destroyed = true;
+
+    if (this._joinTimeoutId) {
+      clearTimeout(this._joinTimeoutId);
+      this._joinTimeoutId = null;
+    }
+    this._hideJoiningOverlay();
 
     if (this._gameLoop) {
       this._gameLoop.stop();
@@ -502,6 +525,16 @@ export class MultiplayerManager {
             // Received state sync from host — load it
             this._lastResyncReceivedTime = Date.now();
             this._simulation.deserialize(msg.stateData);
+            // Reveal the game now that we have correct state
+            if (this._waitingForSync) {
+              this._gameLoop.renderer = this._renderer;
+              this._hideJoiningOverlay();
+              if (this._joinTimeoutId) {
+                clearTimeout(this._joinTimeoutId);
+                this._joinTimeoutId = null;
+              }
+              this._waitingForSync = false;
+            }
             // Set up rollback from this frame
             if (this._gameLoop.soloMode) {
               this._setupRollbackSession();
@@ -568,6 +601,45 @@ export class MultiplayerManager {
           console.warn('[MultiplayerManager] Resync broadcast to all peers at frame', frame);
         }
       }
+    }
+  }
+
+  _showJoiningOverlay() {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 100%, rgba(255,100,0,0.15), transparent 60%) #000;';
+
+    const title = document.createElement('div');
+    title.style.cssText = 'color:#FFD700;font-size:36px;font-family:monospace;letter-spacing:4px;';
+    title.textContent = 'JOINING GAME';
+
+    const subtitle = document.createElement('div');
+    subtitle.style.cssText = 'color:#fff;font-size:18px;font-family:monospace;margin-top:16px;opacity:0.7;';
+    subtitle.textContent = 'Syncing with other players';
+
+    const dots = document.createElement('span');
+    dots.style.cssText = 'color:#fff;font-size:18px;font-family:monospace;opacity:0.7;';
+    dots.textContent = '.';
+    let dotCount = 1;
+    this._dotInterval = setInterval(() => {
+      dotCount = (dotCount % 3) + 1;
+      dots.textContent = '.'.repeat(dotCount);
+    }, 400);
+
+    subtitle.appendChild(dots);
+    overlay.appendChild(title);
+    overlay.appendChild(subtitle);
+    document.body.appendChild(overlay);
+    this._joiningOverlay = overlay;
+  }
+
+  _hideJoiningOverlay() {
+    if (this._dotInterval) {
+      clearInterval(this._dotInterval);
+      this._dotInterval = null;
+    }
+    if (this._joiningOverlay) {
+      this._joiningOverlay.remove();
+      this._joiningOverlay = null;
     }
   }
 

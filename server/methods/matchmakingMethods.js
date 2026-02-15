@@ -33,7 +33,7 @@ Meteor.methods({
     if (existingRoom) {
       // Return existing room info
       const player = existingRoom.players.find(p => p.userId === this.userId);
-      return { roomId: existingRoom._id, playerSlot: player.slot };
+      return { roomId: existingRoom._id, playerSlot: player.slot, isNewRoom: false, gameSeed: existingRoom.gameSeed };
     }
 
     // Find a joinable room with same game mode
@@ -67,7 +67,7 @@ Meteor.methods({
         $set: { status: RoomStatus.PLAYING },
       });
 
-      return { roomId: openRoom._id, playerSlot: nextSlot, gameSeed: openRoom.gameSeed };
+      return { roomId: openRoom._id, playerSlot: nextSlot, gameSeed: openRoom.gameSeed, isNewRoom: false };
     }
 
     // No open rooms — create new one
@@ -92,6 +92,6 @@ Meteor.methods({
       finishedAt: null,
     });
 
-    return { roomId, playerSlot: 0, gameSeed };
+    return { roomId, playerSlot: 0, gameSeed, isNewRoom: true };
   },
 });
