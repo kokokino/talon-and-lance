@@ -76,6 +76,24 @@ export class MainMenuScene {
     this._modePanel = null;
     this._colorLabel = null;
     this._trackLabel = null;
+
+    // Gamepad navigation
+    this._focusIndex = 0;
+    this._gamepadActive = false;
+    this._prevButtons = null;
+    this._prevAxes = null;
+
+    // Button references for gamepad nav
+    this._hubBtn = null;
+    this._teamBtn = null;
+    this._pvpBtn = null;
+    this._scoresBtn = null;
+    this._modeBackBtn = null;
+    this._colorRow = null;
+    this._trackRow = null;
+    this._playBtn = null;
+    this._scoresBackBtn = null;
+    this._navMap = { main: [], modeSelect: [], highScores: [] };
   }
 
   /**
@@ -104,11 +122,24 @@ export class MainMenuScene {
       });
     }
 
-    // Animation callback
+    // Animation callback + gamepad polling
     this.scene.onBeforeRenderObservable.add(() => {
       const dt = this.engine.getDeltaTime() / 1000;
       this._updateAnimations(dt);
+      this._pollGamepad();
     });
+
+    // Gamepad disconnect — clear focus highlight
+    this._onGamepadDisconnected = () => {
+      const items = this._navMap[this._menuState];
+      if (this._gamepadActive && items && items.length > 0 && this._focusIndex < items.length) {
+        this._applyFocus(items[this._focusIndex], false);
+      }
+      this._gamepadActive = false;
+      this._prevButtons = null;
+      this._prevAxes = null;
+    };
+    window.addEventListener('gamepaddisconnected', this._onGamepadDisconnected);
   }
 
   /**
@@ -125,6 +156,13 @@ export class MainMenuScene {
       this._highScoresComputation.stop();
       this._highScoresComputation = null;
     }
+    if (this._onGamepadDisconnected) {
+      window.removeEventListener('gamepaddisconnected', this._onGamepadDisconnected);
+      this._onGamepadDisconnected = null;
+    }
+    this._prevButtons = null;
+    this._prevAxes = null;
+    this._navMap = { main: [], modeSelect: [], highScores: [] };
     if (this._gui) {
       this._gui.dispose();
       this._gui = null;
@@ -457,6 +495,7 @@ export class MainMenuScene {
     this._gui = gui;
     this._createMainPanel(gui);
     this._createModeSelectPanel(gui);
+    this._buildNavMap();
     this._showMainMenu();
   }
 
@@ -486,6 +525,7 @@ export class MainMenuScene {
 
     // Hub button
     const hubBtn = this._createMenuButton('Hub', false);
+    this._hubBtn = hubBtn;
     hubBtn.onPointerClickObservable.add(() => {
       this._audioManager.playSfx('ui-select');
       const hubUrl = Meteor.settings.public?.hubUrl;
@@ -497,6 +537,7 @@ export class MainMenuScene {
 
     // Team Play — opens mode select
     const teamBtn = this._createMenuButton('Team Play', false);
+    this._teamBtn = teamBtn;
     teamBtn.onPointerClickObservable.add(() => {
       this._audioManager.playSfx('ui-select');
       this._selectedMode = 'team';
@@ -506,6 +547,7 @@ export class MainMenuScene {
 
     // PvP Arena — opens mode select
     const pvpBtn = this._createMenuButton('PvP Arena', false);
+    this._pvpBtn = pvpBtn;
     pvpBtn.onPointerClickObservable.add(() => {
       this._audioManager.playSfx('ui-select');
       this._selectedMode = 'pvp';
@@ -515,6 +557,7 @@ export class MainMenuScene {
 
     // High Scores
     const scoresBtn = this._createMenuButton('High Scores', false);
+    this._scoresBtn = scoresBtn;
     scoresBtn.onPointerClickObservable.add(() => {
       this._audioManager.playSfx('ui-select');
       this._showHighScores();
@@ -548,6 +591,7 @@ export class MainMenuScene {
 
     // Back button
     const backBtn = this._createMenuButton('Back', false);
+    this._modeBackBtn = backBtn;
     backBtn.onPointerClickObservable.add(() => {
       this._audioManager.playSfx('ui-cancel');
       this._showMainMenu();
@@ -556,6 +600,7 @@ export class MainMenuScene {
 
     // Color selector row
     const colorRow = new StackPanel('colorRow');
+    this._colorRow = colorRow;
     colorRow.isVertical = false;
     colorRow.widthInPixels = 180;
     colorRow.heightInPixels = 55;
@@ -586,6 +631,7 @@ export class MainMenuScene {
 
     // Track selector row
     const trackRow = new StackPanel('trackRow');
+    this._trackRow = trackRow;
     trackRow.isVertical = false;
     trackRow.widthInPixels = 180;
     trackRow.heightInPixels = 55;
@@ -616,6 +662,7 @@ export class MainMenuScene {
 
     // Play button — enabled, triggers scene transition
     const playBtn = this._createMenuButton('Play', false);
+    this._playBtn = playBtn;
     playBtn.onPointerClickObservable.add(() => {
       this._audioManager.playSfx('ui-select');
       if (this._onPlay) {
@@ -628,6 +675,7 @@ export class MainMenuScene {
   // ---- Menu helpers ----
 
   _showMainMenu() {
+    this._resetFocusForTransition();
     this._menuState = 'main';
     this._mainBackdrop.isVisible = true;
     this._mainPanel.isVisible = true;
@@ -647,17 +695,21 @@ export class MainMenuScene {
       this._highScoresComputation.stop();
       this._highScoresComputation = null;
     }
+    this._applyInitialFocus();
   }
 
   _showModeSelect() {
+    this._resetFocusForTransition();
     this._menuState = 'modeSelect';
     this._mainBackdrop.isVisible = false;
     this._mainPanel.isVisible = false;
     this._modeBackdrop.isVisible = true;
     this._modePanel.isVisible = true;
+    this._applyInitialFocus();
   }
 
   _showHighScores() {
+    this._resetFocusForTransition();
     this._menuState = 'highScores';
     this._mainBackdrop.isVisible = false;
     this._mainPanel.isVisible = false;
@@ -676,6 +728,7 @@ export class MainMenuScene {
       const scores = HighScores.find({}, { sort: { score: -1 }, limit: 10 }).fetch();
       this._updateHighScoresDisplay(scores);
     });
+    this._applyInitialFocus();
   }
 
   _createHighScoresPanel(gui) {
@@ -727,6 +780,10 @@ export class MainMenuScene {
 
     // Back button
     const scoresBackBtn = this._createMenuButton('Back', false);
+    this._scoresBackBtn = scoresBackBtn;
+    this._navMap.highScores = [
+      { control: scoresBackBtn, onConfirm: () => { this._showMainMenu(); } }
+    ];
     scoresBackBtn.onPointerClickObservable.add(() => {
       this._audioManager.playSfx('ui-cancel');
       this._showMainMenu();
@@ -834,6 +891,220 @@ export class MainMenuScene {
     });
 
     return btn;
+  }
+
+  // ---- Gamepad navigation ----
+
+  _buildNavMap() {
+    this._navMap.main = [
+      {
+        control: this._hubBtn,
+        onConfirm: () => {
+          const hubUrl = Meteor.settings.public?.hubUrl;
+          if (hubUrl) {
+            window.location.href = hubUrl;
+          }
+        }
+      },
+      {
+        control: this._teamBtn,
+        onConfirm: () => {
+          this._selectedMode = 'team';
+          this._showModeSelect();
+        }
+      },
+      {
+        control: this._pvpBtn,
+        onConfirm: () => {
+          this._selectedMode = 'pvp';
+          this._showModeSelect();
+        }
+      },
+      {
+        control: this._scoresBtn,
+        onConfirm: () => {
+          this._showHighScores();
+        }
+      }
+    ];
+    this._navMap.modeSelect = [
+      {
+        control: this._modeBackBtn,
+        onConfirm: () => { this._showMainMenu(); }
+      },
+      {
+        control: this._colorRow,
+        onConfirm: () => { this._cyclePalette(1); },
+        onLeft: () => { this._cyclePalette(-1); },
+        onRight: () => { this._cyclePalette(1); }
+      },
+      {
+        control: this._trackRow,
+        onConfirm: () => { this._cycleTrack(1); },
+        onLeft: () => { this._cycleTrack(-1); },
+        onRight: () => { this._cycleTrack(1); }
+      },
+      {
+        control: this._playBtn,
+        onConfirm: () => {
+          if (this._onPlay) {
+            this._onPlay(this._paletteIndex, this._selectedMode);
+          }
+        }
+      }
+    ];
+    // highScores nav map populated lazily in _createHighScoresPanel
+  }
+
+  _pollGamepad() {
+    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let gp = null;
+    for (let i = 0; i < gamepads.length; i++) {
+      if (gamepads[i] && gamepads[i].connected) {
+        gp = gamepads[i];
+        break;
+      }
+    }
+    if (!gp) {
+      return;
+    }
+
+    const buttons = gp.buttons.map(b => b.pressed);
+    const axes = gp.axes.slice();
+    const prev = this._prevButtons;
+    const prevAxes = this._prevAxes;
+
+    // Rising edge detection for buttons
+    const pressed = (idx) => idx < buttons.length && buttons[idx] && (!prev || !prev[idx]);
+
+    // Axis to digital with deadzone
+    const DEADZONE = 0.5;
+    const axisDigital = (val) => {
+      if (val < -DEADZONE) {
+        return -1;
+      }
+      if (val > DEADZONE) {
+        return 1;
+      }
+      return 0;
+    };
+    const axisX = axisDigital(axes[0] || 0);
+    const axisY = axisDigital(axes[1] || 0);
+    const prevAxisX = prevAxes ? axisDigital(prevAxes[0] || 0) : 0;
+    const prevAxisY = prevAxes ? axisDigital(prevAxes[1] || 0) : 0;
+
+    // Detect rising edges for directions
+    const upPressed = pressed(12) || (axisY === -1 && prevAxisY !== -1);
+    const downPressed = pressed(13) || (axisY === 1 && prevAxisY !== 1);
+    const leftPressed = pressed(14) || (axisX === -1 && prevAxisX !== -1);
+    const rightPressed = pressed(15) || (axisX === 1 && prevAxisX !== 1);
+    const confirmPressed = pressed(0);
+    const cancelPressed = pressed(1);
+
+    this._prevButtons = buttons;
+    this._prevAxes = axes;
+
+    const anyInput = upPressed || downPressed || leftPressed || rightPressed || confirmPressed || cancelPressed;
+    if (!anyInput) {
+      return;
+    }
+
+    // Activate gamepad mode on first input
+    if (!this._gamepadActive) {
+      this._gamepadActive = true;
+      const items = this._navMap[this._menuState];
+      if (items && items.length > 0) {
+        this._applyFocus(items[this._focusIndex], true);
+      }
+    }
+
+    const items = this._navMap[this._menuState];
+    if (!items || items.length === 0) {
+      return;
+    }
+
+    if (upPressed) {
+      this._moveFocus(-1);
+    } else if (downPressed) {
+      this._moveFocus(1);
+    } else if (leftPressed) {
+      const item = items[this._focusIndex];
+      if (item.onLeft) {
+        item.onLeft();
+      }
+    } else if (rightPressed) {
+      const item = items[this._focusIndex];
+      if (item.onRight) {
+        item.onRight();
+      }
+    } else if (confirmPressed) {
+      const item = items[this._focusIndex];
+      if (item.onConfirm) {
+        this._audioManager.playSfx('ui-select');
+        // Defer to avoid disposing the scene mid-render (pollGamepad runs
+        // inside onBeforeRenderObservable, so a scene transition here would
+        // destroy the camera before Scene.render() finishes).
+        const action = item.onConfirm;
+        setTimeout(action, 0);
+      }
+    } else if (cancelPressed) {
+      setTimeout(() => this._handleCancel(), 0);
+    }
+  }
+
+  _handleCancel() {
+    if (this._menuState === 'modeSelect' || this._menuState === 'highScores') {
+      this._audioManager.playSfx('ui-cancel');
+      this._showMainMenu();
+    }
+  }
+
+  _moveFocus(direction) {
+    const items = this._navMap[this._menuState];
+    if (!items || items.length === 0) {
+      return;
+    }
+
+    this._applyFocus(items[this._focusIndex], false);
+    this._focusIndex = ((this._focusIndex + direction) % items.length + items.length) % items.length;
+    this._applyFocus(items[this._focusIndex], true);
+    this._audioManager.playSfx('ui-hover');
+  }
+
+  _applyFocus(item, focused) {
+    const control = item.control;
+    if (control instanceof StackPanel) {
+      // Selector row — brighten/dim all children
+      for (let i = 0; i < control.children.length; i++) {
+        const child = control.children[i];
+        if (child instanceof Button) {
+          child.background = focused ? '#3A3530' : '#2A2520';
+          child.color = focused ? '#FFF176' : '#FFD740';
+        } else if (child instanceof TextBlock) {
+          child.color = focused ? '#FFF176' : '#FFD740';
+        }
+      }
+    } else {
+      control.background = focused ? '#3A3530' : '#2A2520';
+      control.color = focused ? '#FFF176' : '#FFD740';
+    }
+  }
+
+  _resetFocusForTransition() {
+    const items = this._navMap[this._menuState];
+    if (items && items.length > 0 && this._focusIndex < items.length) {
+      this._applyFocus(items[this._focusIndex], false);
+    }
+    this._focusIndex = 0;
+  }
+
+  _applyInitialFocus() {
+    if (this._gamepadActive) {
+      const items = this._navMap[this._menuState];
+      if (items && items.length > 0) {
+        this._applyFocus(items[0], true);
+      }
+    }
   }
 
   // ---- Animation ----
