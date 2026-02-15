@@ -320,6 +320,15 @@ export class Level1Scene {
 
     // ---- Mesh lifecycle transitions ----
 
+    // Rollback re-activated a player mid-vortex → cancel the vortex
+    if (charState.active && slot.vortexing) {
+      if (slot.vortexObserver) {
+        this.scene.onBeforeRenderObservable.remove(slot.vortexObserver);
+        slot.vortexObserver = null;
+      }
+      slot.vortexing = false;
+    }
+
     // Character became active and alive → create meshes
     if (charState.active && !charState.dead && !slot.meshCreated) {
       this._createSlotMeshes(slot, charState, type);
@@ -338,9 +347,13 @@ export class Level1Scene {
       this._disposeSlotMeshes(slot);
     }
 
-    // Character became inactive → dispose if meshes exist
-    if (!charState.active && slot.meshCreated) {
-      this._disposeSlotMeshes(slot);
+    // Character became inactive → dispose if meshes exist (or vortex for leaving humans)
+    if (!charState.active && slot.meshCreated && !slot.vortexing) {
+      if (type === 'human' && prevActive && !prevDead) {
+        this._startVortexEffect(slot, charState);
+      } else {
+        this._disposeSlotMeshes(slot);
+      }
     }
 
     // ---- Per-frame rendering (when alive and meshes exist) ----
@@ -605,6 +618,11 @@ export class Level1Scene {
       }
     }
 
+    // Vortex leave (human became inactive while alive — disconnected player)
+    if (!char.active && prev.active && !prev.dead && type === 'human') {
+      this._audioManager.playSfx('vortex-suck');
+    }
+
     // Materialization end
     if (prev.materializing && !char.materializing) {
       this._audioManager.playSfx('materialize-done');
@@ -807,6 +825,11 @@ export class Level1Scene {
     }
     // Dispose renderer mode render slots
     for (const slot of this._renderSlots) {
+      if (slot.vortexObserver) {
+        this.scene?.onBeforeRenderObservable?.remove(slot.vortexObserver);
+        slot.vortexObserver = null;
+        slot.vortexing = false;
+      }
       if (slot.meshCreated) {
         this._disposeSlotMeshes(slot);
       }
@@ -1248,6 +1271,9 @@ export class Level1Scene {
       // Renderer-local turn animation state
       turnFrom: 0,
       turnTo: 0,
+      // Vortex leave effect
+      vortexing: false,
+      vortexObserver: null,
     };
   }
 
@@ -1838,6 +1864,127 @@ export class Level1Scene {
         this._bannerCallback = null;
       }
     }
+  }
+
+  // ---- Vortex Leave Effect ----
+
+  _startVortexEffect(slot, charState) {
+    slot.vortexing = true;
+    const startTime = performance.now();
+    const SPIN_DURATION = 0.7;
+    const TOTAL_DURATION = SPIN_DURATION;
+
+    // Capture center position for feather spawn
+    const centerX = slot.birdRig?.root ? slot.birdRig.root.position.x : charState.positionX;
+    const centerY = slot.birdRig?.root ? slot.birdRig.root.position.y : charState.positionY;
+
+    // Feather debris state (spawned at end of spin phase)
+    let featherDebris = null;
+    let featherParents = null;
+    let meshesDisposed = false;
+
+    const observer = this.scene.onBeforeRenderObservable.add(() => {
+      const elapsed = (performance.now() - startTime) / 1000;
+      const frameDt = this.engine.getDeltaTime() / 1000;
+
+      // Phase 1: Spin + Shrink
+      if (elapsed < SPIN_DURATION && !meshesDisposed) {
+        const progress = elapsed / SPIN_DURATION;
+        const spinSpeed = (10 + progress * 30) * frameDt;
+        const scale = Math.max(0.01, 1 - progress);
+
+        const rigs = [slot.birdRig, slot.knightRig, slot.lanceRig];
+        for (const rig of rigs) {
+          if (rig?.root) {
+            rig.root.rotation.y += spinSpeed;
+            rig.root.scaling.setAll(scale);
+          }
+        }
+
+        // Slight upward drift
+        if (slot.birdRig?.root) {
+          slot.birdRig.root.position.y += 0.3 * frameDt;
+        }
+      }
+
+      // Transition: dispose meshes and spawn feathers
+      if (elapsed >= SPIN_DURATION && !meshesDisposed) {
+        meshesDisposed = true;
+        this._disposeSlotMeshes(slot);
+
+        // Spawn feather debris
+        const featherColors = ['#F5F0E0', '#E0D8C4', '#3D3D3D', '#4A3A2A'];
+        featherParents = [];
+        featherDebris = [];
+        const featherSize = VOXEL_SIZE * 0.7;
+
+        for (const hex of featherColors) {
+          const parent = MeshBuilder.CreateBox(`vortexP_${hex}`, { size: featherSize }, this.scene);
+          const mat = new StandardMaterial(`vortexM_${hex}`, this.scene);
+          mat.disableLighting = true;
+          mat.emissiveColor = hexToColor3(hex);
+          parent.material = mat;
+          parent.isVisible = false;
+          featherParents.push(parent);
+
+          const count = 1 + Math.floor(Math.random() * 2); // 1-2 per color = 4-8 total
+          for (let i = 0; i < count; i++) {
+            const inst = parent.createInstance('f');
+            inst.position.set(
+              centerX + (Math.random() - 0.5) * 0.3,
+              centerY + Math.random() * 0.3,
+              (Math.random() - 0.5) * 0.2
+            );
+            featherDebris.push({
+              mesh: inst,
+              vx: (Math.random() - 0.5) * 2,
+              vy: Math.random() * 1.5 + 0.5,
+              life: 1.2 + Math.random() * 0.5,
+            });
+          }
+        }
+      }
+
+      // Phase 2: Animate feather debris
+      if (featherDebris) {
+        let remaining = 0;
+        for (const d of featherDebris) {
+          if (d.life <= 0) {
+            continue;
+          }
+          remaining++;
+
+          d.vx *= 0.97;
+          d.vy -= GRAVITY * 0.3 * frameDt;
+          d.mesh.position.x += d.vx * frameDt;
+          d.mesh.position.y += d.vy * frameDt;
+          d.mesh.rotation.x += 4 * frameDt;
+          d.mesh.rotation.z += 3 * frameDt;
+          d.life -= frameDt;
+
+          if (d.life < 0.4) {
+            const s = Math.max(0, d.life / 0.4);
+            d.mesh.scaling.setAll(s);
+          }
+
+          if (d.life <= 0) {
+            d.mesh.dispose();
+          }
+        }
+
+        // All feathers expired — clean up
+        if (remaining === 0) {
+          this.scene.onBeforeRenderObservable.remove(observer);
+          for (const p of featherParents) {
+            p.dispose();
+          }
+          slot.vortexing = false;
+          slot.vortexObserver = null;
+        }
+      }
+    });
+
+    slot.vortexObserver = observer;
   }
 
   // ---- Death / Explosion ----

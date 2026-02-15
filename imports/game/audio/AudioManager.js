@@ -54,6 +54,7 @@ const GAME_SFX = [
   { name: 'lava-burst-1', url: '/audio/sfx/environment/lava-burst-1.mp3', pool: 2, volume: 0.3 },
   { name: 'lava-burst-2', url: '/audio/sfx/environment/lava-burst-2.mp3', pool: 2, volume: 0.3 },
   { name: 'lava-death', url: '/audio/sfx/environment/lava-death.mp3', pool: 1, volume: 0.7 },
+  { name: 'vortex-suck', url: '/audio/sfx/environment/vortex-suck.mp3', pool: 1, volume: 0.6 },
 
   // Bonus
   { name: 'egg-catch-air', url: '/audio/sfx/bonus/egg-catch-air.mp3', pool: 1, volume: 0.6 },

@@ -307,6 +307,25 @@ export class MultiplayerManager {
           this._connectToPeer(player);
         }
       }
+
+      // Detect removed players — build set of current peerIds from room document
+      const currentPeerIds = new Set();
+      for (const player of room.players) {
+        if (player.peerJsId) {
+          currentPeerIds.add(player.peerJsId);
+        }
+      }
+      for (const [peerId] of this._connectedPeers) {
+        if (!currentPeerIds.has(peerId)) {
+          // Guard against duplicate events (autorun may fire multiple times before drain)
+          const alreadyBuffered = this._incomingPeerEvents.some(
+            e => e.type === 'disconnected' && e.peerId === peerId
+          );
+          if (!alreadyBuffered) {
+            this._incomingPeerEvents.push({ type: 'disconnected', peerId });
+          }
+        }
+      }
     });
   }
 
@@ -415,8 +434,11 @@ export class MultiplayerManager {
       console.log('[MultiplayerManager] Resync authority migrated to slot', this._resyncAuthority);
     }
 
-    // If no more remote players, transition back to solo
+    // If no more remote players, transition back to solo.
+    // Directly deactivate the leaving player because solo mode feeds
+    // neutral input (0) — DISCONNECT_BIT would never be processed.
     if (this._connectedPeers.size === 0 && this._gameLoop) {
+      this._simulation.deactivatePlayer(playerSlot);
       this._gameLoop.transitionToSolo();
       this._session = null;
     }
