@@ -252,16 +252,19 @@ export class RollbackSession {
     };
   }
 
-  // Get the checksum for the current frame (for sending to peers)
+  // Get the checksum for the current frame (for sending to peers).
+  // Uses currentFrame - 1 because advanceFrame() increments currentFrame
+  // before this method is called, so the state just saved is at (currentFrame - 1).
   getCurrentChecksum() {
-    if (this.currentFrame < this.checksumSuppressUntilFrame) {
+    const frame = this.currentFrame - 1;
+    if (frame < this.checksumSuppressUntilFrame) {
       return null;
     }
-    if (this.currentFrame > 0 && this.currentFrame % CHECKSUM_INTERVAL === 0) {
-      const checksum = this.stateBuffer.getChecksum(this.currentFrame);
+    if (frame > 0 && frame % CHECKSUM_INTERVAL === 0) {
+      const checksum = this.stateBuffer.getChecksum(frame);
       if (checksum !== null) {
-        this.lastChecksumFrame = this.currentFrame;
-        return { frame: this.currentFrame, checksum };
+        this.lastChecksumFrame = frame;
+        return { frame, checksum };
       }
     }
     return null;
@@ -363,7 +366,8 @@ export class RollbackSession {
 
   // Check for desync by comparing local and remote checksums
   _checkDesync() {
-    if (this.currentFrame < this.checksumSuppressUntilFrame) {
+    const frame = this.currentFrame - 1;
+    if (frame < this.checksumSuppressUntilFrame) {
       return;
     }
 

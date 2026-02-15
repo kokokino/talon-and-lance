@@ -463,7 +463,9 @@ export class MultiplayerManager {
             this._session.peerLastRecvTime[msg.playerIndex] = Date.now();
           } else {
             // Buffer inputs arriving before session is set up (e.g., before STATE_SYNC)
-            this._preSessionInputBuffer.push(msg);
+            if (this._preSessionInputBuffer.length < 600) {
+              this._preSessionInputBuffer.push(msg);
+            }
           }
         } else if (msgType === MessageType.STATE_SYNC) {
           // Only accept STATE_SYNC from the current resync authority
@@ -475,8 +477,9 @@ export class MultiplayerManager {
             continue;
           }
           const msg = InputEncoder.decodeStateSyncMessage(buffer);
-          if (!this._gameLoop.soloMode && this._session && msg.frame < this._simulation._frame) {
-            console.warn('[MultiplayerManager] Ignoring stale STATE_SYNC frame', msg.frame, '(current:', this._simulation._frame, ')');
+          const frameDelta = this._simulation._frame - msg.frame;
+          if (!this._gameLoop.soloMode && this._session && frameDelta > 120) {
+            console.warn('[MultiplayerManager] Ignoring stale STATE_SYNC, delta:', frameDelta);
           } else {
             // Received state sync from host — load it
             this._simulation.deserialize(msg.stateData);
