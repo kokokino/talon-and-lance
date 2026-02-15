@@ -556,13 +556,26 @@ export class Level1Scene {
       this._showBanner('WAVE ' + gameState.waveNumber, WAVE_TRANSITION_DELAY, null);
     }
 
-    // Game over transition
+    // Game over transition (all players eliminated)
     if (gameState.gameOver && !this._prevState.gameOver) {
       this._showBanner('GAME OVER', 3, () => {
         if (this._onQuitToMenu) {
           this._onQuitToMenu();
         }
       });
+    }
+
+    // Local player eliminated in multiplayer (other players still alive)
+    if (this._rendererMode && !gameState.gameOver) {
+      const localHuman = gameState.humans[this._localPlayerSlot];
+      const prevLocal = this._findPrevChar(this._localPlayerSlot, 'human');
+      if (localHuman && prevLocal && localHuman.dead && !prevLocal.dead && localHuman.lives <= 0) {
+        this._showBanner('GAME OVER', 3, () => {
+          if (this._onQuitToMenu) {
+            this._onQuitToMenu();
+          }
+        });
+      }
     }
   }
 
