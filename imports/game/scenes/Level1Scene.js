@@ -16,6 +16,7 @@ import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTextur
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
+import { SolidParticleSystem } from '@babylonjs/core/Particles/solidParticleSystem';
 
 import { InputReader } from '../InputReader.js';
 import { GameSimulation } from '../GameSimulation.js';
@@ -59,6 +60,16 @@ function hexToColor3(hex) {
   const g = parseInt(hex.slice(3, 5), 16) / 255;
   const b = parseInt(hex.slice(5, 7), 16) / 255;
   return new Color3(r, g, b);
+}
+
+/**
+ * Convert a hex color string (e.g. '#FF8800') to a Babylon Color4.
+ */
+function hexToColor4(hex) {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  return new Color4(r, g, b, 1);
 }
 
 
@@ -136,6 +147,9 @@ export class Level1Scene {
     this._lastStrideTime = 0;
     // Edge bump sound cooldown (ms timestamp of last play)
     this._lastEdgeBumpTime = 0;
+
+    // Active SPS debris systems (explosions/burns in flight)
+    this._activeDebrisSystems = [];
 
     // Per-slot render data: mesh refs + visual-only animation state
     // Indices 0-3 = humans, 4-11 = enemies
@@ -953,6 +967,20 @@ export class Level1Scene {
         eggSlot.rig = null;
       }
     }
+    // Dispose any in-flight debris SPS systems
+    for (const entry of this._activeDebrisSystems) {
+      if (entry.observer) {
+        this.scene?.onBeforeRenderObservable?.remove(entry.observer);
+      }
+      if (entry.sps) {
+        entry.sps.dispose();
+      }
+      if (entry.mat) {
+        entry.mat.dispose();
+      }
+    }
+    this._activeDebrisSystems = [];
+
     this._platforms = [];
     this._lavaMaterial = null;
     this._lavaTexture = null;
@@ -2251,9 +2279,12 @@ export class Level1Scene {
 
   // ---- Death / Explosion ----
 
-  _explodeCharacter(char, charIdx) {
-    // Determine the correct model definitions and palettes for each rig
-    const birdModel = char.wingMode === 'updown' ? ostrichModel : buzzardModel;
+  /**
+   * Collect world-space voxel positions from a character's rigs, keeping every 3rd
+   * voxel to reduce particle count (~1000 → ~333). Returns array of {wx, wy, wz, hex}.
+   */
+  _collectDebrisVoxels(char, charIdx) {
+    const birdModelDef = char.wingMode === 'updown' ? ostrichModel : buzzardModel;
     let knightPalette;
     let knightModelDef;
     if (charIdx === 0) {
@@ -2266,13 +2297,13 @@ export class Level1Scene {
     }
 
     const rigSources = [
-      { rig: char.birdRig, modelDef: birdModel, palette: birdModel.palette },
+      { rig: char.birdRig, modelDef: birdModelDef, palette: birdModelDef.palette },
       { rig: char.knightRig, modelDef: knightModelDef, palette: knightPalette },
       { rig: char.lanceRig, modelDef: lanceModel, palette: lanceModel.palette },
     ];
 
-    // Collect voxel positions grouped by hex color
-    const byColor = {};
+    const voxels = [];
+    let counter = 0;
 
     for (const { rig, modelDef, palette } of rigSources) {
       if (!rig) {
@@ -2309,13 +2340,17 @@ export class Level1Scene {
                 continue;
               }
 
-              if (!byColor[hex]) {
-                byColor[hex] = [];
+              // Keep every 3rd voxel for 1/3 reduction
+              counter++;
+              if (counter % 3 !== 0) {
+                continue;
               }
-              byColor[hex].push({
+
+              voxels.push({
                 wx: worldPos.x + (x - centerX) * VOXEL_SIZE,
                 wy: worldPos.y + y * VOXEL_SIZE,
                 wz: worldPos.z + (z - centerZ) * VOXEL_SIZE,
+                hex,
               });
             }
           }
@@ -2323,205 +2358,196 @@ export class Level1Scene {
       }
     }
 
-    // One parent mesh per unique color; instances for each voxel of that color.
-    // Instances share geometry — avoids creating hundreds of individual box meshes.
-    const parentMeshes = [];
-    const allDebris = [];
+    return voxels;
+  }
 
-    for (const [hex, voxels] of Object.entries(byColor)) {
-      const parent = MeshBuilder.CreateBox(`debrisP_${hex}`, { size: VOXEL_SIZE }, this.scene);
-      const mat = new StandardMaterial(`debrisM_${hex}`, this.scene);
-      mat.disableLighting = true;
-      mat.emissiveColor = hexToColor3(hex);
-      parent.material = mat;
-      parent.isVisible = false;
-      parentMeshes.push(parent);
+  _explodeCharacter(char, charIdx) {
+    const voxels = this._collectDebrisVoxels(char, charIdx);
+    if (voxels.length === 0) {
+      return;
+    }
 
-      for (const v of voxels) {
-        const inst = parent.createInstance('d');
-        inst.position.set(v.wx, v.wy, v.wz);
-        allDebris.push({
-          mesh: inst,
+    // Build SPS with one particle per kept voxel
+    const sps = new SolidParticleSystem('explodeSPS', this.scene, { updatable: true });
+    const template = MeshBuilder.CreateBox('explodeTpl', { size: VOXEL_SIZE }, this.scene);
+    sps.addShape(template, voxels.length);
+    template.dispose();
+
+    const spsMesh = sps.buildMesh();
+    const mat = new StandardMaterial('explodeMat', this.scene);
+    mat.disableLighting = true;
+    mat.emissiveColor = Color3.White();
+    spsMesh.material = mat;
+    spsMesh.hasVertexAlpha = false;
+
+    // Per-particle physics data (parallel to sps.particles)
+    const debrisData = [];
+
+    sps.initParticles = () => {
+      for (let i = 0; i < sps.nbParticles; i++) {
+        const p = sps.particles[i];
+        const v = voxels[i];
+        p.position.set(v.wx, v.wy, v.wz);
+        p.color = hexToColor4(v.hex);
+        debrisData.push({
           vx: (Math.random() - 0.5) * 3,
           vy: Math.random() * 2,
           life: 1.2 + Math.random() * 0.5,
         });
       }
-    }
+    };
 
-    // Single observer updates all debris each frame
+    sps.initParticles();
+    sps.setParticles();
+
+    // Track for dispose-time cleanup
+    const entry = { sps, mat, observer: null };
+    this._activeDebrisSystems.push(entry);
+
     const observer = this.scene.onBeforeRenderObservable.add(() => {
       const frameDt = this.engine.getDeltaTime() / 1000;
       let remaining = 0;
 
-      for (const d of allDebris) {
+      sps.updateParticle = (p) => {
+        const d = debrisData[p.idx];
         if (d.life <= 0) {
-          continue;
+          p.scaling.setAll(0);
+          return p;
         }
         remaining++;
 
         d.vx *= 0.97;
         d.vy -= GRAVITY * frameDt;
-        d.mesh.position.x += d.vx * frameDt;
-        d.mesh.position.y += d.vy * frameDt;
-        d.mesh.rotation.x += 5 * frameDt;
-        d.mesh.rotation.z += 3 * frameDt;
+        p.position.x += d.vx * frameDt;
+        p.position.y += d.vy * frameDt;
+        p.rotation.x += 5 * frameDt;
+        p.rotation.z += 3 * frameDt;
         d.life -= frameDt;
 
-        // Scale down in last 0.4s (instances can't fade alpha independently)
         if (d.life < 0.4) {
           const s = Math.max(0, d.life / 0.4);
-          d.mesh.scaling.setAll(s);
+          p.scaling.set(s, s, s);
         }
 
         if (d.life <= 0) {
-          d.mesh.dispose();
+          p.scaling.setAll(0);
         }
-      }
+        return p;
+      };
+
+      sps.setParticles();
 
       if (remaining === 0) {
         this.scene.onBeforeRenderObservable.remove(observer);
-        for (const p of parentMeshes) {
-          p.dispose();
+        sps.dispose();
+        mat.dispose();
+        const idx = this._activeDebrisSystems.indexOf(entry);
+        if (idx !== -1) {
+          this._activeDebrisSystems.splice(idx, 1);
         }
       }
     });
+
+    entry.observer = observer;
   }
 
   // ---- Lava Death Effects ----
 
   _burnCharacter(char, charIdx, lavaY) {
     const FIRE_COLORS = ['#FFD040', '#FF6010', '#C02800'];
-    const birdModel_ = char.wingMode === 'updown' ? ostrichModel : buzzardModel;
-    let knightPalette;
-    let knightModelDef;
-    if (charIdx === 0) {
-      knightModelDef = knightModel;
-      knightPalette = buildKnightPalette(char.paletteIndex);
-    } else {
-      knightModelDef = evilKnightModel;
-      const paletteIdx = char.enemyType !== undefined ? char.enemyType : ENEMY_TYPE_BOUNDER;
-      knightPalette = buildEvilKnightPalette(paletteIdx);
+    const FIRE_COLOR4S = FIRE_COLORS.map(hexToColor4);
+
+    const voxels = this._collectDebrisVoxels(char, charIdx);
+    if (voxels.length === 0) {
+      return;
     }
 
-    const rigSources = [
-      { rig: char.birdRig, modelDef: birdModel_, palette: birdModel_.palette },
-      { rig: char.knightRig, modelDef: knightModelDef, palette: knightPalette },
-      { rig: char.lanceRig, modelDef: lanceModel, palette: lanceModel.palette },
-    ];
+    // Build SPS with one particle per kept voxel
+    const sps = new SolidParticleSystem('burnSPS', this.scene, { updatable: true });
+    const template = MeshBuilder.CreateBox('burnTpl', { size: VOXEL_SIZE }, this.scene);
+    sps.addShape(template, voxels.length);
+    template.dispose();
 
-    // Collect voxel world positions (ignore original colors — we'll use fire colors)
-    const voxelPositions = [];
-    for (const { rig, modelDef } of rigSources) {
-      if (!rig) {
-        continue;
-      }
-      for (const [partName, partData] of Object.entries(modelDef.parts)) {
-        if (!rig.parts[partName] || !rig.parts[partName].mesh) {
-          continue;
-        }
-        const { layers } = partData;
-        if (!layers || layers.length === 0) {
-          continue;
-        }
-        const worldPos = rig.parts[partName].mesh.getAbsolutePosition();
-        const height = layers.length;
-        const depth = layers[0].length;
-        const width = layers[0][0].length;
-        const centerX = (width - 1) / 2;
-        const centerZ = (depth - 1) / 2;
+    const spsMesh = sps.buildMesh();
+    const mat = new StandardMaterial('burnMat', this.scene);
+    mat.disableLighting = true;
+    mat.emissiveColor = Color3.White();
+    spsMesh.material = mat;
+    spsMesh.hasVertexAlpha = false;
 
-        for (let y = 0; y < height; y++) {
-          for (let z = 0; z < depth; z++) {
-            for (let x = 0; x < width; x++) {
-              if (layers[y][z][x] === 0) {
-                continue;
-              }
-              voxelPositions.push({
-                wx: worldPos.x + (x - centerX) * VOXEL_SIZE,
-                wy: worldPos.y + y * VOXEL_SIZE,
-                wz: worldPos.z + (z - centerZ) * VOXEL_SIZE,
-              });
-            }
-          }
-        }
-      }
-    }
+    // Per-particle physics data
+    const debrisData = [];
 
-    // Group by random fire color
-    const byColor = {};
-    for (const v of voxelPositions) {
-      const hex = FIRE_COLORS[Math.floor(Math.random() * FIRE_COLORS.length)];
-      if (!byColor[hex]) {
-        byColor[hex] = [];
-      }
-      byColor[hex].push(v);
-    }
-
-    const parentMeshes = [];
-    const allDebris = [];
-
-    for (const [hex, voxels] of Object.entries(byColor)) {
-      const parent = MeshBuilder.CreateBox(`burnP_${hex}`, { size: VOXEL_SIZE }, this.scene);
-      const mat = new StandardMaterial(`burnM_${hex}`, this.scene);
-      mat.disableLighting = true;
-      mat.emissiveColor = hexToColor3(hex);
-      parent.material = mat;
-      parent.isVisible = false;
-      parentMeshes.push(parent);
-
-      for (const v of voxels) {
-        const inst = parent.createInstance('b');
-        inst.position.set(v.wx, v.wy, v.wz);
-        // 10% chance of upward spark, 90% sinks downward
+    sps.initParticles = () => {
+      for (let i = 0; i < sps.nbParticles; i++) {
+        const p = sps.particles[i];
+        const v = voxels[i];
+        p.position.set(v.wx, v.wy, v.wz);
+        p.color = FIRE_COLOR4S[Math.floor(Math.random() * FIRE_COLOR4S.length)];
         const isSpark = Math.random() < 0.1;
-        allDebris.push({
-          mesh: inst,
+        debrisData.push({
           vx: (Math.random() - 0.5) * 1.0,
           vy: isSpark ? (0.5 + Math.random() * 1.5) : -(0.5 + Math.random() * 1.5),
           life: 0.4 + Math.random() * 0.4,
         });
       }
-    }
+    };
+
+    sps.initParticles();
+    sps.setParticles();
+
+    // Track for dispose-time cleanup
+    const entry = { sps, mat, observer: null };
+    this._activeDebrisSystems.push(entry);
 
     const observer = this.scene.onBeforeRenderObservable.add(() => {
       const frameDt = this.engine.getDeltaTime() / 1000;
       let remaining = 0;
 
-      for (const d of allDebris) {
+      sps.updateParticle = (p) => {
+        const d = debrisData[p.idx];
         if (d.life <= 0) {
-          continue;
+          p.scaling.setAll(0);
+          return p;
         }
         remaining++;
 
         d.vy -= GRAVITY * 2.0 * frameDt;
-        d.mesh.position.x += d.vx * frameDt;
-        d.mesh.position.y += d.vy * frameDt;
+        p.position.x += d.vx * frameDt;
+        p.position.y += d.vy * frameDt;
         d.life -= frameDt;
 
         // Fast-fade below lava surface
-        const belowLava = lavaY - d.mesh.position.y;
+        const belowLava = lavaY - p.position.y;
         if (belowLava > 0) {
           d.life -= frameDt * 4;
         }
 
         if (d.life < 0.2) {
           const s = Math.max(0, d.life / 0.2);
-          d.mesh.scaling.setAll(s);
+          p.scaling.set(s, s, s);
         }
 
         if (d.life <= 0) {
-          d.mesh.dispose();
+          p.scaling.setAll(0);
         }
-      }
+        return p;
+      };
+
+      sps.setParticles();
 
       if (remaining === 0) {
         this.scene.onBeforeRenderObservable.remove(observer);
-        for (const p of parentMeshes) {
-          p.dispose();
+        sps.dispose();
+        mat.dispose();
+        const idx = this._activeDebrisSystems.indexOf(entry);
+        if (idx !== -1) {
+          this._activeDebrisSystems.splice(idx, 1);
         }
       }
     });
+
+    entry.observer = observer;
   }
 
   _spawnLavaDeathSplash(x) {
