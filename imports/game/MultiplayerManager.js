@@ -54,6 +54,7 @@ export class MultiplayerManager {
     this._incomingMessageBuffer = [];
     this._incomingPeerEvents = [];
     this._lastResyncTime = 0;
+    this._resyncAuthority = 0; // lowest active slot is the resync authority
     this._destroyed = false;
   }
 
@@ -245,11 +246,11 @@ export class MultiplayerManager {
 
     console.log('[MultiplayerManager] Peer connected:', peerId, 'slot:', playerSlot);
 
-    // Only the host (slot 0) activates joining players and sends state sync.
+    // Only the resync authority activates joining players and sends state sync.
     // This prevents multiple peers from independently activating the same joiner
     // at different simulation frames (which would diverge RNG state).
     // The joiner waits to receive STATE_SYNC before transitioning to multiplayer.
-    if (this._playerSlot === 0) {
+    if (this._playerSlot === this._resyncAuthority) {
       // Host: activate the joiner in the simulation, send state, start rollback
       const room = GameRooms.findOne(this._roomId);
       const playerData = room?.players.find(p => p.peerJsId === peerId);
@@ -302,11 +303,36 @@ export class MultiplayerManager {
 
     this._connectedPeers.delete(peerId);
 
+    // If the disconnected peer was the resync authority, promote the
+    // lowest remaining active slot (local player or connected peer).
+    if (playerSlot === this._resyncAuthority) {
+      this._recomputeResyncAuthority();
+      console.log('[MultiplayerManager] Resync authority migrated to slot', this._resyncAuthority);
+    }
+
     // If no more remote players, transition back to solo
     if (this._connectedPeers.size === 0 && this._gameLoop) {
       this._gameLoop.transitionToSolo();
       this._session = null;
     }
+  }
+
+  _recomputeResyncAuthority() {
+    // Authority is the lowest active slot: local player or any connected peer.
+    // All peers compute this independently and agree because they see the
+    // same set of connect/disconnect events.
+    const activeSlots = new Set();
+    activeSlots.add(this._playerSlot);
+    for (const [, slot] of this._connectedPeers) {
+      activeSlots.add(slot);
+    }
+    let lowest = this._playerSlot;
+    for (const slot of activeSlots) {
+      if (slot < lowest) {
+        lowest = slot;
+      }
+    }
+    this._resyncAuthority = lowest;
   }
 
   _setupRollbackSession() {
@@ -412,11 +438,11 @@ export class MultiplayerManager {
             this._preSessionInputBuffer.push(msg);
           }
         } else if (msgType === MessageType.STATE_SYNC) {
-          // Only accept STATE_SYNC from the host (slot 0)
+          // Only accept STATE_SYNC from the current resync authority
           const senderSlot = this._connectedPeers.get(peerId);
-          if (senderSlot === undefined || senderSlot !== 0) {
+          if (senderSlot === undefined || senderSlot !== this._resyncAuthority) {
             if (senderSlot !== undefined) {
-              console.warn('[MultiplayerManager] Ignoring STATE_SYNC from non-host peer', senderSlot);
+              console.warn('[MultiplayerManager] Ignoring STATE_SYNC from non-authority peer', senderSlot, '(authority:', this._resyncAuthority, ')');
             }
             continue;
           }
@@ -461,10 +487,10 @@ export class MultiplayerManager {
         }
       }
     } else if (event.type === 'DesyncDetected') {
-      // Only the host (slot 0) sends authoritative resync state.
-      // This prevents multiple lower-slot peers from independently sending
+      // Only the resync authority sends authoritative resync state.
+      // This prevents multiple peers from independently sending
       // competing resyncs in 3+ player games.
-      if (this._playerSlot === 0) {
+      if (this._playerSlot === this._resyncAuthority) {
         const now = Date.now();
         if (!this._lastResyncTime || (now - this._lastResyncTime) > 3000) {
           this._lastResyncTime = now;

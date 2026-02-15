@@ -58,7 +58,12 @@ export class InputEncoder {
     return buffer;
   }
 
-  // Decode an input message with redundancy
+  // Decode an input message with redundancy.
+  // IMPORTANT: The decoder assumes inputs are for contiguous descending frames:
+  // [frame, frame-1, frame-2, ...]. The encoder does not enforce this — it
+  // trusts the caller to provide inputs in newest-first order from consecutive
+  // frames. The single caller (GameLoop._tick) builds from _recentLocalInputs
+  // which stores one input per frame, satisfying this contract.
   static decodeInputMessage(buffer) {
     const view = new DataView(buffer);
     const frame = view.getUint32(1, true);

@@ -117,9 +117,30 @@ export function fromFP(val) {
 }
 
 
-/** Integer division truncating toward zero */
-export function idiv(a, b) {
-  return (a / b) | 0;
+/**
+ * Integer division by 3 using reciprocal-multiply — no float division.
+ * S=16, M=ceil(2^16/3)=21846. First disagreement vs (x/3)|0 at |x|=32767,
+ * far beyond max in codebase (17, from scoring.js wave calculation).
+ * Handles negative values by negating before shift to match |0 truncation-toward-zero.
+ */
+export function idiv3(x) {
+  if (x >= 0) {
+    return (x * 21846) >> 16;
+  }
+  return -((-x * 21846) >> 16);
+}
+
+/**
+ * Integer division by 10 using reciprocal-multiply — no float division.
+ * S=16, M=ceil(2^16/10)=6554. First disagreement vs (x/10)|0 at |x|=16389,
+ * far beyond max in codebase (7680, from EnemyAI.js shadow lord leading).
+ * Handles negative values by negating before shift to match |0 truncation-toward-zero.
+ */
+export function idiv10(x) {
+  if (x >= 0) {
+    return (x * 6554) >> 16;
+  }
+  return -((-x * 6554) >> 16);
 }
 
 /**

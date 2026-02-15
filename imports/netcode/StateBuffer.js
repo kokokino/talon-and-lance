@@ -12,13 +12,15 @@ export class StateBuffer {
     }
   }
 
-  // Save a game state snapshot for the given frame
-  // state should be an ArrayBuffer (e.g., from Int32Array.buffer)
+  // Save a game state snapshot for the given frame.
+  // state should be an ArrayBuffer (e.g., from Int32Array.buffer).
+  // No copy on save — callers always serialize a fresh buffer each time.
+  // The copy on load() protects the stored snapshot from mutation.
   save(frame, state) {
     const index = frame % BUFFER_SIZE;
     this.slots[index] = {
       frame,
-      state: state.slice(0), // fast copy
+      state,
       checksum: this._computeChecksum(state),
     };
   }
