@@ -283,9 +283,9 @@ export class GameSimulation {
         }
       }
 
-      // Lava death check
+      // Lava death check (hitLava stays true on the dead character so the
+      // renderer can distinguish lava deaths from joust deaths)
       if (char.hitLava) {
-        char.hitLava = false;
         this._lavaDeath(char, i);
         continue;
       }
@@ -833,6 +833,7 @@ export class GameSimulation {
     char.isFlapping = false;
     char.flapTimer = 0;
     char.dead = false;
+    char.hitLava = false;
     char.respawnTimer = 0;
     char.invincible = true;
     char.invincibleTimer = INVINCIBLE_FRAMES;

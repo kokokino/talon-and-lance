@@ -390,7 +390,11 @@ export class Level1Scene {
 
     // Character just died → explode and dispose
     if (charState.active && charState.dead && prevActive && !prevDead && slot.meshCreated) {
-      this._explodeSlotCharacter(slot, charState, type);
+      if (charState.hitLava) {
+        this._lavaDeathEffect(slot, charState, type);
+      } else {
+        this._explodeSlotCharacter(slot, charState, type);
+      }
       this._disposeSlotMeshes(slot);
     }
 
@@ -498,6 +502,27 @@ export class Level1Scene {
 
     const charIdx = type === 'human' ? 0 : 1;
     this._explodeCharacter(fakeChar, charIdx);
+  }
+
+  /**
+   * Lava death effect — fire-colored sinking debris, big splash, rising fire column.
+   */
+  _lavaDeathEffect(slot, charState, type) {
+    const fakeChar = {
+      birdRig: slot.birdRig,
+      knightRig: slot.knightRig,
+      lanceRig: slot.lanceRig,
+      wingMode: charState.wingMode,
+      enemyType: charState.enemyType,
+      paletteIndex: charState.paletteIndex,
+    };
+    const charIdx = type === 'human' ? 0 : 1;
+    const x = charState.positionX;
+    const lavaY = this._orthoBottom + 1.2;
+
+    this._burnCharacter(fakeChar, charIdx, lavaY);
+    this._spawnLavaDeathSplash(x);
+    this._spawnFireColumn(x, lavaY);
   }
 
   /**
@@ -2361,6 +2386,226 @@ export class Level1Scene {
         }
       }
     });
+  }
+
+  // ---- Lava Death Effects ----
+
+  _burnCharacter(char, charIdx, lavaY) {
+    const FIRE_COLORS = ['#FFD040', '#FF6010', '#C02800'];
+    const birdModel_ = char.wingMode === 'updown' ? ostrichModel : buzzardModel;
+    let knightPalette;
+    let knightModelDef;
+    if (charIdx === 0) {
+      knightModelDef = knightModel;
+      knightPalette = buildKnightPalette(char.paletteIndex);
+    } else {
+      knightModelDef = evilKnightModel;
+      const paletteIdx = char.enemyType !== undefined ? char.enemyType : ENEMY_TYPE_BOUNDER;
+      knightPalette = buildEvilKnightPalette(paletteIdx);
+    }
+
+    const rigSources = [
+      { rig: char.birdRig, modelDef: birdModel_, palette: birdModel_.palette },
+      { rig: char.knightRig, modelDef: knightModelDef, palette: knightPalette },
+      { rig: char.lanceRig, modelDef: lanceModel, palette: lanceModel.palette },
+    ];
+
+    // Collect voxel world positions (ignore original colors — we'll use fire colors)
+    const voxelPositions = [];
+    for (const { rig, modelDef } of rigSources) {
+      if (!rig) {
+        continue;
+      }
+      for (const [partName, partData] of Object.entries(modelDef.parts)) {
+        if (!rig.parts[partName] || !rig.parts[partName].mesh) {
+          continue;
+        }
+        const { layers } = partData;
+        if (!layers || layers.length === 0) {
+          continue;
+        }
+        const worldPos = rig.parts[partName].mesh.getAbsolutePosition();
+        const height = layers.length;
+        const depth = layers[0].length;
+        const width = layers[0][0].length;
+        const centerX = (width - 1) / 2;
+        const centerZ = (depth - 1) / 2;
+
+        for (let y = 0; y < height; y++) {
+          for (let z = 0; z < depth; z++) {
+            for (let x = 0; x < width; x++) {
+              if (layers[y][z][x] === 0) {
+                continue;
+              }
+              voxelPositions.push({
+                wx: worldPos.x + (x - centerX) * VOXEL_SIZE,
+                wy: worldPos.y + y * VOXEL_SIZE,
+                wz: worldPos.z + (z - centerZ) * VOXEL_SIZE,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Group by random fire color
+    const byColor = {};
+    for (const v of voxelPositions) {
+      const hex = FIRE_COLORS[Math.floor(Math.random() * FIRE_COLORS.length)];
+      if (!byColor[hex]) {
+        byColor[hex] = [];
+      }
+      byColor[hex].push(v);
+    }
+
+    const parentMeshes = [];
+    const allDebris = [];
+
+    for (const [hex, voxels] of Object.entries(byColor)) {
+      const parent = MeshBuilder.CreateBox(`burnP_${hex}`, { size: VOXEL_SIZE }, this.scene);
+      const mat = new StandardMaterial(`burnM_${hex}`, this.scene);
+      mat.disableLighting = true;
+      mat.emissiveColor = hexToColor3(hex);
+      parent.material = mat;
+      parent.isVisible = false;
+      parentMeshes.push(parent);
+
+      for (const v of voxels) {
+        const inst = parent.createInstance('b');
+        inst.position.set(v.wx, v.wy, v.wz);
+        // 10% chance of upward spark, 90% sinks downward
+        const isSpark = Math.random() < 0.1;
+        allDebris.push({
+          mesh: inst,
+          vx: (Math.random() - 0.5) * 1.0,
+          vy: isSpark ? (0.5 + Math.random() * 1.5) : -(0.5 + Math.random() * 1.5),
+          life: 0.4 + Math.random() * 0.4,
+        });
+      }
+    }
+
+    const observer = this.scene.onBeforeRenderObservable.add(() => {
+      const frameDt = this.engine.getDeltaTime() / 1000;
+      let remaining = 0;
+
+      for (const d of allDebris) {
+        if (d.life <= 0) {
+          continue;
+        }
+        remaining++;
+
+        d.vy -= GRAVITY * 2.0 * frameDt;
+        d.mesh.position.x += d.vx * frameDt;
+        d.mesh.position.y += d.vy * frameDt;
+        d.life -= frameDt;
+
+        // Fast-fade below lava surface
+        const belowLava = lavaY - d.mesh.position.y;
+        if (belowLava > 0) {
+          d.life -= frameDt * 4;
+        }
+
+        if (d.life < 0.2) {
+          const s = Math.max(0, d.life / 0.2);
+          d.mesh.scaling.setAll(s);
+        }
+
+        if (d.life <= 0) {
+          d.mesh.dispose();
+        }
+      }
+
+      if (remaining === 0) {
+        this.scene.onBeforeRenderObservable.remove(observer);
+        for (const p of parentMeshes) {
+          p.dispose();
+        }
+      }
+    });
+  }
+
+  _spawnLavaDeathSplash(x) {
+    const tex = new DynamicTexture('lavaDeathSplashTex', 64, this.scene, false);
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 64, 64);
+    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gradient.addColorStop(0, 'rgba(255, 220, 80, 1)');
+    gradient.addColorStop(0.4, 'rgba(255, 120, 30, 0.9)');
+    gradient.addColorStop(1, 'rgba(200, 40, 0, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 64, 64);
+    tex.update(false);
+    tex.hasAlpha = true;
+
+    const lavaY = this._orthoBottom + 1.2;
+    const ps = new ParticleSystem('lavaDeathSplash', 60, this.scene);
+    ps.particleTexture = tex;
+    ps.emitter = new Vector3(x, lavaY, 0.4);
+
+    ps.direction1 = new Vector3(-1.5, 2, 0);
+    ps.direction2 = new Vector3(1.5, 6, 0);
+    ps.gravity = new Vector3(0, -8, 0);
+
+    ps.minSize = 0.12;
+    ps.maxSize = 0.35;
+    ps.minLifeTime = 0.4;
+    ps.maxLifeTime = 1.0;
+
+    ps.emitRate = 60;
+    ps.manualEmitCount = 35;
+
+    ps.color1 = new Color4(1.0, 0.85, 0.3, 1);
+    ps.color2 = new Color4(1.0, 0.45, 0.1, 1);
+    ps.colorDead = new Color4(0.6, 0.1, 0.0, 0);
+
+    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
+
+    ps.targetStopDuration = 0.2;
+    ps.disposeOnStop = true;
+    ps.start();
+  }
+
+  _spawnFireColumn(x, lavaY) {
+    const tex = new DynamicTexture('fireColTex', 64, this.scene, false);
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 64, 64);
+    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gradient.addColorStop(0, 'rgba(255, 255, 200, 1)');
+    gradient.addColorStop(0.3, 'rgba(255, 180, 50, 0.8)');
+    gradient.addColorStop(0.7, 'rgba(255, 80, 10, 0.4)');
+    gradient.addColorStop(1, 'rgba(100, 20, 0, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 64, 64);
+    tex.update(false);
+    tex.hasAlpha = true;
+
+    const ps = new ParticleSystem('fireColumn', 100, this.scene);
+    ps.particleTexture = tex;
+    ps.emitter = new Vector3(x, lavaY, 0.3);
+
+    ps.minEmitBox = new Vector3(-0.3, 0, 0);
+    ps.maxEmitBox = new Vector3(0.3, 0, 0);
+
+    ps.direction1 = new Vector3(-0.3, 1.5, 0);
+    ps.direction2 = new Vector3(0.3, 4.0, 0);
+    ps.gravity = new Vector3(0, -1, 0);
+
+    ps.minSize = 0.15;
+    ps.maxSize = 0.4;
+    ps.minLifeTime = 0.3;
+    ps.maxLifeTime = 0.8;
+
+    ps.emitRate = 60;
+
+    ps.color1 = new Color4(1.0, 0.9, 0.3, 1);
+    ps.color2 = new Color4(1.0, 0.5, 0.1, 0.9);
+    ps.colorDead = new Color4(0.3, 0.05, 0.0, 0);
+
+    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
+
+    ps.targetStopDuration = 1.5;
+    ps.disposeOnStop = true;
+    ps.start();
   }
 
 
