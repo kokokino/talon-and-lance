@@ -24,6 +24,7 @@ Meteor.startup(async () => {
   await GameRooms.createIndexAsync({ 'players.userId': 1 });
   await GameRooms.createIndexAsync({ hostId: 1 });
   await GameRooms.createIndexAsync({ gameMode: 1, status: 1 });
+  await GameRooms.createIndexAsync({ lastActiveAt: 1, status: 1 });
 
   // HighScores indexes
   await HighScores.createIndexAsync({ score: -1 });

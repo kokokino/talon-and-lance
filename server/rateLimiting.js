@@ -34,6 +34,13 @@ DDPRateLimiter.addRule({
   userId: () => true
 }, 10, 10000);
 
+// Limit room heartbeat: 2 calls per 60 seconds per user
+DDPRateLimiter.addRule({
+  type: 'method',
+  name: 'rooms.touch',
+  userId: () => true
+}, 2, 60000);
+
 // Limit matchmaking: 5 calls per 10 seconds per user
 DDPRateLimiter.addRule({
   type: 'method',

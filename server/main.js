@@ -17,6 +17,7 @@ import './publications/highScorePublications.js';
 
 // Import geckos.io relay bridge
 import { initGeckosRelay } from './relay/geckosBridge.js';
+import { startRoomCleanup } from './roomCleanup.js';
 
 Meteor.startup(async () => {
   console.log('Talon & Lance started');
@@ -38,4 +39,7 @@ Meteor.startup(async () => {
 
   // Initialize geckos.io relay for WebRTC fallback
   initGeckosRelay();
+
+  // Start periodic room cleanup
+  startRoomCleanup();
 });

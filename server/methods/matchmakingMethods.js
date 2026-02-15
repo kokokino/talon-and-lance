@@ -64,7 +64,7 @@ Meteor.methods({
             paletteIndex: paletteIndex,
           },
         },
-        $set: { status: RoomStatus.PLAYING },
+        $set: { status: RoomStatus.PLAYING, lastActiveAt: new Date() },
       });
 
       return { roomId: openRoom._id, playerSlot: nextSlot, gameSeed: openRoom.gameSeed, isNewRoom: false };
@@ -88,6 +88,7 @@ Meteor.methods({
       settings: {},
       gameSeed,
       createdAt: new Date(),
+      lastActiveAt: new Date(),
       startedAt: new Date(),
       finishedAt: null,
     });

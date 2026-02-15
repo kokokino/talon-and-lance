@@ -59,6 +59,9 @@ export class MultiplayerManager {
     this._waitingForSync = false;
     this._joinTimeoutId = null;
     this._joiningOverlay = null;
+    this._heartbeatInterval = null;
+    this._beforeUnloadHandler = null;
+    this._visibilityHandler = null;
     this._destroyed = false;
   }
 
@@ -151,6 +154,9 @@ export class MultiplayerManager {
 
     // 6. Subscribe to room and watch for new players (after transport is ready)
     this._subscribeToRoom();
+
+    // 7. Start heartbeat and browser lifecycle handlers
+    this._startRoomHeartbeat();
   }
 
   /**
@@ -158,6 +164,19 @@ export class MultiplayerManager {
    */
   destroy() {
     this._destroyed = true;
+
+    if (this._heartbeatInterval) {
+      clearInterval(this._heartbeatInterval);
+      this._heartbeatInterval = null;
+    }
+    if (this._beforeUnloadHandler) {
+      window.removeEventListener('beforeunload', this._beforeUnloadHandler);
+      this._beforeUnloadHandler = null;
+    }
+    if (this._visibilityHandler) {
+      document.removeEventListener('visibilitychange', this._visibilityHandler);
+      this._visibilityHandler = null;
+    }
 
     if (this._joinTimeoutId) {
       clearTimeout(this._joinTimeoutId);
@@ -230,6 +249,39 @@ export class MultiplayerManager {
   }
 
   // ---- Private ----
+
+  _startRoomHeartbeat() {
+    this._touchRoom();
+    this._heartbeatInterval = setInterval(() => {
+      this._touchRoom();
+    }, 2 * 60 * 1000); // every 2 minutes
+
+    this._beforeUnloadHandler = () => {
+      if (this._roomId) {
+        Meteor.callAsync('rooms.leave', this._roomId).catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', this._beforeUnloadHandler);
+
+    this._visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        this._touchRoom();
+      }
+    };
+    document.addEventListener('visibilitychange', this._visibilityHandler);
+  }
+
+  _touchRoom() {
+    if (!this._roomId || this._destroyed) {
+      return;
+    }
+    Meteor.callAsync('rooms.touch', this._roomId).catch((err) => {
+      if (err.error === 'room-not-found') {
+        console.warn('[MultiplayerManager] Room no longer exists, returning to menu');
+        this._onQuitToMenu();
+      }
+    });
+  }
 
   _subscribeToRoom() {
     this._roomSubscription = Meteor.subscribe('rooms.current', this._roomId);

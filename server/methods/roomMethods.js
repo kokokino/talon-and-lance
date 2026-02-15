@@ -52,6 +52,7 @@ Meteor.methods({
       maxPlayers,
       settings: gameSettings,
       createdAt: new Date(),
+      lastActiveAt: new Date(),
       startedAt: null,
       finishedAt: null,
     });
@@ -119,6 +120,7 @@ Meteor.methods({
           slot: nextSlot,
         },
       },
+      $set: { lastActiveAt: new Date() },
     });
 
     return roomId;
@@ -160,6 +162,25 @@ Meteor.methods({
       await GameRooms.updateAsync(roomId, {
         $pull: { players: { userId: this.userId } },
       });
+    }
+  },
+
+  // Heartbeat — update room's lastActiveAt timestamp
+  async 'rooms.touch'(roomId) {
+    check(roomId, String);
+    if (!this.userId) {
+      throw new Meteor.Error('not-authorized', 'You must be logged in');
+    }
+    const result = await GameRooms.updateAsync(
+      {
+        _id: roomId,
+        'players.userId': this.userId,
+        status: { $in: [RoomStatus.WAITING, RoomStatus.STARTING, RoomStatus.PLAYING] },
+      },
+      { $set: { lastActiveAt: new Date() } }
+    );
+    if (result === 0) {
+      throw new Meteor.Error('room-not-found', 'Room not found or no longer active');
     }
   },
 
