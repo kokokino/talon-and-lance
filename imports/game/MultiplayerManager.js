@@ -12,6 +12,7 @@ import { RollbackSession } from '../netcode/RollbackSession.js';
 import { TransportManager } from '../netcode/transport/TransportManager.js';
 import { GameRooms } from '../lib/collections/gameRooms.js';
 import { MAX_HUMANS } from './physics/stateLayout.js';
+import { HighScoreTracker } from './HighScoreTracker.js';
 
 export class MultiplayerManager {
   /**
@@ -116,6 +117,13 @@ export class MultiplayerManager {
     this._simulation.activatePlayer(this._playerSlot, this._paletteIndex);
     this._simulation.startGame();
 
+    this._highScoreTracker = new HighScoreTracker({
+      gameMode: this._gameMode,
+      getScore: () => this._simulation?.getState()?.humans?.[this._playerSlot]?.score ?? 0,
+      getWave: () => this._simulation?.getState()?.waveNumber ?? 1,
+    });
+    this._highScoreTracker.start().catch(() => {});
+
     // 3. Set up input reader (attached to Babylon scene)
     this._inputReader = new InputReader();
     this._inputReader.attach(this._scene);
@@ -209,6 +217,11 @@ export class MultiplayerManager {
     if (this._roomSubscription) {
       this._roomSubscription.stop();
       this._roomSubscription = null;
+    }
+
+    if (this._highScoreTracker) {
+      this._highScoreTracker.stop();
+      this._highScoreTracker = null;
     }
 
     // Leave room

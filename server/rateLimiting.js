@@ -48,6 +48,13 @@ DDPRateLimiter.addRule({
   userId: () => true
 }, 5, 10000);
 
+// Limit high score lookups: 5 calls per 10 seconds per user
+DDPRateLimiter.addRule({
+  type: 'method',
+  name: 'highScores.myBest',
+  userId: () => true
+}, 5, 10000);
+
 // Limit high score submissions: 5 calls per 10 seconds per user
 DDPRateLimiter.addRule({
   type: 'method',

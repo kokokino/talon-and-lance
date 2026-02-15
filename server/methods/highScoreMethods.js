@@ -7,6 +7,28 @@ const MAX_REASONABLE_SCORE = 10000000; // anti-cheat sanity check
 
 Meteor.methods({
   /**
+   * Return the user's current best score for a game mode.
+   * Returns 0 if not logged in or no score exists.
+   *
+   * @param {string} gameMode - 'team' or 'pvp'
+   * @returns {number}
+   */
+  async 'highScores.myBest'(gameMode) {
+    check(gameMode, Match.Where((val) => val === GameMode.TEAM_PLAY || val === GameMode.PVP));
+
+    if (!this.userId) {
+      return 0;
+    }
+
+    const existing = await HighScores.findOneAsync({
+      userId: this.userId,
+      gameMode,
+    });
+
+    return existing ? existing.score : 0;
+  },
+
+  /**
    * Submit a high score. Only saves if higher than existing for this user+mode.
    *
    * @param {number} score - the player's score

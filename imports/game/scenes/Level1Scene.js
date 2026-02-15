@@ -19,6 +19,7 @@ import { ParticleSystem } from '@babylonjs/core/Particles/particleSystem';
 
 import { InputReader } from '../InputReader.js';
 import { GameSimulation } from '../GameSimulation.js';
+import { HighScoreTracker } from '../HighScoreTracker.js';
 import {
   VOXEL_SIZE, ORTHO_WIDTH, ORTHO_LEFT, ORTHO_RIGHT,
   MAX_SPEED, GRAVITY, LEDGE_HEIGHT,
@@ -185,6 +186,13 @@ export class Level1Scene {
       });
       this._soloSimulation.activatePlayer(0, this._paletteIndex);
       this._soloSimulation.startGame();
+
+      this._highScoreTracker = new HighScoreTracker({
+        gameMode: GAME_MODE_TEAM,
+        getScore: () => this._soloSimulation?.getState()?.humans?.[0]?.score ?? 0,
+        getWave: () => this._soloSimulation?.getState()?.waveNumber ?? 1,
+      });
+      this._highScoreTracker.start().catch(() => {});
     }
 
     // HUD
@@ -836,6 +844,10 @@ export class Level1Scene {
     if (this._inputReader) {
       this._inputReader.detach();
       this._inputReader = null;
+    }
+    if (this._highScoreTracker) {
+      this._highScoreTracker.stop();
+      this._highScoreTracker = null;
     }
     this._soloSimulation = null;
     if (this._skyBackground) {
