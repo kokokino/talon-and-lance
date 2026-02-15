@@ -113,6 +113,9 @@ export class MultiplayerManager {
       orthoTop: this._orthoTop,
     });
 
+    // Initialize deterministic environment from shared seed
+    this._renderer.setEnvironmentSeed((seed ^ 0xA5A5A5A5) >>> 0);
+
     // Activate local player
     this._simulation.activatePlayer(this._playerSlot, this._paletteIndex);
     this._simulation.startGame();

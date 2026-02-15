@@ -8,6 +8,7 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { buildPart } from '../voxels/VoxelBuilder.js';
+import { DeterministicRNG } from '../physics/mulberry32.js';
 
 // Full day/night cycle duration in seconds
 const CYCLE_DURATION = 60;
@@ -209,8 +210,9 @@ export class SkyBackground {
    * @param {number} orthoRight
    * @param {number} orthoBottom
    * @param {number} orthoTop
+   * @param {{ envSeed?: number }} options
    */
-  constructor(scene, orthoLeft, orthoRight, orthoBottom, orthoTop) {
+  constructor(scene, orthoLeft, orthoRight, orthoBottom, orthoTop, options = {}) {
     this._scene = scene;
     this._orthoLeft = orthoLeft;
     this._orthoRight = orthoRight;
@@ -219,11 +221,29 @@ export class SkyBackground {
 
     this._elapsed = 0;
     this._timeOfDay = 0;
+    this._gameTime = null;
+
+    // Seeded RNGs for deterministic environmental effects
+    this._runtimeRng = null;
+    if (options.envSeed !== undefined) {
+      const constructionRng = new DeterministicRNG(options.envSeed);
+      this._runtimeRng = new DeterministicRNG((options.envSeed + 1) >>> 0);
+      this._constructionRng = constructionRng;
+    }
 
     // Lightning state
-    this._lightningTimer = 0;
-    this._lightningInterval = this._randomLightningInterval();
     this._lightningFlashTimer = -1;
+    if (this._runtimeRng) {
+      // Deterministic path: gameTime-based scheduling
+      this._lightningTimer = 0;
+      this._lightningInterval = 0;
+      this._nextLightningTime = this._randomLightningInterval();
+    } else {
+      // Fallback path: dt accumulation
+      this._lightningTimer = 0;
+      this._lightningInterval = this._randomLightningInterval();
+      this._nextLightningTime = 0;
+    }
 
     // References
     this._skyPlane = null;
@@ -239,6 +259,9 @@ export class SkyBackground {
     this._createSunMoon();
     this._createLightning();
     this._createVoxelClouds();
+
+    // Discard construction RNG — no longer needed
+    this._constructionRng = null;
   }
 
   /** Current time of day 0–1 for external light modulation */
@@ -246,9 +269,15 @@ export class SkyBackground {
     return this._timeOfDay;
   }
 
-  update(dt) {
+  update(dt, gameTime) {
     this._elapsed += dt;
-    this._timeOfDay = (this._elapsed % CYCLE_DURATION) / CYCLE_DURATION;
+
+    if (gameTime !== undefined) {
+      this._gameTime = gameTime;
+      this._timeOfDay = (gameTime % CYCLE_DURATION) / CYCLE_DURATION;
+    } else {
+      this._timeOfDay = (this._elapsed % CYCLE_DURATION) / CYCLE_DURATION;
+    }
 
     this._updateSkyShader();
     this._updateSunMoon();
@@ -445,16 +474,23 @@ export class SkyBackground {
     const t = this._timeOfDay;
     const isStormTime = t < 0.25 || t > 0.75;
 
-    this._lightningTimer += dt;
-
-    // Trigger new flash
-    if (isStormTime && this._lightningFlashTimer < 0 && this._lightningTimer >= this._lightningInterval) {
-      this._lightningFlashTimer = 0;
-      this._lightningTimer = 0;
-      this._lightningInterval = this._randomLightningInterval();
+    if (this._gameTime !== null && this._runtimeRng) {
+      // Deterministic: gameTime-based scheduling
+      if (isStormTime && this._lightningFlashTimer < 0 && this._gameTime >= this._nextLightningTime) {
+        this._lightningFlashTimer = 0;
+        this._nextLightningTime = this._gameTime + this._randomLightningInterval();
+      }
+    } else {
+      // Fallback: dt accumulation
+      this._lightningTimer += dt;
+      if (isStormTime && this._lightningFlashTimer < 0 && this._lightningTimer >= this._lightningInterval) {
+        this._lightningFlashTimer = 0;
+        this._lightningTimer = 0;
+        this._lightningInterval = this._randomLightningInterval();
+      }
     }
 
-    // Animate flash: double-flash pattern
+    // Animate flash: double-flash pattern (dt-based for smooth rendering)
     if (this._lightningFlashTimer >= 0) {
       this._lightningFlashTimer += dt;
       const ft = this._lightningFlashTimer;
@@ -482,6 +518,9 @@ export class SkyBackground {
   }
 
   _randomLightningInterval() {
+    if (this._runtimeRng) {
+      return LIGHTNING_MIN_INTERVAL + this._runtimeRng.next() * (LIGHTNING_MAX_INTERVAL - LIGHTNING_MIN_INTERVAL);
+    }
     return LIGHTNING_MIN_INTERVAL + Math.random() * (LIGHTNING_MAX_INTERVAL - LIGHTNING_MIN_INTERVAL);
   }
 
@@ -490,6 +529,7 @@ export class SkyBackground {
   _createVoxelClouds() {
     const count = 8;
     const voxelSize = 0.18;
+    const rng = this._constructionRng;
 
     for (let i = 0; i < count; i++) {
       const shapeIdx = i % CLOUD_SHAPES.length;
@@ -498,17 +538,22 @@ export class SkyBackground {
 
       const result = buildPart(this._scene, shape, CLOUD_PALETTE, voxelSize, partName);
       if (result) {
-        const x = this._orthoLeft + Math.random() * (this._orthoRight - this._orthoLeft);
+        const rand1 = rng ? rng.next() : Math.random();
+        const rand2 = rng ? rng.next() : Math.random();
+        const rand3 = rng ? rng.next() : Math.random();
+
+        const x = this._orthoLeft + rand1 * (this._orthoRight - this._orthoLeft);
         const yMin = (this._orthoTop + this._orthoBottom) / 2;
         const yMax = this._orthoTop - 0.5;
-        const y = yMin + Math.random() * (yMax - yMin);
-        const speed = CLOUD_DRIFT_MIN + Math.random() * (CLOUD_DRIFT_MAX - CLOUD_DRIFT_MIN);
+        const y = yMin + rand2 * (yMax - yMin);
+        const speed = CLOUD_DRIFT_MIN + rand3 * (CLOUD_DRIFT_MAX - CLOUD_DRIFT_MIN);
 
         result.mesh.position = new Vector3(x, y, 1.5);
 
         this._voxelClouds.push({
           mesh: result.mesh,
           speed,
+          startX: x,
           baseEmissive: new Color3(1, 1, 1),
         });
       }
@@ -518,15 +563,22 @@ export class SkyBackground {
   _updateVoxelClouds(dt) {
     const wrapLeft = this._orthoLeft - 2;
     const wrapRight = this._orthoRight + 2;
+    const range = wrapRight - wrapLeft;
 
     // Tint based on time of day
     const tint = this._getCloudTint();
 
     for (const cloud of this._voxelClouds) {
-      cloud.mesh.position.x += cloud.speed * dt;
-
-      if (cloud.mesh.position.x > wrapRight) {
-        cloud.mesh.position.x = wrapLeft;
+      if (this._gameTime !== null) {
+        // Deterministic: pure function of gameTime + startX
+        const offset = cloud.speed * this._gameTime;
+        cloud.mesh.position.x = wrapLeft + ((cloud.startX - wrapLeft + offset) % range + range) % range;
+      } else {
+        // Fallback: accumulate per frame
+        cloud.mesh.position.x += cloud.speed * dt;
+        if (cloud.mesh.position.x > wrapRight) {
+          cloud.mesh.position.x = wrapLeft;
+        }
       }
 
       // Apply tint via emissive color on the material

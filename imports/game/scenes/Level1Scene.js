@@ -35,6 +35,7 @@ import {
 import {
   ENEMY_TYPE_BOUNDER,
 } from '../scoring.js';
+import { DeterministicRNG } from '../physics/mulberry32.js';
 import { SkyBackground } from './SkyBackground.js';
 import { buildRig, buildPart } from '../voxels/VoxelBuilder.js';
 import { knightModel } from '../voxels/models/knightModel.js';
@@ -119,6 +120,12 @@ export class Level1Scene {
     this._lavaBurstTimer = 0;
     this._squawkTimer = 3 + Math.random() * 5;
 
+    // Deterministic environment state
+    this._lavaBurstRng = null;
+    this._nextLavaBurstTime = 0;
+    this._lastGameFrame = 0;
+    this._envSeed = null;
+
     // ---- Renderer mode state (activated on first draw() call) ----
     this._rendererMode = false;
     this._lastDrawTime = 0;
@@ -178,14 +185,18 @@ export class Level1Scene {
       this.scene.attachControl();
 
       // Create internal GameSimulation for solo play
+      const soloSeed = Date.now() >>> 0;
       this._soloSimulation = new GameSimulation({
         gameMode: GAME_MODE_TEAM,
-        seed: Date.now() >>> 0,
+        seed: soloSeed,
         orthoBottom: this._orthoBottom,
         orthoTop: this._orthoTop,
       });
       this._soloSimulation.activatePlayer(0, this._paletteIndex);
       this._soloSimulation.startGame();
+
+      // Initialize deterministic environment from solo seed
+      this.setEnvironmentSeed((soloSeed ^ 0xA5A5A5A5) >>> 0);
 
       this._highScoreTracker = new HighScoreTracker({
         gameMode: GAME_MODE_TEAM,
@@ -256,8 +267,35 @@ export class Level1Scene {
     // Sync sounds
     this._syncSounds(gameState);
 
+    // Capture frame count for environment sync
+    this._lastGameFrame = gameState.frame;
+
     // Save state snapshot for diffing on next frame
     this._prevState = this._snapshotState(gameState);
+  }
+
+  /**
+   * Initialize deterministic environmental effects from a shared seed.
+   * Called late (after seed is known) since in multiplayer the renderer
+   * is created before matchmaking returns the seed.
+   */
+  setEnvironmentSeed(seed) {
+    this._envSeed = seed;
+
+    // Lava burst RNG
+    this._lavaBurstRng = new DeterministicRNG(seed);
+    this._nextLavaBurstTime = this._randomLavaBurstInterval();
+
+    // Recreate sky background with seeded options
+    if (this._skyBackground) {
+      this._skyBackground.dispose();
+    }
+    if (this.scene) {
+      this._skyBackground = new SkyBackground(
+        this.scene, ORTHO_LEFT, ORTHO_RIGHT, this._orthoBottom, this._orthoTop,
+        { envSeed: seed }
+      );
+    }
   }
 
   /**
@@ -1087,7 +1125,9 @@ export class Level1Scene {
     ps.particleTexture = tex;
 
     // Random X across screen width; Y at lava surface
-    const x = (Math.random() - 0.5) * (ORTHO_WIDTH + 2);
+    const rand1 = this._lavaBurstRng ? this._lavaBurstRng.next() : Math.random();
+    const rand2 = this._lavaBurstRng ? this._lavaBurstRng.next() : Math.random();
+    const x = (rand1 - 0.5) * (ORTHO_WIDTH + 2);
     const lavaY = this._orthoBottom + 1.2;
     ps.emitter = new Vector3(x, lavaY, 0.4);
 
@@ -1102,7 +1142,7 @@ export class Level1Scene {
     ps.maxLifeTime = 0.8;
 
     ps.emitRate = 40;
-    ps.manualEmitCount = 12 + Math.floor(Math.random() * 10);
+    ps.manualEmitCount = 12 + Math.floor(rand2 * 10);
 
     ps.color1 = new Color4(1.0, 0.8, 0.2, 1);
     ps.color2 = new Color4(1.0, 0.4, 0.1, 1);
@@ -1528,12 +1568,23 @@ export class Level1Scene {
   _update(dt) {
     this._elapsed += dt;
 
+    // Compute gameTime from frame count (deterministic across clients)
+    let gameTime;
+    if (this._soloSimulation) {
+      const state = this._soloSimulation.getState();
+      if (state) {
+        gameTime = state.frame / 60;
+      }
+    } else if (this._lastGameFrame > 0) {
+      gameTime = this._lastGameFrame / 60;
+    }
+
     // Cosmetic updates (run in all modes)
     if (this._skyBackground) {
-      this._skyBackground.update(dt);
+      this._skyBackground.update(dt, gameTime);
       this._modulateLighting(this._skyBackground.timeOfDay);
     }
-    this._animateLava(dt);
+    this._animateLava(dt, gameTime);
     this._updateBanner(dt);
 
     // Solo mode: tick internal simulation and sync rendering
@@ -1818,7 +1869,7 @@ export class Level1Scene {
 
   // ---- Lava animation ----
 
-  _animateLava(dt) {
+  _animateLava(dt, gameTime) {
     if (!this._lavaMaterial) {
       return;
     }
@@ -1835,11 +1886,27 @@ export class Level1Scene {
     }
 
     // Lava burst spawning
-    this._lavaBurstTimer -= dt;
-    if (this._lavaBurstTimer <= 0) {
-      this._spawnLavaBurst();
-      this._lavaBurstTimer = 0.4 + Math.random() * 1.1;
+    if (gameTime !== undefined && this._lavaBurstRng) {
+      // Deterministic: gameTime-based scheduling
+      if (gameTime >= this._nextLavaBurstTime) {
+        this._spawnLavaBurst();
+        this._nextLavaBurstTime = gameTime + this._randomLavaBurstInterval();
+      }
+    } else {
+      // Fallback: dt accumulation
+      this._lavaBurstTimer -= dt;
+      if (this._lavaBurstTimer <= 0) {
+        this._spawnLavaBurst();
+        this._lavaBurstTimer = 0.4 + Math.random() * 1.1;
+      }
     }
+  }
+
+  _randomLavaBurstInterval() {
+    if (this._lavaBurstRng) {
+      return 0.4 + this._lavaBurstRng.next() * 1.1;
+    }
+    return 0.4 + Math.random() * 1.1;
   }
 
   // ---- Escape overlay ----
