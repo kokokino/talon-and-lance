@@ -6,6 +6,9 @@
 import { Transport } from './Transport.js';
 
 const PEER_ID_LENGTH = 16; // fixed-length peer ID in message header
+const HEARTBEAT_INTERVAL = 1000; // 1 second
+const HEARTBEAT_TIMEOUT = 3000; // consider dead after 3s without heartbeat
+const HEARTBEAT_BYTE = 0xFF; // single-byte heartbeat message
 
 export class GeckosTransport extends Transport {
   constructor() {
@@ -13,6 +16,8 @@ export class GeckosTransport extends Transport {
     this.channel = null;
     this.receiveCallback = null;
     this.connectedPeers = new Set();
+    this.lastHeartbeat = new Map(); // peerId -> timestamp
+    this.heartbeatInterval = null;
     this.serverUrl = null;
   }
 
@@ -34,6 +39,10 @@ export class GeckosTransport extends Transport {
           reject(error);
           return;
         }
+
+        // Start heartbeat monitoring
+        this._startHeartbeat();
+
         resolve();
       });
 
@@ -50,6 +59,18 @@ export class GeckosTransport extends Transport {
         // Extract payload
         const payload = data.slice(PEER_ID_LENGTH);
 
+        // Check if it's a heartbeat
+        if (payload.byteLength === 1) {
+          const view = new Uint8Array(payload);
+          if (view[0] === HEARTBEAT_BYTE) {
+            this.lastHeartbeat.set(senderPeerId, Date.now());
+            return;
+          }
+        }
+
+        // Update heartbeat timestamp on any data
+        this.lastHeartbeat.set(senderPeerId, Date.now());
+
         if (this.receiveCallback) {
           this.receiveCallback(senderPeerId, payload);
         }
@@ -57,6 +78,7 @@ export class GeckosTransport extends Transport {
 
       this.channel.onDisconnect(() => {
         this.connectedPeers.clear();
+        this.lastHeartbeat.clear();
       });
     });
   }
@@ -84,10 +106,12 @@ export class GeckosTransport extends Transport {
     // For geckos relay, "connecting" to a peer just means tracking them
     // The actual connection is to the server, which routes to peers
     this.connectedPeers.add(peerId);
+    this.lastHeartbeat.set(peerId, Date.now());
   }
 
   disconnect(peerId) {
     this.connectedPeers.delete(peerId);
+    this.lastHeartbeat.delete(peerId);
   }
 
   getStats(peerId) {
@@ -103,14 +127,40 @@ export class GeckosTransport extends Transport {
   }
 
   destroy() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+
     if (this.channel) {
       this.channel.close();
       this.channel = null;
     }
     this.connectedPeers.clear();
+    this.lastHeartbeat.clear();
   }
 
   // --- Private ---
+
+  _startHeartbeat() {
+    this.heartbeatInterval = setInterval(() => {
+      const now = Date.now();
+      const heartbeatPayload = new ArrayBuffer(1);
+      new Uint8Array(heartbeatPayload)[0] = HEARTBEAT_BYTE;
+
+      for (const peerId of this.connectedPeers) {
+        // Send heartbeat
+        this.send(peerId, heartbeatPayload);
+
+        // Check for dead peers
+        const lastRecv = this.lastHeartbeat.get(peerId) || 0;
+        if (lastRecv > 0 && (now - lastRecv) > HEARTBEAT_TIMEOUT) {
+          this.connectedPeers.delete(peerId);
+          this.lastHeartbeat.delete(peerId);
+        }
+      }
+    }, HEARTBEAT_INTERVAL);
+  }
 
   // Encode a peer ID string into fixed-length bytes
   _encodePeerId(peerId) {

@@ -54,6 +54,7 @@ export class MultiplayerManager {
     this._incomingMessageBuffer = [];
     this._incomingPeerEvents = [];
     this._lastResyncTime = 0;
+    this._lastResyncReceivedTime = 0;
     this._resyncAuthority = 0; // lowest active slot is the resync authority
     this._destroyed = false;
   }
@@ -296,7 +297,7 @@ export class MultiplayerManager {
         // stale confirmedFrames that cause prediction gap mismatches and
         // rollback issues after the join.
         this._session.resetToFrame(frame);
-        this._gameLoop._recentLocalInputs = [];
+        this._seedRecentLocalInputs(frame);
       }
     }
     // Non-authority peers: STATE_SYNC handler will update state
@@ -476,27 +477,37 @@ export class MultiplayerManager {
             }
           }
         } else if (msgType === MessageType.STATE_SYNC) {
-          // Only accept STATE_SYNC from the current resync authority
+          // Only accept STATE_SYNC from the current resync authority,
+          // unless no STATE_SYNC has been received from any peer within 5s (fallback)
           const senderSlot = this._connectedPeers.get(peerId);
-          if (senderSlot === undefined || senderSlot !== this._resyncAuthority) {
-            if (senderSlot !== undefined) {
-              console.warn('[MultiplayerManager] Ignoring STATE_SYNC from non-authority peer', senderSlot, '(authority:', this._resyncAuthority, ')');
-            }
+          if (senderSlot === undefined) {
             continue;
+          }
+          if (senderSlot !== this._resyncAuthority) {
+            const now = Date.now();
+            const timeSinceLastResync = now - (this._lastResyncReceivedTime || 0);
+            if (timeSinceLastResync < 5000) {
+              console.warn('[MultiplayerManager] Ignoring STATE_SYNC from non-authority peer', senderSlot, '(authority:', this._resyncAuthority, ')');
+              continue;
+            }
+            console.warn('[MultiplayerManager] Accepting STATE_SYNC from non-authority peer', senderSlot, '(authority timeout fallback)');
           }
           const msg = InputEncoder.decodeStateSyncMessage(buffer);
           const frameDelta = this._simulation._frame - msg.frame;
           if (!this._gameLoop.soloMode && this._session && frameDelta > 120) {
-            console.warn('[MultiplayerManager] Ignoring stale STATE_SYNC, delta:', frameDelta);
+            console.warn('[MultiplayerManager] Stale STATE_SYNC, delta:', frameDelta, '— requesting fresh resync');
+            const resyncReq = InputEncoder.encodeResyncRequest(this._simulation._frame);
+            this._transport.send(peerId, resyncReq);
           } else {
             // Received state sync from host — load it
+            this._lastResyncReceivedTime = Date.now();
             this._simulation.deserialize(msg.stateData);
             // Set up rollback from this frame
             if (this._gameLoop.soloMode) {
               this._setupRollbackSession();
             } else if (this._session) {
               this._session.resetToFrame(msg.frame);
-              this._gameLoop._recentLocalInputs = [];
+              this._seedRecentLocalInputs(msg.frame);
               // Ensure all connected peers are removed from autoInput
               for (const [, slot] of this._connectedPeers) {
                 this._session.autoInputSlots.delete(slot);
@@ -512,6 +523,15 @@ export class MultiplayerManager {
               this._session.addRemoteChecksum(peerSlot, msg.frame, msg.checksum);
               this._session.peerLastRecvTime[peerSlot] = Date.now();
             }
+          }
+        } else if (msgType === MessageType.RESYNC_REQUEST) {
+          // A peer's STATE_SYNC was too stale — send them a fresh one
+          if (this._playerSlot === this._resyncAuthority && this._transport) {
+            const stateBuffer = this._simulation.serialize();
+            const frame = this._simulation._frame;
+            const syncMsg = InputEncoder.encodeStateSyncMessage(frame, stateBuffer);
+            this._transport.send(peerId, syncMsg);
+            console.warn('[MultiplayerManager] Fresh STATE_SYNC sent to', peerId, 'at frame', frame, '(resync request)');
           }
         }
       } catch (err) {
@@ -548,6 +568,17 @@ export class MultiplayerManager {
           console.warn('[MultiplayerManager] Resync broadcast to all peers at frame', frame);
         }
       }
+    }
+  }
+
+  // Seed _recentLocalInputs with neutral inputs after a resync/reset so the
+  // first few outgoing packets still carry full redundancy (5 entries).
+  // Without this, 1-4 packets after resync carry fewer entries and any
+  // packet loss forces the remote peer to predict.
+  _seedRecentLocalInputs(frame) {
+    this._gameLoop._recentLocalInputs = [];
+    for (let i = 0; i < 5; i++) {
+      this._gameLoop._recentLocalInputs.push({ frame, input: 0 });
     }
   }
 }

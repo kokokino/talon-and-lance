@@ -460,7 +460,7 @@ export class RollbackSession {
     this.pendingLocalInput = null;
     this.lastLocalInputFrame = -1;
     this.remoteChecksums.clear();
-    this.checksumSuppressUntilFrame = frame + CHECKSUM_INTERVAL * 2;
+    this.checksumSuppressUntilFrame = frame + CHECKSUM_INTERVAL;
     this.stateBuffer.reset();
     for (let i = 0; i < this.numPlayers; i++) {
       this.inputQueues[i].reset();

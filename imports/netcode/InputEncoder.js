@@ -11,6 +11,7 @@ export const MessageType = {
   QUALITY_REPLY: 0x06,
   STATE_SYNC: 0x07,
   CHECKSUM: 0x08,
+  RESYNC_REQUEST: 0x09,
 };
 
 // Input bits
@@ -169,6 +170,15 @@ export class InputEncoder {
     };
   }
 
+  // Encode a resync request: [type(1B), frame(4B)]
+  static encodeResyncRequest(frame) {
+    const buffer = new ArrayBuffer(5);
+    const view = new DataView(buffer);
+    view.setUint8(0, MessageType.RESYNC_REQUEST);
+    view.setUint32(1, frame, true);
+    return buffer;
+  }
+
   // Get message type from any buffer
   static getMessageType(buffer) {
     const view = new DataView(buffer);
@@ -209,6 +219,9 @@ export class InputEncoder {
 
       case MessageType.CHECKSUM:
         return InputEncoder.decodeChecksumMessage(buffer);
+
+      case MessageType.RESYNC_REQUEST:
+        return { type, frame: view.getUint32(1, true) };
 
       default:
         return { type };

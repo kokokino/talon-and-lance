@@ -81,7 +81,13 @@ export class GameLoop {
     this.session = session;
     this.transport = transport;
     this.soloMode = false;
+    // Seed with neutral inputs so the first few packets still carry
+    // INPUT_REDUNDANCY entries (packet loss resilience from frame 1)
+    const seedFrame = session.currentFrame;
     this._recentLocalInputs = [];
+    for (let i = 0; i < INPUT_REDUNDANCY; i++) {
+      this._recentLocalInputs.push({ frame: seedFrame, input: 0 });
+    }
   }
 
   /**
