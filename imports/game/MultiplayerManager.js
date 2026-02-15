@@ -102,6 +102,7 @@ export class MultiplayerManager {
 
     this._gameLoop.onNetworkEvent = (event) => this._handleNetworkEvent(event);
     this._gameLoop.messageDrain = () => this.drainMessages();
+    this._gameLoop.postTickDrain = () => this.drainPeerEvents();
     this._gameLoop.start();
 
     // 5. Initialize transport and register PeerJS ID
@@ -246,6 +247,20 @@ export class MultiplayerManager {
 
     console.log('[MultiplayerManager] Peer connected:', peerId, 'slot:', playerSlot);
 
+    // Remove connected peer from auto-input on ALL peers so their real
+    // inputs are used instead of defaulting to 0 (Issue A).
+    // Also reset the peer's input queue to the current frame so the
+    // prediction gap check doesn't block the session (the queue had a
+    // stale confirmedFrame from when the slot was auto-input).
+    if (this._session) {
+      this._session.autoInputSlots.delete(playerSlot);
+      this._session.inputQueues[playerSlot].reset();
+      this._session.inputQueues[playerSlot].confirmedFrame = this._simulation._frame - 1;
+      this._session.setPeerConnected(playerSlot, true);
+      this._session.peerSynchronized[playerSlot] = true;
+      this._session.peerLastRecvTime[playerSlot] = Date.now();
+    }
+
     // Only the resync authority activates joining players and sends state sync.
     // This prevents multiple peers from independently activating the same joiner
     // at different simulation frames (which would diverge RNG state).
@@ -257,25 +272,27 @@ export class MultiplayerManager {
       const palette = playerData?.paletteIndex ?? 0;
       this._simulation.activatePlayer(playerSlot, palette);
 
-      // Force-save post-activation state so that if a rollback is triggered
-      // later in this same drain cycle, it loads the state WITH the new player
-      // already activated (activatePlayer runs outside the tick loop and
-      // wouldn't be replayed during resimulation).
-      if (this._session) {
-        const cell = this._session.stateBuffer.createCell(this._simulation._frame);
-        cell.save(this._simulation.serialize());
-      }
-
       const stateBuffer = this._simulation.serialize();
       const frame = this._simulation._frame;
       const syncMsg = InputEncoder.encodeStateSyncMessage(frame, stateBuffer);
-      this._transport.send(peerId, syncMsg);
+      // Broadcast STATE_SYNC to ALL connected peers (including joiner)
+      // so existing peers see the new player activation (Issue B).
+      for (const [pid] of this._connectedPeers) {
+        this._transport.send(pid, syncMsg);
+      }
 
       if (this._gameLoop.soloMode) {
         this._setupRollbackSession();
+      } else if (this._session) {
+        // Reset host session to match the peers who received STATE_SYNC.
+        // Without this, the host's input queues for existing peers have
+        // stale confirmedFrames that cause prediction gap mismatches and
+        // rollback issues after the join.
+        this._session.resetToFrame(frame);
+        this._gameLoop._recentLocalInputs = [];
       }
     }
-    // Joiner: do nothing here — STATE_SYNC handler will set up rollback
+    // Non-authority peers: STATE_SYNC handler will update state
   }
 
   _handlePeerDisconnected(peerId) {
@@ -399,13 +416,12 @@ export class MultiplayerManager {
   }
 
   /**
-   * Process all buffered network messages.
-   * Called by GameLoop before the tick catch-up loop so that all
-   * confirmed inputs are available during rapid catch-up ticks,
-   * reducing unnecessary rollbacks.
+   * Process buffered peer lifecycle events (connect/disconnect).
+   * Called by GameLoop via postTickDrain AFTER the tick while-loop
+   * so that any pending rollbacks (triggered by inputs in messageDrain)
+   * have resolved before player activation mutates game state.
    */
-  drainMessages() {
-    // Process buffered peer lifecycle events before network messages
+  drainPeerEvents() {
     const peerEvents = this._incomingPeerEvents;
     this._incomingPeerEvents = [];
     for (const event of peerEvents) {
@@ -419,7 +435,15 @@ export class MultiplayerManager {
         console.error('[MultiplayerManager] Peer event error:', event.type, err);
       }
     }
+  }
 
+  /**
+   * Process all buffered network messages (INPUT, STATE_SYNC, CHECKSUM).
+   * Called by GameLoop before the tick catch-up loop so that all
+   * confirmed inputs are available during rapid catch-up ticks,
+   * reducing unnecessary rollbacks.
+   */
+  drainMessages() {
     const messages = this._incomingMessageBuffer;
     this._incomingMessageBuffer = [];
 

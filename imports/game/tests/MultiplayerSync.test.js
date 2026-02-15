@@ -837,19 +837,40 @@ function run4PlayerStaggeredJoinSyncTest(soloFrames, joinInterval, multiplayerFr
     return desyncReport;
   }
 
-  // Phase 3 — P2 joins
+  // Phase 3 — P2 joins (production-style: host broadcasts STATE_SYNC,
+  // existing peers update autoInputSlots + resetToFrame, joiner gets new session)
   sims[0].activatePlayer(2, 2);
   const state3 = sims[0].serialize();
   const joinFrame3 = sims[0]._frame;
 
-  // All existing sims deserialize from host (ensures RNG + full state in sync)
+  // Host (P0) updates own session: remove P2 from auto-input, then
+  // resetToFrame to clear stale input queues from Phase 2
+  sessions[0].autoInputSlots.delete(2);
+  sessions[0].resetToFrame(joinFrame3);
+  sessions[0].setPeerConnected(2, true);
+  sessions[0].peerSynchronized[2] = true;
+  sessions[0].peerLastRecvTime[2] = Date.now();
+
+  // Existing peer (P1) receives STATE_SYNC broadcast: deserialize + reset
   sims[1].deserialize(state3);
+  sessions[1].autoInputSlots.delete(2);
+  sessions[1].resetToFrame(joinFrame3);
+  sessions[1].setPeerConnected(2, true);
+  sessions[1].peerSynchronized[2] = true;
+  sessions[1].peerLastRecvTime[2] = Date.now();
+
+  // Joiner (P2) receives STATE_SYNC: deserialize + create new session
   sims[2] = createSim();
   sims[2].deserialize(state3);
+  const autoSlots3 = new Set([3]);
+  sessions[2] = createSession(2, joinFrame3, autoSlots3);
+  for (let i = 0; i < NUM_PLAYERS; i++) {
+    sessions[2].setPeerConnected(i, true);
+    sessions[2].peerSynchronized[i] = true;
+  }
+  sessions[2].running = true;
 
   const activeSlots3 = [0, 1, 2];
-  const autoSlots3 = new Set([3]);
-  sessions = initSessionsForPlayers(activeSlots3, joinFrame3, autoSlots3);
   nets = buildNetworkMesh(NUM_PLAYERS, 2000, { dropRate, maxDelay });
   histories = { 0: [], 1: [], 2: [], 3: [] };
 
@@ -863,20 +884,41 @@ function run4PlayerStaggeredJoinSyncTest(soloFrames, joinInterval, multiplayerFr
     return desyncReport;
   }
 
-  // Phase 4 — P3 joins
+  // Phase 4 — P3 joins (production-style: same as Phase 3)
   sims[0].activatePlayer(3, 3);
   const state4 = sims[0].serialize();
   const joinFrame4 = sims[0]._frame;
 
-  // All existing sims deserialize from host
-  sims[1].deserialize(state4);
-  sims[2].deserialize(state4);
+  // Host (P0) updates own session: remove P3 from auto-input, then
+  // resetToFrame to clear stale input queues from Phase 3
+  sessions[0].autoInputSlots.delete(3);
+  sessions[0].resetToFrame(joinFrame4);
+  sessions[0].setPeerConnected(3, true);
+  sessions[0].peerSynchronized[3] = true;
+  sessions[0].peerLastRecvTime[3] = Date.now();
+
+  // Existing peers (P1, P2) receive STATE_SYNC broadcast: deserialize + reset
+  for (const slot of [1, 2]) {
+    sims[slot].deserialize(state4);
+    sessions[slot].autoInputSlots.delete(3);
+    sessions[slot].resetToFrame(joinFrame4);
+    sessions[slot].setPeerConnected(3, true);
+    sessions[slot].peerSynchronized[3] = true;
+    sessions[slot].peerLastRecvTime[3] = Date.now();
+  }
+
+  // Joiner (P3) receives STATE_SYNC: deserialize + create new session
   sims[3] = createSim();
   sims[3].deserialize(state4);
+  const autoSlots4 = new Set();
+  sessions[3] = createSession(3, joinFrame4, autoSlots4);
+  for (let i = 0; i < NUM_PLAYERS; i++) {
+    sessions[3].setPeerConnected(i, true);
+    sessions[3].peerSynchronized[i] = true;
+  }
+  sessions[3].running = true;
 
   const activeSlots4 = [0, 1, 2, 3];
-  const autoSlots4 = new Set();
-  sessions = initSessionsForPlayers(activeSlots4, joinFrame4, autoSlots4);
   nets = buildNetworkMesh(NUM_PLAYERS, 3000, { dropRate, maxDelay });
   histories = { 0: [], 1: [], 2: [], 3: [] };
 

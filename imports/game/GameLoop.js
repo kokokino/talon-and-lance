@@ -44,6 +44,11 @@ export class GameLoop {
     // Message drain callback (set by MultiplayerManager)
     this.messageDrain = null;
 
+    // Post-tick drain callback — runs AFTER the tick while-loop completes.
+    // Used for peer lifecycle events (connect/disconnect) so that any
+    // pending rollbacks from messageDrain resolve before activation.
+    this.postTickDrain = null;
+
     this._loop = this._loop.bind(this);
   }
 
@@ -128,6 +133,17 @@ export class GameLoop {
       }
     } catch (err) {
       console.error('[GameLoop] Tick error:', err);
+    }
+
+    // Drain peer lifecycle events AFTER the tick loop so that any
+    // pending rollbacks (triggered by messageDrain inputs) have resolved
+    // before player activation mutates game state.
+    if (this.postTickDrain) {
+      try {
+        this.postTickDrain();
+      } catch (err) {
+        console.error('[GameLoop] postTickDrain threw:', err);
+      }
     }
 
     // Render current state (outside fixed timestep, at display refresh rate)
