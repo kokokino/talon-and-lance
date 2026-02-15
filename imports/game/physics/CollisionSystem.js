@@ -80,11 +80,13 @@ export function checkPlatformCollisions(char, prevX, prevY, platforms) {
     if (prevCharRight <= plat.left && charRight > plat.left) {
       char.positionX = plat.left - FP_CHAR_HALF_WIDTH;
       char.velocityX = 0;
+      char.edgeBumpCount += 1;
     }
     // Moving left into right edge of platform
     if (prevCharLeft >= plat.right && charLeft < plat.right) {
       char.positionX = plat.right + FP_CHAR_HALF_WIDTH;
       char.velocityX = 0;
+      char.edgeBumpCount += 1;
     }
   }
 }

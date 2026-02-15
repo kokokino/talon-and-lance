@@ -116,6 +116,7 @@ export class Level1Scene {
     this._lavaTexture = null;
     this._lavaUvOffset = 0;
     this._lavaBurstTimer = 0;
+    this._squawkTimer = 3 + Math.random() * 5;
 
     // ---- Renderer mode state (activated on first draw() call) ----
     this._rendererMode = false;
@@ -267,6 +268,7 @@ export class Level1Scene {
       score: h.score,
       lives: h.lives,
       bounceCount: h.bounceCount,
+      edgeBumpCount: h.edgeBumpCount,
       strideStep: Math.floor(h.stridePhase),
       velocityX: h.velocityX,
     }));
@@ -282,6 +284,7 @@ export class Level1Scene {
       invincible: e.invincible,
       hitLava: e.hitLava,
       bounceCount: e.bounceCount,
+      edgeBumpCount: e.edgeBumpCount,
     }));
     const eggs = {};
     for (const egg of gameState.eggs) {
@@ -630,6 +633,11 @@ export class Level1Scene {
       this._audioManager.playSfx('joust-bounce', 2);
     }
 
+    // Edge bump (platform side collision)
+    if (char.edgeBumpCount > prev.edgeBumpCount) {
+      this._audioManager.playSfx('edge-bump');
+    }
+
     // Invincibility end (humans only)
     if (type === 'human' && prev.invincible && !char.invincible) {
       this._audioManager.playSfx('invincible-end');
@@ -648,6 +656,23 @@ export class Level1Scene {
     // Extra life (humans only)
     if (type === 'human' && char.lives > prev.lives) {
       this._audioManager.playSfx('extra-life');
+    }
+
+    // Score tick (humans only)
+    if (type === 'human' && char.score > prev.score) {
+      this._audioManager.playSfx('score-tick');
+    }
+
+    // Idle squawk (humans only, grounded, near-zero velocity)
+    if (type === 'human' && char.playerState === 'GROUNDED' &&
+        Math.abs(char.velocityX) < 0.5 && !char.materializing) {
+      this._squawkTimer -= 1 / 60;
+      if (this._squawkTimer <= 0) {
+        this._audioManager.playSfx('squawk', 2);
+        this._squawkTimer = 4 + Math.random() * 8;
+      }
+    } else if (type === 'human') {
+      this._squawkTimer = 3 + Math.random() * 5;
     }
   }
 
@@ -705,6 +730,7 @@ export class Level1Scene {
     // Wave completed (PLAYING -> TRANSITION)
     if (gameState.waveState === WAVE_TRANSITION && this._prevState.waveState === WAVE_PLAYING) {
       this._audioManager.playSfx('wave-complete');
+      this._audioManager.playSfx('crowd-cheer');
       // Survival bonus for local player
       const localPlayer = gameState.humans[this._localPlayerSlot];
       if (localPlayer && localPlayer.active && !localPlayer.dead) {

@@ -49,7 +49,7 @@ import {
   C_MATERIALIZE_QUICK_END,
   C_SCORE, C_LIVES, C_EGGS_COLLECTED, C_PREV_POS_X, C_PREV_POS_Y,
   C_NEXT_LIFE_SCORE, C_PALETTE_INDEX, C_PLAYER_DIED_WAVE, C_ENEMY_TYPE, C_HIT_LAVA, C_PLATFORM_INDEX,
-  C_BOUNCE_COUNT,
+  C_BOUNCE_COUNT, C_EDGE_BUMP_COUNT,
   AI_DIR_TIMER, AI_CURRENT_DIR, AI_FLAP_ACCUM, AI_ENEMY_TYPE,
   E_ACTIVE, E_POS_X, E_POS_Y, E_VEL_X, E_VEL_Y,
   E_ON_PLATFORM, E_ENEMY_TYPE, E_HATCH_STATE, E_HATCH_TIMER,
@@ -171,6 +171,7 @@ export class GameSimulation {
     char.prevPositionY = char.positionY;
     char.hitLava = false;
     char.bounceCount = 0;
+    char.edgeBumpCount = 0;
   }
 
   /**
@@ -477,6 +478,7 @@ export class GameSimulation {
       currentPlatform: null,
       platformIndex: -1,
       bounceCount: 0,
+      edgeBumpCount: 0,
     };
   }
 
@@ -628,6 +630,7 @@ export class GameSimulation {
     char.prevPositionY = y;
     char.hitLava = false;
     char.bounceCount = 0;
+    char.edgeBumpCount = 0;
 
     // AI timers are now frame counts
     const initialDirTimer = 90 + this._rng.nextInt(90); // ~1.5s + random up to 1.5s in frames
@@ -837,6 +840,7 @@ export class GameSimulation {
     char.materializeDuration = MATERIALIZE_FRAMES;
     char.materializeQuickEnd = false;
     char.bounceCount = 0;
+    char.edgeBumpCount = 0;
   }
 
   // ---- Scoring ----
@@ -1067,6 +1071,7 @@ export class GameSimulation {
     buf[offset + C_HIT_LAVA] = char.hitLava ? 1 : 0;
     buf[offset + C_PLATFORM_INDEX] = char.platformIndex;
     buf[offset + C_BOUNCE_COUNT] = char.bounceCount;
+    buf[offset + C_EDGE_BUMP_COUNT] = char.edgeBumpCount;
   }
 
   _deserializeChar(buf, offset, char) {
@@ -1108,6 +1113,7 @@ export class GameSimulation {
       ? this._platforms[platIdx]
       : null;
     char.bounceCount = buf[offset + C_BOUNCE_COUNT];
+    char.edgeBumpCount = buf[offset + C_EDGE_BUMP_COUNT];
   }
 
   _serializeEgg(buf, offset, egg) {

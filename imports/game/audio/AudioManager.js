@@ -58,6 +58,10 @@ const GAME_SFX = [
   // Bonus
   { name: 'egg-catch-air', url: '/audio/sfx/bonus/egg-catch-air.mp3', pool: 1, volume: 0.6 },
   { name: 'enemy-materialize', url: '/audio/sfx/bonus/enemy-materialize.mp3', pool: 2, volume: 0.5 },
+  { name: 'crowd-cheer', url: '/audio/sfx/bonus/crowd-cheer.mp3', pool: 1, volume: 0.5 },
+  { name: 'score-tick', url: '/audio/sfx/bonus/score-tick.mp3', pool: 2, volume: 0.3 },
+  { name: 'squawk-1', url: '/audio/sfx/bonus/squawk-1.mp3', pool: 1, volume: 0.4 },
+  { name: 'squawk-2', url: '/audio/sfx/bonus/squawk-2.mp3', pool: 1, volume: 0.4 },
 
   // Progression
   { name: 'materialize', url: '/audio/sfx/progression/materialize.mp3', pool: 2, volume: 0.5 },
