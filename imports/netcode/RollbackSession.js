@@ -176,11 +176,13 @@ export class RollbackSession {
       }
     }
 
-    // Save state for current frame (before advancing)
-    requests.push({
-      type: 'SaveGameState',
-      cell: this.stateBuffer.createCell(this.currentFrame),
-    });
+    // Save state for current frame (skip if rollback already saved it)
+    if (rollbackFrame < 0) {
+      requests.push({
+        type: 'SaveGameState',
+        cell: this.stateBuffer.createCell(this.currentFrame),
+      });
+    }
 
     // Gather inputs (confirmed + predicted) for current frame
     const inputs = this._gatherInputs(this.currentFrame);
@@ -443,6 +445,8 @@ export class RollbackSession {
     this.lastSavedFrame = frame - 1;
     this.needsRollback = false;
     this.rollbackTargetFrame = -1;
+    this.pendingLocalInput = null;
+    this.lastLocalInputFrame = -1;
     this.remoteChecksums.clear();
     this.checksumSuppressUntilFrame = frame + CHECKSUM_INTERVAL * 2;
     this.stateBuffer.reset();

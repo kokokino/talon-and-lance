@@ -414,8 +414,10 @@ export class MultiplayerManager {
         } else if (msgType === MessageType.STATE_SYNC) {
           // Only accept STATE_SYNC from the host (slot 0)
           const senderSlot = this._connectedPeers.get(peerId);
-          if (senderSlot !== undefined && senderSlot !== 0) {
-            console.warn('[MultiplayerManager] Ignoring STATE_SYNC from non-host peer', senderSlot);
+          if (senderSlot === undefined || senderSlot !== 0) {
+            if (senderSlot !== undefined) {
+              console.warn('[MultiplayerManager] Ignoring STATE_SYNC from non-host peer', senderSlot);
+            }
             continue;
           }
           const msg = InputEncoder.decodeStateSyncMessage(buffer);

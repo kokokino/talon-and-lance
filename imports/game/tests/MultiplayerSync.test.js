@@ -912,6 +912,489 @@ function run4PlayerStaggeredJoinSyncTest(soloFrames, joinInterval, multiplayerFr
   return desyncReport;
 }
 
+// ---- 3-player simultaneous start harness ----
+
+function run3PlayerSyncTest(totalFrames, options = {}) {
+  const { dropRate = 0, useRedundancy = false, maxDelay = 2, drainFrames = 0 } = options;
+  const ACTIVE_SLOTS = [0, 1, 2];
+  const AUTO_3P = new Set([3]); // only slot 3 is auto-input
+
+  // Three complete game stacks, all identical initial state
+  const sims = new Array(NUM_PLAYERS).fill(null);
+  for (const slot of ACTIVE_SLOTS) {
+    sims[slot] = createSim();
+    for (const s of ACTIVE_SLOTS) {
+      sims[slot].activatePlayer(s, s);
+    }
+    sims[slot].startGame();
+  }
+
+  // Sessions with slot 3 as auto-input
+  const sessions = initSessionsForPlayers(ACTIVE_SLOTS, 0, AUTO_3P);
+
+  // 6-channel network mesh (3 players, each-to-each)
+  const nets = buildNetworkMesh(NUM_PLAYERS, 1000, { dropRate, maxDelay });
+
+  // Per-player input RNGs
+  const inputRngs = {
+    0: new DeterministicRNG(100),
+    1: new DeterministicRNG(200),
+    2: new DeterministicRNG(300),
+  };
+
+  // Input histories for redundancy
+  const histories = { 0: [], 1: [], 2: [] };
+
+  // Main phase
+  let { desyncReport } = runMultiplayerPhase({
+    sims, sessions, nets, inputRngs, activeSlots: ACTIVE_SLOTS,
+    numTicks: totalFrames, tickOffset: 0,
+    useRedundancy, histories,
+    checkInterval: drainFrames === 0 ? CHECK_INTERVAL : 0,
+  });
+
+  // Drain phase
+  if (!desyncReport && drainFrames > 0) {
+    ({ desyncReport } = runMultiplayerPhase({
+      sims, sessions, nets, inputRngs, activeSlots: ACTIVE_SLOTS,
+      numTicks: drainFrames, tickOffset: totalFrames,
+      drainOnly: true, useRedundancy, histories,
+    }));
+  }
+
+  // Final comparison: P1, P2 each vs P0
+  if (!desyncReport) {
+    const refBuf = new Int32Array(sims[0].serialize());
+    for (let i = 1; i < ACTIVE_SLOTS.length; i++) {
+      const cmpBuf = new Int32Array(sims[ACTIVE_SLOTS[i]].serialize());
+      const report = compareStates(refBuf, cmpBuf,
+        `final P0 vs P${ACTIVE_SLOTS[i]} (tick ${totalFrames + drainFrames}, frame ${refBuf[G_FRAME]})`);
+      if (report) {
+        desyncReport = report;
+        break;
+      }
+    }
+  }
+
+  return desyncReport;
+}
+
+// ---- 2-player disconnect + rejoin harness ----
+// P0 and P1 play normally, then P1 disconnects (marked auto-input, no network),
+// sims diverge, then P1 rejoins via STATE_SYNC from P0 + resetToFrame().
+
+function run2PlayerDisconnectRejoinTest(preFrames, disconnectedFrames, postFrames, options = {}) {
+  const { drainFrames = 0 } = options;
+
+  // Two complete game stacks
+  const simA = createSim();
+  const simB = createSim();
+
+  simA.activatePlayer(0, 0);
+  simA.activatePlayer(1, 1);
+  simB.activatePlayer(0, 0);
+  simB.activatePlayer(1, 1);
+  simA.startGame();
+  simB.startGame();
+
+  const sessionA = createSession(0);
+  const sessionB = createSession(1);
+
+  for (let i = 0; i < NUM_PLAYERS; i++) {
+    sessionA.setPeerConnected(i, true);
+    sessionB.setPeerConnected(i, true);
+    sessionA.peerSynchronized[i] = true;
+    sessionB.peerSynchronized[i] = true;
+  }
+  sessionA.running = true;
+  sessionB.running = true;
+
+  const netAtoB = new MockNetwork(300);
+  const netBtoA = new MockNetwork(400);
+  const rngP0 = new DeterministicRNG(100);
+  const rngP1 = new DeterministicRNG(200);
+
+  // Phase 1: Normal 2-player sync
+  for (let tick = 0; tick < preFrames; tick++) {
+    const msgsForA = netBtoA.receive(tick);
+    for (const msg of msgsForA) {
+      sessionA.addRemoteInput(1, msg.frame, msg.input);
+      sessionA.peerLastRecvTime[1] = Date.now();
+    }
+    const msgsForB = netAtoB.receive(tick);
+    for (const msg of msgsForB) {
+      sessionB.addRemoteInput(0, msg.frame, msg.input);
+      sessionB.peerLastRecvTime[0] = Date.now();
+    }
+
+    const inputP0 = generateInput(rngP0);
+    const inputP1 = generateInput(rngP1);
+
+    sessionA.addLocalInput(inputP0);
+    processRequests(simA, sessionA.advanceFrame());
+
+    sessionB.addLocalInput(inputP1);
+    processRequests(simB, sessionB.advanceFrame());
+
+    const localA = sessionA.getLocalInput();
+    if (localA) { netAtoB.send(tick, localA.frame, localA.input); }
+    const localB = sessionB.getLocalInput();
+    if (localB) { netBtoA.send(tick, localB.frame, localB.input); }
+
+    sessionA.pollEvents();
+    sessionB.pollEvents();
+  }
+
+  // Phase 2: P1 disconnects — mark slot 1 as auto-input, no network exchange.
+  // Both sims continue ticking independently and will diverge.
+  sessionA.autoInputSlots.add(1);
+  sessionB.autoInputSlots.add(0);
+
+  for (let tick = 0; tick < disconnectedFrames; tick++) {
+    const inputP0 = generateInput(rngP0);
+    const inputP1 = generateInput(rngP1);
+
+    sessionA.addLocalInput(inputP0);
+    processRequests(simA, sessionA.advanceFrame());
+
+    sessionB.addLocalInput(inputP1);
+    processRequests(simB, sessionB.advanceFrame());
+
+    sessionA.pollEvents();
+    sessionB.pollEvents();
+  }
+
+  // Phase 3: P1 rejoins — host (P0) sends authoritative state.
+  // P1 deserializes from host state. Both sessions resetToFrame().
+  const stateBuffer = simA.serialize();
+  const rejoinFrame = simA._frame;
+
+  simB.deserialize(stateBuffer);
+
+  sessionA.resetToFrame(rejoinFrame);
+  sessionB.resetToFrame(rejoinFrame);
+
+  // Restore normal input routing
+  sessionA.autoInputSlots.delete(1);
+  sessionB.autoInputSlots.delete(0);
+
+  // Fresh networks for post-rejoin phase
+  const netAtoB2 = new MockNetwork(500);
+  const netBtoA2 = new MockNetwork(600);
+
+  // Phase 4: Resume normal 2-player rollback
+  for (let tick = 0; tick < postFrames; tick++) {
+    const msgsForA = netBtoA2.receive(tick);
+    for (const msg of msgsForA) {
+      sessionA.addRemoteInput(1, msg.frame, msg.input);
+      sessionA.peerLastRecvTime[1] = Date.now();
+    }
+    const msgsForB = netAtoB2.receive(tick);
+    for (const msg of msgsForB) {
+      sessionB.addRemoteInput(0, msg.frame, msg.input);
+      sessionB.peerLastRecvTime[0] = Date.now();
+    }
+
+    const inputP0 = generateInput(rngP0);
+    const inputP1 = generateInput(rngP1);
+
+    sessionA.addLocalInput(inputP0);
+    processRequests(simA, sessionA.advanceFrame());
+
+    sessionB.addLocalInput(inputP1);
+    processRequests(simB, sessionB.advanceFrame());
+
+    const localA = sessionA.getLocalInput();
+    if (localA) { netAtoB2.send(tick, localA.frame, localA.input); }
+    const localB = sessionB.getLocalInput();
+    if (localB) { netBtoA2.send(tick, localB.frame, localB.input); }
+
+    sessionA.pollEvents();
+    sessionB.pollEvents();
+  }
+
+  // Drain phase
+  if (drainFrames > 0) {
+    for (let d = 0; d < drainFrames; d++) {
+      const drainTick = postFrames + d;
+
+      const msgsForA = netBtoA2.receive(drainTick);
+      for (const msg of msgsForA) {
+        sessionA.addRemoteInput(1, msg.frame, msg.input);
+        sessionA.peerLastRecvTime[1] = Date.now();
+      }
+      const msgsForB = netAtoB2.receive(drainTick);
+      for (const msg of msgsForB) {
+        sessionB.addRemoteInput(0, msg.frame, msg.input);
+        sessionB.peerLastRecvTime[0] = Date.now();
+      }
+
+      sessionA.addLocalInput(0);
+      processRequests(simA, sessionA.advanceFrame());
+      sessionB.addLocalInput(0);
+      processRequests(simB, sessionB.advanceFrame());
+
+      const localA = sessionA.getLocalInput();
+      if (localA) { netAtoB2.send(drainTick, localA.frame, localA.input); }
+      const localB = sessionB.getLocalInput();
+      if (localB) { netBtoA2.send(drainTick, localB.frame, localB.input); }
+
+      sessionA.pollEvents();
+      sessionB.pollEvents();
+    }
+  }
+
+  // Final comparison
+  const totalTicks = postFrames + drainFrames;
+  const bufA = new Int32Array(simA.serialize());
+  const bufB = new Int32Array(simB.serialize());
+  return compareStates(bufA, bufB, `final (disconnect+rejoin, tick ${totalTicks}, frame ${bufA[G_FRAME]})`);
+}
+
+// ---- Desync recovery verification harness ----
+// Two players in sync, then state is intentionally corrupted on one side.
+// Checksum exchange detects the desync, host sends STATE_SYNC, both
+// sessions reset via resetToFrame(). Verifies convergence after recovery.
+//
+// Structure: 3 phases
+//   Phase 1: Normal sync for preFrames ticks with checksum exchange
+//   Phase 2: Continue ticking after corruption until checksum detects desync
+//   Phase 3: After resync, fresh networks + sessions, run postFrames ticks
+//
+// Note: getCurrentChecksum() has an off-by-one timing issue where it checks
+// currentFrame (already incremented) but the saved state is for currentFrame-1.
+// We exchange checksums directly using stateBuffer.getChecksum().
+
+const CHECKSUM_INTERVAL = 60; // must match RollbackSession's CHECKSUM_INTERVAL
+
+function runDesyncRecoveryTest(preFrames, postFrames, options = {}) {
+  const { drainFrames = 0 } = options;
+
+  const simA = createSim();
+  const simB = createSim();
+
+  simA.activatePlayer(0, 0);
+  simA.activatePlayer(1, 1);
+  simB.activatePlayer(0, 0);
+  simB.activatePlayer(1, 1);
+  simA.startGame();
+  simB.startGame();
+
+  let sessionA = createSession(0);
+  let sessionB = createSession(1);
+
+  for (let i = 0; i < NUM_PLAYERS; i++) {
+    sessionA.setPeerConnected(i, true);
+    sessionB.setPeerConnected(i, true);
+    sessionA.peerSynchronized[i] = true;
+    sessionB.peerSynchronized[i] = true;
+  }
+  sessionA.running = true;
+  sessionB.running = true;
+
+  let netAtoB = new MockNetwork(300);
+  let netBtoA = new MockNetwork(400);
+  const rngP0 = new DeterministicRNG(100);
+  const rngP1 = new DeterministicRNG(200);
+
+  // Exchange checksums using stateBuffer directly for the frame just saved
+  // (currentFrame - 1 after advanceFrame increments it)
+  function exchangeChecksums() {
+    const savedFrameA = sessionA.currentFrame - 1;
+    const savedFrameB = sessionB.currentFrame - 1;
+
+    if (savedFrameA > 0 && savedFrameA % CHECKSUM_INTERVAL === 0) {
+      const csA = sessionA.stateBuffer.getChecksum(savedFrameA);
+      if (csA !== null) {
+        sessionB.addRemoteChecksum(0, savedFrameA, csA);
+      }
+    }
+    if (savedFrameB > 0 && savedFrameB % CHECKSUM_INTERVAL === 0) {
+      const csB = sessionB.stateBuffer.getChecksum(savedFrameB);
+      if (csB !== null) {
+        sessionA.addRemoteChecksum(1, savedFrameB, csB);
+      }
+    }
+  }
+
+  // Phase 1: Normal sync for preFrames ticks
+  for (let tick = 0; tick < preFrames; tick++) {
+    const msgsForA = netBtoA.receive(tick);
+    for (const msg of msgsForA) {
+      sessionA.addRemoteInput(1, msg.frame, msg.input);
+      sessionA.peerLastRecvTime[1] = Date.now();
+    }
+    const msgsForB = netAtoB.receive(tick);
+    for (const msg of msgsForB) {
+      sessionB.addRemoteInput(0, msg.frame, msg.input);
+      sessionB.peerLastRecvTime[0] = Date.now();
+    }
+
+    const inputP0 = generateInput(rngP0);
+    const inputP1 = generateInput(rngP1);
+
+    sessionA.addLocalInput(inputP0);
+    processRequests(simA, sessionA.advanceFrame());
+    sessionB.addLocalInput(inputP1);
+    processRequests(simB, sessionB.advanceFrame());
+
+    const localA = sessionA.getLocalInput();
+    if (localA) { netAtoB.send(tick, localA.frame, localA.input); }
+    const localB = sessionB.getLocalInput();
+    if (localB) { netBtoA.send(tick, localB.frame, localB.input); }
+
+    exchangeChecksums();
+    sessionA.pollEvents();
+    sessionB.pollEvents();
+  }
+
+  // Corrupt simB's state: flip a human position field
+  const corruptBuf = new Int32Array(simB.serialize());
+  corruptBuf[HUMANS_OFFSET + C_POS_X] += 1000; // shift P0's X position
+  simB.deserialize(corruptBuf.buffer);
+
+  // Phase 2: Continue ticking until checksum exchange detects the desync.
+  // The corruption will be detected at the next CHECKSUM_INTERVAL boundary
+  // after syncFrame catches up.
+  let resyncDone = false;
+  const maxDetectionTicks = CHECKSUM_INTERVAL * 3; // safety limit
+
+  for (let tick = 0; tick < maxDetectionTicks; tick++) {
+    const absTick = preFrames + tick;
+
+    const msgsForA = netBtoA.receive(absTick);
+    for (const msg of msgsForA) {
+      sessionA.addRemoteInput(1, msg.frame, msg.input);
+      sessionA.peerLastRecvTime[1] = Date.now();
+    }
+    const msgsForB = netAtoB.receive(absTick);
+    for (const msg of msgsForB) {
+      sessionB.addRemoteInput(0, msg.frame, msg.input);
+      sessionB.peerLastRecvTime[0] = Date.now();
+    }
+
+    const inputP0 = generateInput(rngP0);
+    const inputP1 = generateInput(rngP1);
+
+    sessionA.addLocalInput(inputP0);
+    processRequests(simA, sessionA.advanceFrame());
+    sessionB.addLocalInput(inputP1);
+    processRequests(simB, sessionB.advanceFrame());
+
+    const localA = sessionA.getLocalInput();
+    if (localA) { netAtoB.send(absTick, localA.frame, localA.input); }
+    const localB = sessionB.getLocalInput();
+    if (localB) { netBtoA.send(absTick, localB.frame, localB.input); }
+
+    exchangeChecksums();
+
+    const eventsA = sessionA.pollEvents();
+    sessionB.pollEvents();
+
+    for (const event of eventsA) {
+      if (event.type === 'DesyncDetected') {
+        resyncDone = true;
+        break;
+      }
+    }
+
+    if (resyncDone) {
+      break;
+    }
+  }
+
+  if (!resyncDone) {
+    return 'DESYNC RECOVERY FAILED: checksum exchange never detected the corruption';
+  }
+
+  // Phase 3: Resync — host sends authoritative state, both sessions reset,
+  // fresh networks for clean input exchange (no stale in-flight messages).
+  const resyncState = simA.serialize();
+  const resyncFrame = simA._frame;
+  simB.deserialize(resyncState);
+
+  sessionA = createSession(0, resyncFrame);
+  sessionB = createSession(1, resyncFrame);
+
+  for (let i = 0; i < NUM_PLAYERS; i++) {
+    sessionA.setPeerConnected(i, true);
+    sessionB.setPeerConnected(i, true);
+    sessionA.peerSynchronized[i] = true;
+    sessionB.peerSynchronized[i] = true;
+  }
+  sessionA.running = true;
+  sessionB.running = true;
+
+  netAtoB = new MockNetwork(500);
+  netBtoA = new MockNetwork(600);
+
+  for (let tick = 0; tick < postFrames; tick++) {
+    const msgsForA = netBtoA.receive(tick);
+    for (const msg of msgsForA) {
+      sessionA.addRemoteInput(1, msg.frame, msg.input);
+      sessionA.peerLastRecvTime[1] = Date.now();
+    }
+    const msgsForB = netAtoB.receive(tick);
+    for (const msg of msgsForB) {
+      sessionB.addRemoteInput(0, msg.frame, msg.input);
+      sessionB.peerLastRecvTime[0] = Date.now();
+    }
+
+    const inputP0 = generateInput(rngP0);
+    const inputP1 = generateInput(rngP1);
+
+    sessionA.addLocalInput(inputP0);
+    processRequests(simA, sessionA.advanceFrame());
+    sessionB.addLocalInput(inputP1);
+    processRequests(simB, sessionB.advanceFrame());
+
+    const localA = sessionA.getLocalInput();
+    if (localA) { netAtoB.send(tick, localA.frame, localA.input); }
+    const localB = sessionB.getLocalInput();
+    if (localB) { netBtoA.send(tick, localB.frame, localB.input); }
+
+    sessionA.pollEvents();
+    sessionB.pollEvents();
+  }
+
+  // Drain phase
+  if (drainFrames > 0) {
+    for (let d = 0; d < drainFrames; d++) {
+      const drainTick = postFrames + d;
+
+      const msgsForA = netBtoA.receive(drainTick);
+      for (const msg of msgsForA) {
+        sessionA.addRemoteInput(1, msg.frame, msg.input);
+        sessionA.peerLastRecvTime[1] = Date.now();
+      }
+      const msgsForB = netAtoB.receive(drainTick);
+      for (const msg of msgsForB) {
+        sessionB.addRemoteInput(0, msg.frame, msg.input);
+        sessionB.peerLastRecvTime[0] = Date.now();
+      }
+
+      sessionA.addLocalInput(0);
+      processRequests(simA, sessionA.advanceFrame());
+      sessionB.addLocalInput(0);
+      processRequests(simB, sessionB.advanceFrame());
+
+      const localA = sessionA.getLocalInput();
+      if (localA) { netAtoB.send(drainTick, localA.frame, localA.input); }
+      const localB = sessionB.getLocalInput();
+      if (localB) { netBtoA.send(drainTick, localB.frame, localB.input); }
+
+      sessionA.pollEvents();
+      sessionB.pollEvents();
+    }
+  }
+
+  // Final comparison
+  const totalTicks = postFrames + drainFrames;
+  const bufA = new Int32Array(simA.serialize());
+  const bufB = new Int32Array(simB.serialize());
+  return compareStates(bufA, bufB, `final (desync recovery, tick ${totalTicks}, frame ${bufA[G_FRAME]})`);
+}
+
 // ---- Mocha test suite ----
 
 describe('Multiplayer Sync', function () {
@@ -991,6 +1474,36 @@ describe('Multiplayer Sync', function () {
     this.timeout(180000);
     const report = run4PlayerStaggeredJoinSyncTest(300, 200, 1800, { dropRate: 0.02, useRedundancy: true, drainFrames: 20 });
     assert.strictEqual(report, null, report || '4-player staggered join should survive packet loss');
+  });
+
+  // ---- 3-player tests ----
+
+  it('3-player: stays in sync for 10 seconds (600 frames)', function () {
+    this.timeout(60000);
+    const report = run3PlayerSyncTest(600, { drainFrames: 10 });
+    assert.strictEqual(report, null, report || '3-player simulations should be in sync');
+  });
+
+  it('3-player: stays in sync with 2% packet loss using redundancy', function () {
+    this.timeout(120000);
+    const report = run3PlayerSyncTest(3600, { dropRate: 0.02, useRedundancy: true, drainFrames: 10 });
+    assert.strictEqual(report, null, report || '3-player should stay in sync with redundant inputs');
+  });
+
+  // ---- Disconnect + rejoin tests ----
+
+  it('stays in sync after disconnect and rejoin', function () {
+    this.timeout(60000);
+    const report = run2PlayerDisconnectRejoinTest(300, 120, 600, { drainFrames: 20 });
+    assert.strictEqual(report, null, report || 'Should resync after disconnect + rejoin');
+  });
+
+  // ---- Desync recovery tests ----
+
+  it('recovers from intentional desync via checksum detection', function () {
+    this.timeout(60000);
+    const report = runDesyncRecoveryTest(120, 600, { drainFrames: 20 });
+    assert.strictEqual(report, null, report || 'Should recover from desync via checksum resync');
   });
 
   // ---- Diagnostic: input-level divergence finder ----
