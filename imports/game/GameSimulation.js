@@ -743,7 +743,7 @@ export class GameSimulation {
     char.respawnTimer = RESPAWN_FRAMES;
 
     // Spawn egg (FP position + velocity)
-    const enemyType = charIdx >= MAX_HUMANS ? char.enemyType : -1;
+    const enemyType = charIdx >= MAX_HUMANS ? char.enemyType : ENEMY_TYPE_BOUNDER;
     this._spawnEgg(char.positionX, char.positionY, char.velocityX + knockDir * FP_KILL_KNOCK_VX, char.velocityY, enemyType);
 
     // Award kill points to the closest active human if enemy was killed
