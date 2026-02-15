@@ -33,6 +33,7 @@ export class RollbackSession {
     this.maxPredictionWindow = maxPredictionWindow;
     this.inputDelay = inputDelay;
     this.disconnectTimeout = disconnectTimeout;
+    this.disconnectFrameThreshold = 300; // 5 seconds at 60fps
     this.autoInputSlots = autoInputSlots; // Set of slot indices that always return input=0
     this.disconnectedSlots = new Set(); // Set of slot indices that receive DISCONNECT_BIT (0x08)
 
@@ -288,7 +289,12 @@ export class RollbackSession {
     const inputs = new Array(this.numPlayers);
     for (let i = 0; i < this.numPlayers; i++) {
       if (this.disconnectedSlots.has(i)) {
-        inputs[i] = 0x08; // DISCONNECT_BIT — deactivates character inside tick()
+        // Use real confirmed inputs for past frames, DISCONNECT_BIT only beyond
+        if (frame <= this.inputQueues[i].confirmedFrame) {
+          inputs[i] = this.inputQueues[i].getInput(frame).input;
+        } else {
+          inputs[i] = 0x08; // DISCONNECT_BIT
+        }
       } else if (this.autoInputSlots.has(i)) {
         inputs[i] = 0; // auto-input slots always return 0 (no input)
       } else {
@@ -366,8 +372,7 @@ export class RollbackSession {
 
   // Check for desync by comparing local and remote checksums
   _checkDesync() {
-    const frame = this.currentFrame - 1;
-    if (frame < this.checksumSuppressUntilFrame) {
+    if (this.currentFrame - 1 < this.checksumSuppressUntilFrame) {
       return;
     }
 
@@ -402,10 +407,8 @@ export class RollbackSession {
     }
   }
 
-  // Check if any peer has timed out
+  // Check if any peer has timed out (frame-based for determinism)
   _checkDisconnects() {
-    const now = Date.now();
-
     for (let i = 0; i < this.numPlayers; i++) {
       if (i === this.localPlayerIndex) {
         continue;
@@ -417,15 +420,17 @@ export class RollbackSession {
         continue;
       }
 
-      const lastRecv = this.peerLastRecvTime[i];
-      if (lastRecv > 0 && (now - lastRecv) > this.disconnectTimeout) {
+      const confirmedFrame = this.inputQueues[i].confirmedFrame;
+      const frameLag = this.currentFrame - confirmedFrame;
+
+      if (confirmedFrame >= 0 && frameLag > this.disconnectFrameThreshold) {
         this.peerDisconnected[i] = true;
         this.events.push({ type: 'Disconnected', peer: i });
-      } else if (lastRecv > 0 && (now - lastRecv) > (this.disconnectTimeout / 2)) {
+      } else if (confirmedFrame >= 0 && frameLag > (this.disconnectFrameThreshold >> 1)) {
         this.events.push({
           type: 'NetworkInterrupted',
           peer: i,
-          disconnectTimeout: this.disconnectTimeout - (now - lastRecv),
+          disconnectTimeout: this.disconnectFrameThreshold - frameLag,
         });
       }
     }

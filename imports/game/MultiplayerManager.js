@@ -73,9 +73,15 @@ export class MultiplayerManager {
     // Tell the renderer which slot is the local player (for HUD)
     this._renderer._localPlayerSlot = this._playerSlot;
 
-    // 2. Create game simulation with room's shared seed
-    const room = GameRooms.findOne(this._roomId);
-    const seed = room?.gameSeed ?? (Date.now() >>> 0);
+    // 2. Create game simulation with room's shared seed (from method result, not minimongo)
+    const seed = result.gameSeed;
+    if (seed === undefined || seed === null) {
+      console.error('[MultiplayerManager] Room document missing gameSeed! Cannot start — desync guaranteed.');
+      alert('Failed to start game: missing game seed. Returning to menu.');
+      this._simulation?.deactivatePlayer?.(this._playerSlot);
+      this._onQuitToMenu();
+      return;
+    }
     this._simulation = new GameSimulation({
       gameMode: this._gameMode,
       seed,
@@ -247,18 +253,19 @@ export class MultiplayerManager {
 
     console.log('[MultiplayerManager] Peer connected:', peerId, 'slot:', playerSlot);
 
-    // Remove connected peer from auto-input on ALL peers so their real
-    // inputs are used instead of defaulting to 0 (Issue A).
-    // Also reset the peer's input queue to the current frame so the
-    // prediction gap check doesn't block the session (the queue had a
-    // stale confirmedFrame from when the slot was auto-input).
     if (this._session) {
-      this._session.autoInputSlots.delete(playerSlot);
-      this._session.inputQueues[playerSlot].reset();
-      this._session.inputQueues[playerSlot].confirmedFrame = this._simulation._frame - 1;
       this._session.setPeerConnected(playerSlot, true);
       this._session.peerSynchronized[playerSlot] = true;
       this._session.peerLastRecvTime[playerSlot] = Date.now();
+
+      // Only the authority modifies autoInputSlots and resets queues here.
+      // Non-authority peers will receive STATE_SYNC which calls resetToFrame(),
+      // and then remove the slot from autoInput in the STATE_SYNC handler.
+      if (this._playerSlot === this._resyncAuthority) {
+        this._session.autoInputSlots.delete(playerSlot);
+        this._session.inputQueues[playerSlot].reset();
+        this._session.inputQueues[playerSlot].confirmedFrame = this._simulation._frame - 1;
+      }
     }
 
     // Only the resync authority activates joining players and sends state sync.
@@ -312,6 +319,7 @@ export class MultiplayerManager {
     // Mark slot as disconnected + auto-input in session and clear stale checksums
     if (this._session) {
       this._session.disconnectedSlots.add(playerSlot);
+      this._session.peerDisconnected[playerSlot] = true;
       this._session.autoInputSlots.add(playerSlot);
 
       for (const [frame, peerChecksums] of this._session.remoteChecksums) {
@@ -489,6 +497,10 @@ export class MultiplayerManager {
             } else if (this._session) {
               this._session.resetToFrame(msg.frame);
               this._gameLoop._recentLocalInputs = [];
+              // Ensure all connected peers are removed from autoInput
+              for (const [, slot] of this._connectedPeers) {
+                this._session.autoInputSlots.delete(slot);
+              }
               console.warn('[MultiplayerManager] Resync received, reset to frame', msg.frame);
             }
           }

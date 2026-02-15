@@ -46,6 +46,7 @@ Meteor.publish('rooms.current', function (roomId) {
         status: 1,
         maxPlayers: 1,
         settings: 1,
+        gameSeed: 1,
         createdAt: 1,
         startedAt: 1,
         finishedAt: 1,

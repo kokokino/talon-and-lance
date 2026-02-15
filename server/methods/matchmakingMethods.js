@@ -67,10 +67,11 @@ Meteor.methods({
         $set: { status: RoomStatus.PLAYING },
       });
 
-      return { roomId: openRoom._id, playerSlot: nextSlot };
+      return { roomId: openRoom._id, playerSlot: nextSlot, gameSeed: openRoom.gameSeed };
     }
 
     // No open rooms — create new one
+    const gameSeed = (Date.now() ^ Math.floor(Math.random() * 0x7FFFFFFF)) >>> 0;
     const roomId = await GameRooms.insertAsync({
       hostId: this.userId,
       gameMode,
@@ -85,12 +86,12 @@ Meteor.methods({
       status: RoomStatus.PLAYING, // starts immediately (arcade drop-in)
       maxPlayers: MAX_PLAYERS,
       settings: {},
-      gameSeed: (Date.now() ^ Math.floor(Math.random() * 0x7FFFFFFF)) >>> 0,
+      gameSeed,
       createdAt: new Date(),
       startedAt: new Date(),
       finishedAt: null,
     });
 
-    return { roomId, playerSlot: 0 };
+    return { roomId, playerSlot: 0, gameSeed };
   },
 });
