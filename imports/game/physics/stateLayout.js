@@ -27,7 +27,7 @@ export const G_SPAWN_QUEUE_START = 9;
 export const G_SPAWN_QUEUE_MAX = 10;
 
 // ---- Character slot (shared between humans and enemies) ----
-export const CHAR_SIZE = 32;
+export const CHAR_SIZE = 33;
 // Indices within a character slot:
 export const C_ACTIVE = 0;
 export const C_POS_X = 1;           // fixed-point
@@ -62,6 +62,7 @@ export const C_PLAYER_DIED_WAVE = 28;
 export const C_ENEMY_TYPE = 29;      // -1 for human, 0/1/2 for enemy types
 export const C_HIT_LAVA = 30;
 export const C_PLATFORM_INDEX = 31;  // index into platforms array, or -1
+export const C_BOUNCE_COUNT = 32;
 
 // ---- Enemy AI state slot (parallel to enemy character slots) ----
 export const AI_SIZE = 4;

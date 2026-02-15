@@ -46,7 +46,7 @@ import { buildKnightPalette } from '../voxels/models/knightPalettes.js';
 import { buildEvilKnightPalette } from '../voxels/models/evilKnightPalettes.js';
 import {
   MAX_HUMANS, MAX_ENEMIES, MAX_EGGS,
-  HATCH_WOBBLING,
+  HATCH_WOBBLING, WAVE_PLAYING, WAVE_TRANSITION,
 } from '../physics/stateLayout.js';
 
 /**
@@ -157,6 +157,13 @@ export class Level1Scene {
     this._createSpawnPads();
     this._createLava();
 
+    // Load game SFX and start lava ambient
+    if (this._audioManager) {
+      this._audioManager.loadGameSfx().then(() => {
+        this._audioManager?.startLavaAmbient();
+      });
+    }
+
     // Input (needed in solo mode)
     if (!this._rendererOnly) {
       this._inputReader = new InputReader();
@@ -232,6 +239,9 @@ export class Level1Scene {
     // Sync banners (wave transitions, game over)
     this._syncBanners(gameState);
 
+    // Sync sounds
+    this._syncSounds(gameState);
+
     // Save state snapshot for diffing on next frame
     this._prevState = this._snapshotState(gameState);
   }
@@ -247,6 +257,15 @@ export class Level1Scene {
       materializing: h.materializing,
       isTurning: h.isTurning,
       turnTimer: h.turnTimer,
+      playerState: h.playerState,
+      isFlapping: h.isFlapping,
+      invincible: h.invincible,
+      hitLava: h.hitLava,
+      score: h.score,
+      lives: h.lives,
+      bounceCount: h.bounceCount,
+      strideStep: Math.floor(h.stridePhase),
+      velocityX: h.velocityX,
     }));
     const enemies = gameState.enemies.map(e => ({
       slotIndex: e.slotIndex,
@@ -255,13 +274,25 @@ export class Level1Scene {
       materializing: e.materializing,
       isTurning: e.isTurning,
       turnTimer: e.turnTimer,
+      playerState: e.playerState,
+      isFlapping: e.isFlapping,
+      invincible: e.invincible,
+      hitLava: e.hitLava,
+      bounceCount: e.bounceCount,
     }));
     const eggs = {};
     for (const egg of gameState.eggs) {
-      eggs[egg.slotIndex] = { active: true, hitLava: egg.hitLava };
+      eggs[egg.slotIndex] = {
+        active: true,
+        hitLava: egg.hitLava,
+        hatchState: egg.hatchState,
+        bounceCount: egg.bounceCount,
+        onPlatform: egg.onPlatform,
+      };
     }
     return {
       waveNumber: gameState.waveNumber,
+      waveState: gameState.waveState,
       gameOver: gameState.gameOver,
       humans,
       enemies,
@@ -514,6 +545,172 @@ export class Level1Scene {
     }
   }
 
+  // ---- Sound trigger system ----
+
+  /**
+   * Diff current vs previous game state and trigger appropriate SFX.
+   * Called once per visual frame after _syncBanners, before _snapshotState.
+   */
+  _syncSounds(gameState) {
+    if (!this._prevState || !this._audioManager) {
+      return;
+    }
+
+    // Characters
+    for (const human of gameState.humans) {
+      const prev = this._findPrevChar(human.slotIndex, 'human');
+      if (prev) {
+        this._syncCharSounds(human, prev, 'human');
+      }
+    }
+    for (const enemy of gameState.enemies) {
+      const prev = this._findPrevChar(enemy.slotIndex, 'enemy');
+      if (prev) {
+        this._syncCharSounds(enemy, prev, 'enemy');
+      }
+    }
+
+    // Eggs
+    this._syncEggSounds(gameState.eggs);
+
+    // Progression
+    this._syncProgressionSounds(gameState);
+  }
+
+  _syncCharSounds(char, prev, type) {
+    // Materialization start
+    if (char.active && !prev.active && char.materializing) {
+      if (type === 'human') {
+        this._audioManager.playSfx('materialize');
+      } else {
+        this._audioManager.playSfx('enemy-materialize');
+      }
+    }
+
+    // Death
+    if (char.dead && !prev.dead) {
+      if (char.hitLava) {
+        this._audioManager.playSfx('lava-death');
+      } else {
+        this._audioManager.playSfx('death-explode');
+        this._audioManager.playSfx('joust-kill');
+      }
+    }
+
+    // Materialization end
+    if (prev.materializing && !char.materializing) {
+      this._audioManager.playSfx('materialize-done');
+    }
+
+    // Skip remaining sounds for dead/materializing/inactive characters
+    if (!char.active || char.dead || char.materializing) {
+      return;
+    }
+
+    // Flap
+    if (char.isFlapping && !prev.isFlapping) {
+      this._audioManager.playSfx('flap', 5);
+    }
+
+    // Landing
+    if (char.playerState === 'GROUNDED' && prev.playerState === 'AIRBORNE') {
+      this._audioManager.playSfx('land', 3);
+    }
+
+    // Skid
+    if (char.isTurning && !prev.isTurning && char.playerState === 'GROUNDED') {
+      this._audioManager.playSfx('skid');
+    }
+
+    // Joust bounce
+    if (char.bounceCount > prev.bounceCount) {
+      this._audioManager.playSfx('joust-bounce', 2);
+    }
+
+    // Invincibility end (humans only)
+    if (type === 'human' && prev.invincible && !char.invincible) {
+      this._audioManager.playSfx('invincible-end');
+    }
+
+    // Stride footstep (humans only)
+    if (type === 'human' && char.playerState === 'GROUNDED' &&
+        char.strideStep !== prev.strideStep && Math.abs(char.velocityX) > 0.5) {
+      this._audioManager.playSfx('stride', 3);
+    }
+
+    // Extra life (humans only)
+    if (type === 'human' && char.lives > prev.lives) {
+      this._audioManager.playSfx('extra-life');
+    }
+  }
+
+  _syncEggSounds(eggs) {
+    // Build set of active egg slots this frame
+    const currentEggs = {};
+    for (const egg of eggs) {
+      currentEggs[egg.slotIndex] = egg;
+    }
+
+    // Check for eggs that disappeared
+    for (let i = 0; i < MAX_EGGS; i++) {
+      const prevEgg = this._prevState.eggs[i];
+      if (prevEgg && prevEgg.active && !currentEggs[i]) {
+        if (prevEgg.hitLava) {
+          this._audioManager.playSfx('egg-lava');
+        } else if (prevEgg.hatchState === HATCH_WOBBLING) {
+          this._audioManager.playSfx('egg-hatch');
+        } else if (!prevEgg.onPlatform) {
+          this._audioManager.playSfx('egg-catch-air');
+        } else {
+          this._audioManager.playSfx('egg-collect');
+        }
+      }
+    }
+
+    // Check for new eggs and state changes
+    for (const egg of eggs) {
+      const prevEgg = this._prevState.eggs[egg.slotIndex];
+
+      // New egg appeared
+      if (!prevEgg) {
+        this._audioManager.playSfx('egg-drop');
+        continue;
+      }
+
+      // Bounce count increased
+      if (egg.bounceCount > prevEgg.bounceCount) {
+        this._audioManager.playSfx('egg-bounce', 2);
+      }
+
+      // Started wobbling
+      if (egg.hatchState === HATCH_WOBBLING && prevEgg.hatchState !== HATCH_WOBBLING) {
+        this._audioManager.playSfx('egg-wobble');
+      }
+    }
+  }
+
+  _syncProgressionSounds(gameState) {
+    // Wave number changed
+    if (gameState.waveNumber !== this._prevState.waveNumber) {
+      this._audioManager.playSfx('wave-start');
+    }
+
+    // Wave completed (PLAYING -> TRANSITION)
+    if (gameState.waveState === WAVE_TRANSITION && this._prevState.waveState === WAVE_PLAYING) {
+      this._audioManager.playSfx('wave-complete');
+      // Survival bonus for local player
+      const localPlayer = gameState.humans[this._localPlayerSlot];
+      if (localPlayer && localPlayer.active && !localPlayer.dead) {
+        this._audioManager.playSfx('survival-bonus');
+      }
+    }
+
+    // Game over
+    if (gameState.gameOver && !this._prevState.gameOver) {
+      this._audioManager.playSfx('game-over');
+    }
+  }
+
   /**
    * Drive materialization visual from authoritative game state timer.
    * Does not advance the timer — reads directly from charState.
@@ -550,6 +747,7 @@ export class Level1Scene {
   }
 
   dispose() {
+    this._audioManager?.stopLavaAmbient();
     if (this._escapeKeyHandler) {
       window.removeEventListener('keydown', this._escapeKeyHandler);
       this._escapeKeyHandler = null;
@@ -761,6 +959,7 @@ export class Level1Scene {
   }
 
   _spawnLavaBurst() {
+    this._audioManager?.playSfx('lava-burst', 2);
     const tex = new DynamicTexture('lavaBurstTex', 64, this.scene, false);
     const ctx = tex.getContext();
     ctx.clearRect(0, 0, 64, 64);
@@ -1125,6 +1324,8 @@ export class Level1Scene {
         this._syncHUD(state);
         // Sync banners
         this._syncBanners(state);
+        // Sync sounds
+        this._syncSounds(state);
         // Save state for next-frame diffing
         this._prevState = this._snapshotState(state);
       }

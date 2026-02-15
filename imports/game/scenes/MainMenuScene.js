@@ -477,6 +477,7 @@ export class MainMenuScene {
     // Hub button
     const hubBtn = this._createMenuButton('Hub', false);
     hubBtn.onPointerClickObservable.add(() => {
+      this._audioManager.playSfx('ui-select');
       const hubUrl = Meteor.settings.public?.hubUrl;
       if (hubUrl) {
         window.location.href = hubUrl;
@@ -487,6 +488,7 @@ export class MainMenuScene {
     // Team Play — opens mode select
     const teamBtn = this._createMenuButton('Team Play', false);
     teamBtn.onPointerClickObservable.add(() => {
+      this._audioManager.playSfx('ui-select');
       this._selectedMode = 'team';
       this._showModeSelect();
     });
@@ -495,6 +497,7 @@ export class MainMenuScene {
     // PvP Arena — opens mode select
     const pvpBtn = this._createMenuButton('PvP Arena', false);
     pvpBtn.onPointerClickObservable.add(() => {
+      this._audioManager.playSfx('ui-select');
       this._selectedMode = 'pvp';
       this._showModeSelect();
     });
@@ -503,6 +506,7 @@ export class MainMenuScene {
     // High Scores
     const scoresBtn = this._createMenuButton('High Scores', false);
     scoresBtn.onPointerClickObservable.add(() => {
+      this._audioManager.playSfx('ui-select');
       this._showHighScores();
     });
     panel.addControl(scoresBtn);
@@ -535,6 +539,7 @@ export class MainMenuScene {
     // Back button
     const backBtn = this._createMenuButton('Back', false);
     backBtn.onPointerClickObservable.add(() => {
+      this._audioManager.playSfx('ui-cancel');
       this._showMainMenu();
     });
     panel.addControl(backBtn);
@@ -602,6 +607,7 @@ export class MainMenuScene {
     // Play button — enabled, triggers scene transition
     const playBtn = this._createMenuButton('Play', false);
     playBtn.onPointerClickObservable.add(() => {
+      this._audioManager.playSfx('ui-select');
       if (this._onPlay) {
         this._onPlay(this._paletteIndex, this._selectedMode);
       }
@@ -710,11 +716,12 @@ export class MainMenuScene {
     }
 
     // Back button
-    const backBtn = this._createMenuButton('Back', false);
-    backBtn.onPointerClickObservable.add(() => {
+    const scoresBackBtn = this._createMenuButton('Back', false);
+    scoresBackBtn.onPointerClickObservable.add(() => {
+      this._audioManager.playSfx('ui-cancel');
       this._showMainMenu();
     });
-    panel.addControl(backBtn);
+    panel.addControl(scoresBackBtn);
   }
 
   _updateHighScoresDisplay(scores) {
@@ -777,6 +784,7 @@ export class MainMenuScene {
       btn.onPointerEnterObservable.add(() => {
         btn.background = '#3A3530';
         btn.color = '#FFF176';
+        this._audioManager.playSfx('ui-hover');
       });
       btn.onPointerOutObservable.add(() => {
         btn.background = '#2A2520';
@@ -805,10 +813,14 @@ export class MainMenuScene {
     btn.onPointerEnterObservable.add(() => {
       btn.background = '#3A3530';
       btn.color = '#FFF176';
+      this._audioManager.playSfx('ui-hover');
     });
     btn.onPointerOutObservable.add(() => {
       btn.background = '#2A2520';
       btn.color = '#FFD740';
+    });
+    btn.onPointerClickObservable.add(() => {
+      this._audioManager.playSfx('ui-select');
     });
 
     return btn;
