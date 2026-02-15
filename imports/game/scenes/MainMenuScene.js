@@ -97,6 +97,13 @@ export class MainMenuScene {
     this._createCharacters();
     this._createMenuButtons();
 
+    // Lava ambient + burst SFX
+    if (this._audioManager) {
+      this._audioManager.loadGameSfx().then(() => {
+        this._audioManager?.startLavaAmbient();
+      });
+    }
+
     // Animation callback
     this.scene.onBeforeRenderObservable.add(() => {
       const dt = this.engine.getDeltaTime() / 1000;
@@ -109,6 +116,7 @@ export class MainMenuScene {
    * Does NOT dispose Engine, audio, or the Scene itself — BabylonPage handles that.
    */
   dispose() {
+    this._audioManager?.stopLavaAmbient();
     if (this._highScoresSub) {
       this._highScoresSub.stop();
       this._highScoresSub = null;
@@ -214,6 +222,8 @@ export class MainMenuScene {
    * Spawn a single lava burst at a random position on the lava surface.
    */
   _spawnLavaBurst() {
+    this._audioManager?.playSfx('lava-burst', 2);
+
     // Create a fresh particle texture per burst (shared textures get
     // invalidated when disposeOnStop disposes the particle system)
     const tex = new DynamicTexture('lavaBurstTex', 64, this.scene, false);
