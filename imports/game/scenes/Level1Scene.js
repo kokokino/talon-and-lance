@@ -126,6 +126,8 @@ export class Level1Scene {
 
     // Stride sound cooldown (ms timestamp of last play)
     this._lastStrideTime = 0;
+    // Edge bump sound cooldown (ms timestamp of last play)
+    this._lastEdgeBumpTime = 0;
 
     // Per-slot render data: mesh refs + visual-only animation state
     // Indices 0-3 = humans, 4-11 = enemies
@@ -633,9 +635,13 @@ export class Level1Scene {
       this._audioManager.playSfx('joust-bounce', 2);
     }
 
-    // Edge bump (platform side collision)
+    // Edge bump (platform side collision, with cooldown to prevent overlap)
     if (char.edgeBumpCount > prev.edgeBumpCount) {
-      this._audioManager.playSfx('edge-bump');
+      const now = performance.now();
+      if (now - this._lastEdgeBumpTime >= 300) {
+        this._audioManager.playSfx('edge-bump');
+        this._lastEdgeBumpTime = now;
+      }
     }
 
     // Invincibility end (humans only)
