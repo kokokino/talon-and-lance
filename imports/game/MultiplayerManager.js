@@ -57,6 +57,7 @@ export class MultiplayerManager {
     this._lastResyncReceivedTime = 0;
     this._resyncAuthority = 0; // lowest active slot is the resync authority
     this._waitingForSync = false;
+    this._isJoining = false; // true when joining existing room; cleared after first peer connect
     this._joinTimeoutId = null;
     this._joiningOverlay = null;
     this._heartbeatInterval = null;
@@ -83,6 +84,7 @@ export class MultiplayerManager {
     // If joining an existing room, show overlay and defer rendering until STATE_SYNC
     if (!result.isNewRoom) {
       this._waitingForSync = true;
+      this._isJoining = true;
       this._showJoiningOverlay();
       this._joinTimeoutId = setTimeout(() => {
         this._hideJoiningOverlay();
@@ -367,7 +369,11 @@ export class MultiplayerManager {
     // This prevents multiple peers from independently activating the same joiner
     // at different simulation frames (which would diverge RNG state).
     // The joiner waits to receive STATE_SYNC before transitioning to multiplayer.
-    if (this._playerSlot === this._resyncAuthority) {
+    // _isJoining is checked instead of _waitingForSync to avoid a race condition:
+    // if STATE_SYNC and peer-connected arrive in the same animation frame,
+    // drainMessages() clears _waitingForSync before drainPeerEvents() runs.
+    // _isJoining is only cleared HERE, after the check, so it's race-free.
+    if (this._playerSlot === this._resyncAuthority && !this._isJoining) {
       // Host: activate the joiner in the simulation, send state, start rollback
       const room = GameRooms.findOne(this._roomId);
       const playerData = room?.players.find(p => p.peerJsId === peerId);
@@ -393,6 +399,12 @@ export class MultiplayerManager {
         this._session.resetToFrame(frame);
         this._seedRecentLocalInputs(frame);
       }
+    }
+
+    // Clear joiner flag after first peer connection so this client can act as
+    // authority for future joins (e.g., a third player joining later).
+    if (this._isJoining) {
+      this._isJoining = false;
     }
     // Non-authority peers: STATE_SYNC handler will update state
   }
