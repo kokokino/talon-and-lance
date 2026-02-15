@@ -245,7 +245,7 @@ export class Level1Scene {
     }
 
     // Sync eggs
-    this._syncEggs(gameState.eggs, dt);
+    this._syncEggs(gameState.eggs, gameState.humans, dt);
 
     // Sync HUD
     this._syncHUD(gameState);
@@ -277,6 +277,7 @@ export class Level1Scene {
       hitLava: h.hitLava,
       score: h.score,
       lives: h.lives,
+      eggsCollectedThisWave: h.eggsCollectedThisWave,
       bounceCount: h.bounceCount,
       edgeBumpCount: h.edgeBumpCount,
       strideStep: Math.floor(h.stridePhase),
@@ -464,11 +465,23 @@ export class Level1Scene {
   /**
    * Sync eggs from game state to egg render slots.
    */
-  _syncEggs(eggs, dt) {
+  _syncEggs(eggs, humans, dt) {
     // Build a set of active egg slot indices this frame
     const activeSlots = new Set();
     for (const egg of eggs) {
       activeSlots.add(egg.slotIndex);
+    }
+
+    // Determine which human collected an egg this frame (if any)
+    let collectorSlotIndex = -1;
+    if (this._prevState) {
+      for (let h = 0; h < humans.length; h++) {
+        const prev = this._prevState.humans[h];
+        if (prev && humans[h].eggsCollectedThisWave > prev.eggsCollectedThisWave) {
+          collectorSlotIndex = h;
+          break;
+        }
+      }
     }
 
     // Check for eggs that disappeared since last frame
@@ -482,7 +495,7 @@ export class Level1Scene {
           // Not lava, not hatching — egg was collected
           if (eggSlot.rig && eggSlot.rig.root) {
             const pos = eggSlot.rig.root.position;
-            this._spawnEggCollectEffect(pos.x, pos.y);
+            this._spawnEggCollectEffect(pos.x, pos.y, collectorSlotIndex);
           }
         }
         if (eggSlot.rig) {
@@ -1196,7 +1209,7 @@ export class Level1Scene {
     return closest;
   }
 
-  _spawnEggCollectEffect(x, y) {
+  _spawnEggCollectEffect(x, y, collectorSlotIndex) {
     // Part A — Gold sparkle particles
     const tex = new DynamicTexture('eggCollectTex', 64, this.scene, false);
     const ctx = tex.getContext();
@@ -1236,8 +1249,10 @@ export class Level1Scene {
     ps.disposeOnStop = true;
     ps.start();
 
-    // Part B — Golden glow on closest human player
-    const slot = this._findClosestHumanSlot(x, y);
+    // Part B — Golden glow on the human who actually collected the egg
+    const slot = collectorSlotIndex >= 0
+      ? this._renderSlots[collectorSlotIndex]
+      : this._findClosestHumanSlot(x, y);
     if (!slot) {
       return;
     }
@@ -1539,7 +1554,7 @@ export class Level1Scene {
           this._syncCharSlot(enemy, 'enemy', dt);
         }
         // Sync eggs
-        this._syncEggs(state.eggs, dt);
+        this._syncEggs(state.eggs, state.humans, dt);
         // Sync HUD
         this._syncHUD(state);
         // Sync banners
