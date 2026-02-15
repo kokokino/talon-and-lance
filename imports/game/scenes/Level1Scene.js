@@ -446,6 +446,7 @@ export class Level1Scene {
       lanceRig: slot.lanceRig,
       wingMode: charState.wingMode,
       enemyType: charState.enemyType,
+      paletteIndex: charState.paletteIndex,
     };
 
     const charIdx = type === 'human' ? 0 : 1;
@@ -2009,7 +2010,7 @@ export class Level1Scene {
     let knightModelDef;
     if (charIdx === 0) {
       knightModelDef = knightModel;
-      knightPalette = buildKnightPalette(this._paletteIndex);
+      knightPalette = buildKnightPalette(char.paletteIndex);
     } else {
       knightModelDef = evilKnightModel;
       const paletteIdx = char.enemyType !== undefined ? char.enemyType : ENEMY_TYPE_BOUNDER;
