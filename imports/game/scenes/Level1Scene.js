@@ -123,6 +123,9 @@ export class Level1Scene {
     this._prevState = null;
     this._localPlayerSlot = 0;
 
+    // Stride sound cooldown (ms timestamp of last play)
+    this._lastStrideTime = 0;
+
     // Per-slot render data: mesh refs + visual-only animation state
     // Indices 0-3 = humans, 4-11 = enemies
     this._renderSlots = [];
@@ -632,10 +635,14 @@ export class Level1Scene {
       this._audioManager.playSfx('invincible-end');
     }
 
-    // Stride footstep (humans only)
+    // Stride footstep (humans only, with cooldown to prevent overlap)
     if (type === 'human' && char.playerState === 'GROUNDED' &&
         char.strideStep !== prev.strideStep && Math.abs(char.velocityX) > 0.5) {
-      this._audioManager.playSfx('stride', 3);
+      const now = performance.now();
+      if (now - this._lastStrideTime >= 300) {
+        this._audioManager.playSfx('stride', 3);
+        this._lastStrideTime = now;
+      }
     }
 
     // Extra life (humans only)
