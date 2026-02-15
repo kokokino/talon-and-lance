@@ -139,7 +139,7 @@ export class Level1Scene {
     // Per-egg-slot render data
     this._eggRenderSlots = [];
     for (let i = 0; i < 8; i++) {
-      this._eggRenderSlots.push({ rig: null, prevActive: false, prevHitLava: false });
+      this._eggRenderSlots.push({ rig: null, prevActive: false, prevHitLava: false, prevOnPlatform: false, prevHatchState: 0 });
     }
   }
 
@@ -470,6 +470,12 @@ export class Level1Scene {
         // Egg was removed
         if (eggSlot.prevHitLava) {
           this._spawnLavaBurst();
+        } else if (eggSlot.prevHatchState !== HATCH_WOBBLING) {
+          // Not lava, not hatching — egg was collected
+          if (eggSlot.rig && eggSlot.rig.root) {
+            const pos = eggSlot.rig.root.position;
+            this._spawnEggCollectEffect(pos.x, pos.y);
+          }
         }
         if (eggSlot.rig) {
           this._disposeEggRig(eggSlot.rig);
@@ -477,6 +483,8 @@ export class Level1Scene {
         }
         eggSlot.prevActive = false;
         eggSlot.prevHitLava = false;
+        eggSlot.prevOnPlatform = false;
+        eggSlot.prevHatchState = 0;
       }
     }
 
@@ -509,6 +517,8 @@ export class Level1Scene {
 
       eggSlot.prevActive = true;
       eggSlot.prevHitLava = egg.hitLava || false;
+      eggSlot.prevOnPlatform = egg.onPlatform || false;
+      eggSlot.prevHatchState = egg.hatchState || 0;
     }
   }
 
@@ -1138,6 +1148,125 @@ export class Level1Scene {
         }
       }
     }
+  }
+
+  _setSlotEmissive(slot, color) {
+    const rigs = [slot.birdRig, slot.knightRig, slot.lanceRig];
+    for (const rig of rigs) {
+      if (!rig) {
+        continue;
+      }
+      for (const part of Object.values(rig.parts)) {
+        if (part.mesh && part.mesh.material) {
+          part.mesh.material.emissiveColor = color;
+        }
+      }
+    }
+  }
+
+  _findClosestHumanSlot(eggX, eggY) {
+    let closest = null;
+    let closestDist = Infinity;
+    for (let i = 0; i < MAX_HUMANS; i++) {
+      const slot = this._renderSlots[i];
+      if (!slot.birdRig || !slot.birdRig.root) {
+        continue;
+      }
+      const pos = slot.birdRig.root.position;
+      const dx = pos.x - eggX;
+      const dy = pos.y - eggY;
+      const dist = dx * dx + dy * dy;
+      if (dist < closestDist) {
+        closestDist = dist;
+        closest = slot;
+      }
+    }
+    return closest;
+  }
+
+  _spawnEggCollectEffect(x, y) {
+    // Part A — Gold sparkle particles
+    const tex = new DynamicTexture('eggCollectTex', 64, this.scene, false);
+    const ctx = tex.getContext();
+    ctx.clearRect(0, 0, 64, 64);
+    const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gradient.addColorStop(0, 'rgba(255, 255, 200, 1)');
+    gradient.addColorStop(0.3, 'rgba(255, 215, 0, 0.9)');
+    gradient.addColorStop(1, 'rgba(255, 180, 0, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 64, 64);
+    tex.update(false);
+    tex.hasAlpha = true;
+
+    const ps = new ParticleSystem('eggCollect', 25, this.scene);
+    ps.particleTexture = tex;
+    ps.emitter = new Vector3(x, y, 0.4);
+
+    ps.direction1 = new Vector3(-0.8, 1.5, 0);
+    ps.direction2 = new Vector3(0.8, 3.0, 0);
+    ps.gravity = new Vector3(0, -2, 0);
+
+    ps.minSize = 0.04;
+    ps.maxSize = 0.12;
+    ps.minLifeTime = 0.2;
+    ps.maxLifeTime = 0.5;
+
+    ps.emitRate = 80;
+    ps.manualEmitCount = 25;
+
+    ps.color1 = new Color4(1.0, 1.0, 0.7, 1);
+    ps.color2 = new Color4(1.0, 0.85, 0.2, 1);
+    ps.colorDead = new Color4(1.0, 0.7, 0.0, 0);
+
+    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
+
+    ps.targetStopDuration = 0.3;
+    ps.disposeOnStop = true;
+    ps.start();
+
+    // Part B — Golden glow on closest human player
+    const slot = this._findClosestHumanSlot(x, y);
+    if (!slot) {
+      return;
+    }
+
+    // Capture original emissive colors
+    const originals = [];
+    const rigs = [slot.birdRig, slot.knightRig, slot.lanceRig];
+    for (const rig of rigs) {
+      if (!rig) {
+        continue;
+      }
+      for (const part of Object.values(rig.parts)) {
+        if (part.mesh && part.mesh.material) {
+          originals.push({
+            material: part.mesh.material,
+            color: part.mesh.material.emissiveColor.clone(),
+          });
+        }
+      }
+    }
+
+    // Apply golden tint
+    this._setSlotEmissive(slot, new Color3(1.0, 0.85, 0.3));
+
+    // Lerp back to original over 0.8s
+    const duration = 0.8;
+    let elapsed = 0;
+    const observer = this.scene.onBeforeRenderObservable.add(() => {
+      elapsed += this.scene.getEngine().getDeltaTime() / 1000;
+      const t = Math.min(elapsed / duration, 1.0);
+      for (const entry of originals) {
+        entry.material.emissiveColor = Color3.Lerp(
+          new Color3(1.0, 0.85, 0.3),
+          entry.color,
+          t
+        );
+      }
+      if (t >= 1.0) {
+        this.scene.onBeforeRenderObservable.remove(observer);
+      }
+    });
   }
 
   // ---- Character assembly ----
