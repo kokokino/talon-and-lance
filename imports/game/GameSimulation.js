@@ -584,11 +584,12 @@ export class GameSimulation {
     for (let i = 0; i < spawnCount; i++) {
       const enemyType = this._spawnQueue.shift();
       const sp = shuffledSpawns[i % shuffledSpawns.length];
-      this._spawnEnemy(enemyType, sp.x, sp.y);
+      const platform = this._platforms.find(p => p.id === sp.platformId);
+      this._spawnEnemy(enemyType, sp.x, platform);
     }
   }
 
-  _spawnEnemy(enemyType, x, y) {
+  _spawnEnemy(enemyType, x, platform) {
     // Find free enemy slot
     let slotIdx = -1;
     for (let i = 0; i < MAX_ENEMIES; i++) {
@@ -604,12 +605,12 @@ export class GameSimulation {
     const char = this._chars[MAX_HUMANS + slotIdx];
     char.active = true;
     char.positionX = x;
-    char.positionY = y;
+    char.positionY = platform.top + FP_FEET_OFFSET;
     char.velocityX = 0;
     char.velocityY = 0;
-    char.playerState = 'AIRBORNE';
-    char.currentPlatform = null;
-    char.platformIndex = -1;
+    char.playerState = 'GROUNDED';
+    char.currentPlatform = platform;
+    char.platformIndex = this._platforms.indexOf(platform);
     char.facingDir = 1;
     char.isTurning = false;
     char.turnTimer = 0;
@@ -626,8 +627,8 @@ export class GameSimulation {
     char.isFlapping = false;
     char.flapTimer = 0;
     char.stridePhase = 0;
-    char.prevPositionX = x;
-    char.prevPositionY = y;
+    char.prevPositionX = char.positionX;
+    char.prevPositionY = char.positionY;
     char.hitLava = false;
     char.bounceCount = 0;
     char.edgeBumpCount = 0;

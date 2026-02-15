@@ -85,10 +85,10 @@ export const SPAWN_POINTS = [
 
 // ---- Enemy spawn points ----
 export const ENEMY_SPAWN_POINTS = [
-  { x: -8.0, y: 1.1 },   // top-left (above midUpL)
-  { x: 8.0, y: 1.1 },    // top-right (above midUpR)
-  { x: -5.0, y: -1.2 },  // mid-left (above midLowL)
-  { x: 5.0, y: -1.2 },   // mid-right (above midLowR)
+  { x: -8.0, platformId: 'midUpL' },   // top-left
+  { x:  8.0, platformId: 'midUpR' },   // top-right
+  { x: -5.0, platformId: 'midLowL' },  // mid-left
+  { x:  5.0, platformId: 'midLowR' },  // mid-right
 ];
 
 // ---- Game modes ----
@@ -197,5 +197,5 @@ export const SPAWN_POINTS_FP = SPAWN_POINTS.map(sp => ({
 /** Enemy spawn points in FP */
 export const ENEMY_SPAWN_POINTS_FP = ENEMY_SPAWN_POINTS.map(sp => ({
   x: toFP(sp.x),
-  y: toFP(sp.y),
+  platformId: sp.platformId,
 }));
