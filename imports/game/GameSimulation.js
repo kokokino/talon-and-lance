@@ -25,6 +25,7 @@ import {
   checkPlatformCollisions, resolveJoust, applyBounce, applyKillToWinner,
   checkLavaKill, applyScreenWrap,
 } from './physics/CollisionSystem.js';
+import { DISCONNECT_BIT } from '../netcode/InputEncoder.js';
 import { applyInput, applyIdle, applyFriction, applyGravity } from './physics/PhysicsSystem.js';
 import {
   STARTING_LIVES, EXTRA_LIFE_THRESHOLD,
@@ -201,6 +202,12 @@ export class GameSimulation {
     for (let i = 0; i < this._chars.length; i++) {
       const char = this._chars[i];
       if (!char.active) {
+        continue;
+      }
+
+      // Disconnect bit: deactivate player deterministically inside the tick loop
+      if (i < MAX_HUMANS && (inputs[i] & DISCONNECT_BIT)) {
+        char.active = false;
         continue;
       }
 

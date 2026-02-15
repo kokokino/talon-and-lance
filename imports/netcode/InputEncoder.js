@@ -17,6 +17,7 @@ export const MessageType = {
 const INPUT_LEFT = 0x01;
 const INPUT_RIGHT = 0x02;
 const INPUT_FLAP = 0x04;
+export const DISCONNECT_BIT = 0x08;
 
 export class InputEncoder {
   // Encode a game input object { left, right, flap } into a single byte

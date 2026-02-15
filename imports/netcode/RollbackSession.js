@@ -34,6 +34,7 @@ export class RollbackSession {
     this.inputDelay = inputDelay;
     this.disconnectTimeout = disconnectTimeout;
     this.autoInputSlots = autoInputSlots; // Set of slot indices that always return input=0
+    this.disconnectedSlots = new Set(); // Set of slot indices that receive DISCONNECT_BIT (0x08)
 
     // Per-player input queues (confirmedFrame starts at startFrame-1 so
     // prediction gap begins at 0 for drop-in sessions that start mid-game)
@@ -283,7 +284,9 @@ export class RollbackSession {
   _gatherInputs(frame) {
     const inputs = new Array(this.numPlayers);
     for (let i = 0; i < this.numPlayers; i++) {
-      if (this.autoInputSlots.has(i)) {
+      if (this.disconnectedSlots.has(i)) {
+        inputs[i] = 0x08; // DISCONNECT_BIT — deactivates character inside tick()
+      } else if (this.autoInputSlots.has(i)) {
         inputs[i] = 0; // auto-input slots always return 0 (no input)
       } else {
         const result = this.inputQueues[i].getInput(frame);

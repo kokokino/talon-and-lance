@@ -286,11 +286,15 @@ export class MultiplayerManager {
 
     console.log('[MultiplayerManager] Peer disconnected:', peerId, 'slot:', playerSlot);
 
-    // Deactivate player in simulation
-    this._simulation.deactivatePlayer(playerSlot);
+    // Do NOT call deactivatePlayer() directly — it mutates game state outside
+    // the rollback flow. Instead, mark the slot as disconnected so that
+    // _gatherInputs() feeds DISCONNECT_BIT (0x08) as input. GameSimulation.tick()
+    // sees the bit and sets char.active = false deterministically inside the
+    // tick loop, which survives rollback/resimulation.
 
-    // Mark slot as auto-input in session and clear stale checksums
+    // Mark slot as disconnected + auto-input in session and clear stale checksums
     if (this._session) {
+      this._session.disconnectedSlots.add(playerSlot);
       this._session.autoInputSlots.add(playerSlot);
 
       for (const [frame, peerChecksums] of this._session.remoteChecksums) {

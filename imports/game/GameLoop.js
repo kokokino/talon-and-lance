@@ -119,11 +119,15 @@ export class GameLoop {
 
     // Fixed timestep: up to MAX_TICKS_PER_FRAME ticks per render frame.
     // Remainder stays in accumulator for next render frame (catch-up).
-    let ticksThisFrame = 0;
-    while (this.accumulator >= TICK_MS && ticksThisFrame < MAX_TICKS_PER_FRAME) {
-      this._tick();
-      this.accumulator -= TICK_MS;
-      ticksThisFrame++;
+    try {
+      let ticksThisFrame = 0;
+      while (this.accumulator >= TICK_MS && ticksThisFrame < MAX_TICKS_PER_FRAME) {
+        this._tick();
+        this.accumulator -= TICK_MS;
+        ticksThisFrame++;
+      }
+    } catch (err) {
+      console.error('[GameLoop] Tick error:', err);
     }
 
     // Render current state (outside fixed timestep, at display refresh rate)
