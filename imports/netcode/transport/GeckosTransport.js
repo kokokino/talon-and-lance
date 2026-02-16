@@ -19,6 +19,7 @@ export class GeckosTransport extends Transport {
     this.lastHeartbeat = new Map(); // peerId -> timestamp
     this.heartbeatInterval = null;
     this.serverUrl = null;
+    this.simulatedLatencyMs = 0; // artificial one-way latency for testing
   }
 
   // Connect to the geckos.io server relay
@@ -72,7 +73,12 @@ export class GeckosTransport extends Transport {
         this.lastHeartbeat.set(senderPeerId, Date.now());
 
         if (this.receiveCallback) {
-          this.receiveCallback(senderPeerId, payload);
+          if (this.simulatedLatencyMs > 0) {
+            const delay = this.simulatedLatencyMs / 2;
+            setTimeout(() => this.receiveCallback(senderPeerId, payload), delay);
+          } else {
+            this.receiveCallback(senderPeerId, payload);
+          }
         }
       });
 
@@ -95,7 +101,12 @@ export class GeckosTransport extends Transport {
     messageView.set(peerIdBytes, 0);
     messageView.set(new Uint8Array(data), PEER_ID_LENGTH);
 
-    this.channel.raw.emit(message);
+    if (this.simulatedLatencyMs > 0) {
+      const delay = this.simulatedLatencyMs / 2;
+      setTimeout(() => this.channel.raw.emit(message), delay);
+    } else {
+      this.channel.raw.emit(message);
+    }
   }
 
   onReceive(callback) {

@@ -44,10 +44,16 @@ export class TransportManager {
 
   // Initialize the transport manager
   // Returns the local PeerJS ID for sharing with other players
-  async initialize(serverUrl, roomId, userId) {
+  async initialize(serverUrl, roomId, userId, options = {}) {
     this.serverUrl = serverUrl;
     this.roomId = roomId;
     this.userId = userId;
+
+    // Apply simulated latency to transports if specified
+    if (options.simulatedLatencyMs > 0) {
+      this.p2pTransport.simulatedLatencyMs = options.simulatedLatencyMs;
+    }
+    this._simulatedLatencyMs = options.simulatedLatencyMs || 0;
 
     const localPeerId = await this.p2pTransport.initialize();
     return localPeerId;
@@ -203,6 +209,9 @@ export class TransportManager {
     // Initialize relay transport if not yet done
     if (!this.relayTransport) {
       this.relayTransport = new GeckosTransport();
+      if (this._simulatedLatencyMs > 0) {
+        this.relayTransport.simulatedLatencyMs = this._simulatedLatencyMs;
+      }
 
       try {
         await this.relayTransport.initialize(this.serverUrl, this.roomId, this.userId);

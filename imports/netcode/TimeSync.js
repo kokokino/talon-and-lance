@@ -66,13 +66,14 @@ export class TimeSync {
   getRecommendedInputDelay(peerIndex) {
     const rttMs = this.roundTripTimes[peerIndex];
     const oneWayFrames = Math.ceil((rttMs / 2) / (1000 / 60));
-    return Math.max(1, Math.min(oneWayFrames, 8)); // clamp 1-8
+    return Math.max(1, Math.min(oneWayFrames, 15)); // clamp 1-15
   }
 
   // Check if we should wait (skip frames) to let remote peers catch up
   // Returns number of frames to wait, or 0 if no wait needed
   recommendFrameWait() {
     let maxAdvantage = 0;
+    let maxAllowedAdvantage = 2; // default for low latency
 
     for (let i = 0; i < this.numPlayers; i++) {
       if (i === this.localPlayerIndex) {
@@ -87,11 +88,16 @@ export class TimeSync {
       if (advantage > maxAdvantage) {
         maxAdvantage = advantage;
       }
+
+      // Scale threshold based on measured RTT for this peer
+      const recommendedDelay = this.getRecommendedInputDelay(i);
+      if (recommendedDelay > maxAllowedAdvantage) {
+        maxAllowedAdvantage = recommendedDelay;
+      }
     }
 
-    // If we're more than 2 frames ahead of any peer on average, recommend waiting
-    if (maxAdvantage > 2) {
-      return Math.min(maxAdvantage - 1, 4); // don't wait too long
+    if (maxAdvantage > maxAllowedAdvantage) {
+      return Math.min(maxAdvantage - maxAllowedAdvantage, 4);
     }
 
     return 0;

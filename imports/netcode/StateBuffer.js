@@ -1,7 +1,7 @@
 // Ring buffer of game state snapshots for rollback
 // Stores serialized game states as ArrayBuffers for fast copy/restore
 
-const BUFFER_SIZE = 32;
+const BUFFER_SIZE = 64;
 
 export class StateBuffer {
   constructor() {

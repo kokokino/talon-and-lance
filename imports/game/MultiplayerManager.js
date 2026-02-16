@@ -61,6 +61,10 @@ export class MultiplayerManager {
     this._beforeUnloadHandler = null;
     this._visibilityHandler = null;
     this._destroyed = false;
+
+    // Quality report protocol for RTT measurement
+    this._qualityCounter = 0;
+    this._qualitySentTimes = new Map(); // peerId -> Date.now() when last report sent
   }
 
   /**
@@ -142,7 +146,11 @@ export class MultiplayerManager {
     // 5. Initialize transport and register PeerJS ID
     this._transport = new TransportManager();
     const serverUrl = Meteor.absoluteUrl();
-    const localPeerId = await this._transport.initialize(serverUrl, this._roomId, Meteor.userId());
+    const simulatedLatencyMs = parseInt(new URL(window.location.href).searchParams.get('latency') || '0', 10) || 0;
+    if (simulatedLatencyMs > 0) {
+      console.log('[MultiplayerManager] Simulated latency:', simulatedLatencyMs, 'ms RTT');
+    }
+    const localPeerId = await this._transport.initialize(serverUrl, this._roomId, Meteor.userId(), { simulatedLatencyMs });
     await Meteor.callAsync('rooms.setPeerJsId', this._roomId, localPeerId);
 
     // Set up message handler
@@ -653,6 +661,26 @@ export class MultiplayerManager {
               this._session.peerLastRecvTime[peerSlot] = Date.now();
             }
           }
+        } else if (msgType === MessageType.QUALITY_REPORT) {
+          const msg = InputEncoder.decode(buffer);
+          const peerSlot = this._connectedPeers.get(peerId);
+          if (peerSlot !== undefined && this._session) {
+            // Record remote peer's frame advantage vs us
+            this._session.timeSync.updateRemoteAdvantage(peerSlot, msg.frameAdvantage);
+            // Send reply so the sender can measure RTT
+            const reply = InputEncoder.encodeQualityReply(msg.ping);
+            this._transport.send(peerId, reply);
+          }
+        } else if (msgType === MessageType.QUALITY_REPLY) {
+          const sentTime = this._qualitySentTimes.get(peerId);
+          if (sentTime) {
+            const rtt = Date.now() - sentTime;
+            const peerSlot = this._connectedPeers.get(peerId);
+            if (peerSlot !== undefined && this._session) {
+              this._session.timeSync.updateRoundTripTime(peerSlot, rtt);
+            }
+            this._qualitySentTimes.delete(peerId);
+          }
         } else if (msgType === MessageType.RESYNC_REQUEST) {
           // A peer's STATE_SYNC was too stale — send them a fresh one
           if (this._playerSlot === this._resyncAuthority && this._transport) {
@@ -666,6 +694,23 @@ export class MultiplayerManager {
       } catch (err) {
         console.warn('[MultiplayerManager] Bad message from', peerId, ':', err);
       }
+    }
+
+    // Periodically send quality reports for RTT measurement (~3 times per second)
+    this._qualityCounter++;
+    if (this._qualityCounter >= 20 && this._session && this._transport) {
+      this._qualityCounter = 0;
+      this._sendQualityReports();
+    }
+  }
+
+  _sendQualityReports() {
+    const now = Date.now();
+    for (const [peerId, slot] of this._connectedPeers) {
+      const report = this._session.timeSync.buildQualityReport(slot);
+      const msg = InputEncoder.encodeQualityReport(report.frame, report.ping, report.frameAdvantage);
+      this._transport.send(peerId, msg);
+      this._qualitySentTimes.set(peerId, now);
     }
   }
 

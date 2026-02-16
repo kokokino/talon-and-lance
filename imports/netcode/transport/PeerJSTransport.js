@@ -19,6 +19,7 @@ export class PeerJSTransport extends Transport {
     this.lastHeartbeat = new Map(); // peerId -> timestamp
     this.heartbeatInterval = null;
     this.localPeerId = null;
+    this.simulatedLatencyMs = 0; // artificial one-way latency for testing
   }
 
   // Initialize PeerJS with a specific ID (or let it auto-generate)
@@ -56,7 +57,12 @@ export class PeerJSTransport extends Transport {
   send(peerId, data) {
     const connection = this.connections.get(peerId);
     if (connection && connection.open) {
-      connection.send(data);
+      if (this.simulatedLatencyMs > 0) {
+        const delay = this.simulatedLatencyMs / 2;
+        setTimeout(() => connection.send(data), delay);
+      } else {
+        connection.send(data);
+      }
     }
   }
 
@@ -167,7 +173,12 @@ export class PeerJSTransport extends Transport {
       this.lastHeartbeat.set(peerId, Date.now());
 
       if (this.receiveCallback && data instanceof ArrayBuffer) {
-        this.receiveCallback(peerId, data);
+        if (this.simulatedLatencyMs > 0) {
+          const delay = this.simulatedLatencyMs / 2;
+          setTimeout(() => this.receiveCallback(peerId, data), delay);
+        } else {
+          this.receiveCallback(peerId, data);
+        }
       }
     });
 

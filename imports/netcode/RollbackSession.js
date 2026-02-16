@@ -11,7 +11,7 @@ import { InputQueue } from './InputQueue.js';
 import { StateBuffer } from './StateBuffer.js';
 import { TimeSync } from './TimeSync.js';
 
-const DEFAULT_MAX_PREDICTION = 8;
+const DEFAULT_MAX_PREDICTION = 30;
 const DEFAULT_INPUT_DELAY = 2;
 const DEFAULT_DISCONNECT_TIMEOUT = 5000;
 const CHECKSUM_INTERVAL = 60; // frames between checksum exchanges
@@ -82,6 +82,7 @@ export class RollbackSession {
 
     // Checksum tracking for desync detection
     this.lastChecksumFrame = -1;
+    this._pendingChecksumFrame = -1; // deferred until syncFrame catches up
     this.remoteChecksums = new Map(); // frame -> { peerIndex -> checksum }
     this.checksumSuppressUntilFrame = -1;
   }
@@ -94,6 +95,13 @@ export class RollbackSession {
   // Called when a remote input arrives from the transport layer
   addRemoteInput(peerIndex, frame, input) {
     if (peerIndex === this.localPlayerIndex) {
+      return;
+    }
+
+    // Ignore stale inputs too old to rollback (e.g., arriving after a resync).
+    // Without this, ancient frames trigger impossible rollbacks and
+    // "all snapshots evicted" warnings.
+    if (frame < this.currentFrame - this.maxPredictionWindow) {
       return;
     }
 
@@ -254,18 +262,27 @@ export class RollbackSession {
   }
 
   // Get the checksum for the current frame (for sending to peers).
-  // Uses currentFrame - 1 because advanceFrame() increments currentFrame
-  // before this method is called, so the state just saved is at (currentFrame - 1).
+  // Checksums are deferred until syncFrame catches up to the checksum frame,
+  // ensuring we only send checksums computed from fully-confirmed state.
+  // Without this, checksums based on predicted inputs cause false desyncs
+  // when the remote peer compares against their confirmed state.
   getCurrentChecksum() {
     const frame = this.currentFrame - 1;
     if (frame < this.checksumSuppressUntilFrame) {
       return null;
     }
-    if (frame > 0 && frame % CHECKSUM_INTERVAL === 0) {
-      const checksum = this.stateBuffer.getChecksum(frame);
+
+    // Record new checksum-eligible frame (multiple of CHECKSUM_INTERVAL)
+    if (frame > 0 && frame % CHECKSUM_INTERVAL === 0 && frame > this._pendingChecksumFrame) {
+      this._pendingChecksumFrame = frame;
+    }
+
+    // Only send when syncFrame confirms all inputs for the pending frame
+    if (this._pendingChecksumFrame > this.lastChecksumFrame && this._pendingChecksumFrame <= this.syncFrame) {
+      const checksum = this.stateBuffer.getChecksum(this._pendingChecksumFrame);
       if (checksum !== null) {
-        this.lastChecksumFrame = frame;
-        return { frame, checksum };
+        this.lastChecksumFrame = this._pendingChecksumFrame;
+        return { frame: this._pendingChecksumFrame, checksum };
       }
     }
     return null;
@@ -461,6 +478,7 @@ export class RollbackSession {
     this.lastLocalInputFrame = -1;
     this.remoteChecksums.clear();
     this.checksumSuppressUntilFrame = frame + CHECKSUM_INTERVAL;
+    this._pendingChecksumFrame = -1;
     this.stateBuffer.reset();
     for (let i = 0; i < this.numPlayers; i++) {
       this.inputQueues[i].reset();
@@ -480,6 +498,7 @@ export class RollbackSession {
     this.needsRollback = false;
     this.rollbackTargetFrame = -1;
     this.lastChecksumFrame = -1;
+    this._pendingChecksumFrame = -1;
     this.remoteChecksums.clear();
     this.checksumSuppressUntilFrame = -1;
 
