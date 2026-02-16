@@ -20,6 +20,7 @@ export const BabylonPage = {
     this._currentScene = null;
     this._multiplayerManager = null;
     this._resizeHandler = null;
+    this._alreadyPlayingOverlay = null;
     this._paletteIndex = parseInt(localStorage.getItem('talon-lance:paletteIndex'), 10) || 0;
   },
 
@@ -54,6 +55,7 @@ export const BabylonPage = {
       window.removeEventListener('resize', this._resizeHandler);
       this._resizeHandler = null;
     }
+    this._dismissAlreadyPlayingDialog();
     if (this._multiplayerManager) {
       this._multiplayerManager.destroy();
       this._multiplayerManager = null;
@@ -139,7 +141,129 @@ export const BabylonPage = {
     try {
       await this._multiplayerManager.start();
     } catch (err) {
-      console.error('[BabylonPage] Failed to start multiplayer:', err);
+      if (err.error === 'already-playing') {
+        // Clean up the not-yet-started manager before showing dialog
+        this._multiplayerManager.destroy();
+        this._multiplayerManager = null;
+        this._showAlreadyPlayingDialog(gameMode, paletteIndex, renderer);
+      } else {
+        console.error('[BabylonPage] Failed to start multiplayer:', err);
+        // Fall back to solo play — Level1Scene already handles its own game loop
+      }
+    }
+  },
+
+  _showAlreadyPlayingDialog(gameMode, paletteIndex, renderer) {
+    if (!this.scene) {
+      return;
+    }
+
+    import('@babylonjs/gui/2D/advancedDynamicTexture').then(({ AdvancedDynamicTexture }) => {
+      import('@babylonjs/gui/2D/controls').then(({ Rectangle, TextBlock, StackPanel, Button }) => {
+        if (!this.scene) {
+          return;
+        }
+
+        const ui = AdvancedDynamicTexture.CreateFullscreenUI('alreadyPlayingUI', true, this.scene);
+        this._alreadyPlayingOverlay = ui;
+
+        // Semi-transparent background
+        const bg = new Rectangle('apBg');
+        bg.width = 1;
+        bg.height = 1;
+        bg.background = 'rgba(0, 0, 0, 0.6)';
+        bg.thickness = 0;
+        ui.addControl(bg);
+
+        // Center panel
+        const panel = new StackPanel('apPanel');
+        panel.width = '360px';
+        panel.verticalAlignment = 1;
+        bg.addControl(panel);
+
+        // Title
+        const title = new TextBlock('apTitle', 'ALREADY PLAYING');
+        title.color = '#FFD700';
+        title.fontSize = 32;
+        title.fontFamily = 'monospace';
+        title.height = '50px';
+        panel.addControl(title);
+
+        // Message
+        const msg = new TextBlock('apMsg', "In another window");
+        msg.color = '#fff';
+        msg.fontSize = 16;
+        msg.fontFamily = 'monospace';
+        msg.height = '40px';
+        msg.paddingBottom = '10px';
+        panel.addControl(msg);
+
+        // "Play Here Instead" button
+        const takeoverBtn = Button.CreateSimpleButton('takeoverBtn', 'Play Here Instead');
+        takeoverBtn.width = '260px';
+        takeoverBtn.height = '50px';
+        takeoverBtn.color = 'white';
+        takeoverBtn.background = '#285';
+        takeoverBtn.cornerRadius = 8;
+        takeoverBtn.fontSize = 20;
+        takeoverBtn.fontFamily = 'monospace';
+        takeoverBtn.paddingTop = '10px';
+        takeoverBtn.onPointerUpObservable.add(() => {
+          this._dismissAlreadyPlayingDialog();
+          this._takeoverAndPlay(gameMode, paletteIndex, renderer);
+        });
+        panel.addControl(takeoverBtn);
+
+        // "Return to Menu" button
+        const menuBtn = Button.CreateSimpleButton('menuBtn', 'Return to Menu');
+        menuBtn.width = '260px';
+        menuBtn.height = '50px';
+        menuBtn.color = 'white';
+        menuBtn.background = '#444';
+        menuBtn.cornerRadius = 8;
+        menuBtn.fontSize = 20;
+        menuBtn.fontFamily = 'monospace';
+        menuBtn.paddingTop = '10px';
+        menuBtn.onPointerUpObservable.add(() => {
+          this._dismissAlreadyPlayingDialog();
+          this._cleanupMultiplayer();
+          this._bootMainMenu();
+        });
+        panel.addControl(menuBtn);
+      });
+    });
+  },
+
+  _dismissAlreadyPlayingDialog() {
+    if (this._alreadyPlayingOverlay) {
+      this._alreadyPlayingOverlay.dispose();
+      this._alreadyPlayingOverlay = null;
+    }
+  },
+
+  async _takeoverAndPlay(gameMode, paletteIndex, renderer) {
+    this._multiplayerManager = new MultiplayerManager({
+      gameMode,
+      paletteIndex,
+      renderer,
+      scene: this.scene,
+      engine: this.engine,
+      canvas: this.canvas,
+      onQuitToMenu: () => {
+        this._cleanupMultiplayer();
+        this._bootMainMenu();
+      },
+      onGameOver: async () => {
+        if (this._multiplayerManager) {
+          await this._multiplayerManager.submitScore();
+        }
+      },
+    });
+
+    try {
+      await this._multiplayerManager.startWithTakeover();
+    } catch (err) {
+      console.error('[BabylonPage] Failed to takeover multiplayer:', err);
       // Fall back to solo play — Level1Scene already handles its own game loop
     }
   },

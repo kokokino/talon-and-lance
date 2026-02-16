@@ -48,6 +48,13 @@ DDPRateLimiter.addRule({
   userId: () => true
 }, 5, 10000);
 
+// Limit matchmaking takeover: 3 calls per 10 seconds per user
+DDPRateLimiter.addRule({
+  type: 'method',
+  name: 'matchmaking.takeoverAndPlay',
+  userId: () => true
+}, 3, 10000);
+
 // Limit high score lookups: 5 calls per 10 seconds per user
 DDPRateLimiter.addRule({
   type: 'method',

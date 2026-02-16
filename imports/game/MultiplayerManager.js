@@ -74,8 +74,29 @@ export class MultiplayerManager {
    * 3. Watch for other players joining
    */
   async start() {
-    // 1. Find or create a room
     const result = await Meteor.callAsync('matchmaking.findOrCreate', this._gameMode, this._paletteIndex);
+
+    if (result.alreadyPlaying) {
+      throw new Meteor.Error('already-playing', 'You are already playing in another window');
+    }
+
+    await this._initializeGame(result);
+  }
+
+  /**
+   * Leave all stale rooms, then find/create a fresh one and start.
+   * Called after the user confirms they want to take over from another session.
+   */
+  async startWithTakeover() {
+    const result = await Meteor.callAsync('matchmaking.takeoverAndPlay', this._gameMode, this._paletteIndex);
+    await this._initializeGame(result);
+  }
+
+  /**
+   * Initialize simulation, input, transport, and subscriptions from a room result.
+   * Shared by start() and startWithTakeover().
+   */
+  async _initializeGame(result) {
     this._roomId = result.roomId;
     this._playerSlot = result.playerSlot;
 
@@ -97,7 +118,7 @@ export class MultiplayerManager {
       }, 15000);
     }
 
-    // 2. Create game simulation with room's shared seed (from method result, not minimongo)
+    // Create game simulation with room's shared seed (from method result, not minimongo)
     const seed = result.gameSeed;
     if (seed === undefined || seed === null) {
       console.error('[MultiplayerManager] Room document missing gameSeed! Cannot start — desync guaranteed.');
@@ -125,12 +146,12 @@ export class MultiplayerManager {
     });
     this._highScoreTracker.start().catch(() => {});
 
-    // 3. Set up input reader (attached to Babylon scene)
+    // Set up input reader (attached to Babylon scene)
     this._inputReader = new InputReader();
     this._inputReader.attach(this._scene);
     this._scene.attachControl();
 
-    // 4. Create game loop in solo mode (defer renderer if waiting for sync)
+    // Create game loop in solo mode (defer renderer if waiting for sync)
     this._gameLoop = new GameLoop({
       game: this._simulation,
       renderer: this._waitingForSync ? null : this._renderer,
@@ -143,7 +164,7 @@ export class MultiplayerManager {
     this._gameLoop.postTickDrain = () => this.drainPeerEvents();
     this._gameLoop.start();
 
-    // 5. Initialize transport and register PeerJS ID
+    // Initialize transport and register PeerJS ID
     this._transport = new TransportManager();
     const serverUrl = Meteor.absoluteUrl();
     const simulatedLatencyMs = parseInt(new URL(window.location.href).searchParams.get('latency') || '0', 10) || 0;
@@ -167,10 +188,10 @@ export class MultiplayerManager {
       this._incomingPeerEvents.push({ type: 'disconnected', peerId });
     };
 
-    // 6. Subscribe to room and watch for new players (after transport is ready)
+    // Subscribe to room and watch for new players (after transport is ready)
     this._subscribeToRoom();
 
-    // 7. Start heartbeat and browser lifecycle handlers
+    // Start heartbeat and browser lifecycle handlers
     this._startRoomHeartbeat();
   }
 
