@@ -136,8 +136,16 @@ export function applyPositionAndCollisions(char, platforms, orthoTopFP, orthoBot
   char.positionX += velPerFrame(char.velocityX);
   char.positionY += velPerFrame(char.velocityY);
 
+  // Screen wrap BEFORE collision so checks always use an in-bounds position
+  const prevX = char.positionX;
+  applyScreenWrap(char, FP_ORTHO_LEFT, FP_ORTHO_RIGHT);
+  const wrapDelta = char.positionX - prevX;
+
+  // Adjust prevPositionX so side-collision checks don't false-trigger across wrap
+  const adjustedPrevX = wrapDelta !== 0 ? char.prevPositionX + wrapDelta : char.prevPositionX;
+
   // Platform collision detection
-  checkPlatformCollisions(char, char.prevPositionX, char.prevPositionY, platforms);
+  checkPlatformCollisions(char, adjustedPrevX, char.prevPositionY, platforms);
 
   // Ceiling clamp
   const ceilingLimit = orthoTopFP - FP_HEAD_OFFSET - FP_CEILING_GAP;
@@ -150,7 +158,4 @@ export function applyPositionAndCollisions(char, platforms, orthoTopFP, orthoBot
   if (checkLavaKill(char, orthoBottomFP)) {
     char.hitLava = true;
   }
-
-  // Screen wrap
-  applyScreenWrap(char, FP_ORTHO_LEFT, FP_ORTHO_RIGHT);
 }

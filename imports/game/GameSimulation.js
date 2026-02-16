@@ -939,6 +939,13 @@ export class GameSimulation {
         egg.positionX += velPerFrame(egg.velocityX);
         egg.positionY += velPerFrame(egg.velocityY);
 
+        // Screen wrap BEFORE platform collision so checks use in-bounds position
+        if (egg.positionX > FP_ORTHO_RIGHT + FP_EGG_RADIUS) {
+          egg.positionX = FP_ORTHO_LEFT - FP_EGG_RADIUS;
+        } else if (egg.positionX < FP_ORTHO_LEFT - FP_EGG_RADIUS) {
+          egg.positionX = FP_ORTHO_RIGHT + FP_EGG_RADIUS;
+        }
+
         // Platform collision
         const eggFeet = egg.positionY - FP_EGG_RADIUS;
         const prevEggFeet = egg.prevPositionY - FP_EGG_RADIUS;
@@ -979,13 +986,6 @@ export class GameSimulation {
               break;
             }
           }
-        }
-
-        // Screen wrap (FP)
-        if (egg.positionX > FP_ORTHO_RIGHT + FP_EGG_RADIUS) {
-          egg.positionX = FP_ORTHO_LEFT - FP_EGG_RADIUS;
-        } else if (egg.positionX < FP_ORTHO_LEFT - FP_EGG_RADIUS) {
-          egg.positionX = FP_ORTHO_RIGHT + FP_EGG_RADIUS;
         }
 
         // Lava (FP)
