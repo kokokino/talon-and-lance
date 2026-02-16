@@ -93,7 +93,7 @@ export const ENEMIES_OFFSET = HUMANS_OFFSET + MAX_HUMANS * CHAR_SIZE;
 export const ENEMY_AI_OFFSET = ENEMIES_OFFSET + MAX_ENEMIES * CHAR_SIZE;
 export const EGGS_OFFSET = ENEMY_AI_OFFSET + MAX_ENEMIES * AI_SIZE;
 export const TOTAL_INTS = EGGS_OFFSET + MAX_EGGS * EGG_SIZE;
-// ~532 ints = ~2128 bytes
+// ~556 ints = ~2224 bytes
 
 // ---- Wave state enum ----
 export const WAVE_SPAWNING = 0;

@@ -74,7 +74,7 @@ All game physics use integer arithmetic (positions in 1/256th pixel units) — n
 - Float-point only appears in the renderer for visual interpolation, never in physics.
 
 ### Game State Layout
-All game state lives in a flat `Int32Array` (532 ints, ~2KB) defined in `imports/game/physics/stateLayout.js`:
+All game state lives in a flat `Int32Array` (556 ints, ~2.2KB) defined in `imports/game/physics/stateLayout.js`:
 - **GLOBAL** (20 ints): frame counter, RNG seed, wave number/state, spawn timers, game mode
 - **HUMANS** (4 slots × 34 ints): position, velocity, state flags, timers, score, lives
 - **ENEMIES** (8 slots × 34 ints): same structure as humans
@@ -93,7 +93,7 @@ Access pattern: `state[HUMANS_OFFSET + slotIndex * CHAR_SIZE + C_POS_X]`. Consta
 ### Babylon Scene Architecture
 `BabylonPage` (Mithril component) owns the Babylon Engine, canvas, render loop, and AudioManager. It orchestrates scene transitions between `MainMenuScene` and `Level1Scene`. Each scene class exposes `create(scene, engine, canvas)` and `dispose()`, and is instantiated by BabylonPage when transitioning.
 
-- **MainMenuScene** — 3D menu with animated knight, arc-rotate camera, palette selector (4 knight colors), music track selector (3 tracks), mode select (Team Play/PvP). Preferences saved to localStorage.
+- **MainMenuScene** — 3D menu with animated knight, arc-rotate camera, palette selector (4 knight colors), music track selector (3 music tracks + None), mode select (Team Play/PvP). Preferences saved to localStorage.
 - **Level1Scene** — Full Joust gameplay: multi-tier platforms over lava, flapping flight physics, lance-height jousting, death/respawn with invincibility, egg drop mechanics, voxel explosion debris, day/night cycle.
 
 ### Render Slot System
