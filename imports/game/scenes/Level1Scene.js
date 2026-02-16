@@ -160,6 +160,12 @@ export class Level1Scene {
     this._prevState = null;
     this._localPlayerSlot = 0;
 
+    // Per-slot visual smoothing for remote players (reduces rollback snap)
+    this._smoothedPos = [];
+    for (let i = 0; i < 12; i++) {
+      this._smoothedPos.push({ x: null, y: null });
+    }
+
     // Stride sound cooldown (ms timestamp of last play)
     this._lastStrideTime = 0;
     // Edge bump sound cooldown (ms timestamp of last play)
@@ -456,12 +462,45 @@ export class Level1Scene {
 
     // ---- Per-frame rendering (when alive and meshes exist) ----
     if (!charState.active || charState.dead || !slot.meshCreated) {
+      // Reset smoothed position when character is inactive/dead
+      const sp = this._smoothedPos[charState.slotIndex];
+      sp.x = null;
+      sp.y = null;
       return;
+    }
+
+    // Visual smoothing for remote players: exponential lerp toward true
+    // position to hide rollback correction snaps (especially during flapping).
+    // Factor 0.18 absorbs 90% of a correction over ~12 frames (200ms).
+    // Local player always uses raw position for instant feedback.
+    const sp = this._smoothedPos[charState.slotIndex];
+    let renderX = charState.positionX;
+    let renderY = charState.positionY;
+    const isRemote = this._rendererMode && charState.slotIndex !== this._localPlayerSlot;
+
+    if (isRemote) {
+      if (sp.x === null) {
+        // First frame — snap to true position
+        sp.x = charState.positionX;
+        sp.y = charState.positionY;
+      } else {
+        const dx = charState.positionX - sp.x;
+        const dy = charState.positionY - sp.y;
+        // Snap on screen wrap (delta > half screen width) or materialization
+        if (Math.abs(dx) > 10) {
+          sp.x = charState.positionX;
+        } else {
+          sp.x += dx * 0.18;
+        }
+        sp.y += dy * 0.18;
+      }
+      renderX = sp.x;
+      renderY = sp.y;
     }
 
     // Position root mesh
     if (slot.birdRig?.root) {
-      slot.birdRig.root.position.x = charState.positionX;
+      slot.birdRig.root.position.x = renderX;
     }
 
     // Detect new turn: isTurning became true or turnTimer reset
@@ -495,8 +534,8 @@ export class Level1Scene {
 
     // Build a merged view: prototype = slot (mesh refs), own props = physics state
     const view = Object.create(slot);
-    view.positionX = charState.positionX;
-    view.positionY = charState.positionY;
+    view.positionX = renderX;
+    view.positionY = renderY;
     view.velocityX = charState.velocityX;
     view.velocityY = charState.velocityY;
     view.playerState = charState.playerState;

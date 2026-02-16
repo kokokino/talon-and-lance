@@ -12,7 +12,7 @@ import { StateBuffer } from './StateBuffer.js';
 import { TimeSync } from './TimeSync.js';
 
 const DEFAULT_MAX_PREDICTION = 30;
-const DEFAULT_INPUT_DELAY = 2;
+const DEFAULT_INPUT_DELAY = 3;
 const DEFAULT_DISCONNECT_TIMEOUT = 5000;
 const CHECKSUM_INTERVAL = 60; // frames between checksum exchanges
 
