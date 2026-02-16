@@ -29,11 +29,14 @@ export const EXTRA_LIFE_THRESHOLD = 20000;
 export const ENEMY_TYPE_BOUNDER = 0;
 export const ENEMY_TYPE_HUNTER = 1;
 export const ENEMY_TYPE_SHADOW_LORD = 2;
+export const ENEMY_TYPE_PTERODACTYL = 3;
 
 // ---- Wave progression ----
 export const WAVE_HUNTER_INTRO = 4;
 export const WAVE_SHADOW_LORD_INTRO = 16;
 export const WAVE_SHADOW_LORD_ONLY = 22;
+export const WAVE_PTERO_INTRO = 8;
+export const WAVE_PTERO_INTERVAL = 5;
 
 /**
  * Get the kill points for a given enemy type.
@@ -44,6 +47,9 @@ export function getKillPoints(enemyType) {
   }
   if (enemyType === ENEMY_TYPE_HUNTER) {
     return POINTS_KILL_HUNTER;
+  }
+  if (enemyType === ENEMY_TYPE_PTERODACTYL) {
+    return POINTS_KILL_PTERODACTYL;
   }
   return POINTS_KILL_SHADOW_LORD;
 }
@@ -73,6 +79,7 @@ export function getWaveComposition(waveNumber) {
   let bounders = 0;
   let hunters = 0;
   let shadowLords = 0;
+  let pterodactyls = 0;
 
   if (waveNumber >= WAVE_SHADOW_LORD_ONLY) {
     // Wave 22+: shadow lords only
@@ -91,5 +98,10 @@ export function getWaveComposition(waveNumber) {
     bounders = waveNumber + 2; // 3, 4, 5
   }
 
-  return { bounders, hunters, shadowLords };
+  // Pterodactyls appear every 5 waves starting at wave 8
+  if (waveNumber >= WAVE_PTERO_INTRO && (waveNumber - WAVE_PTERO_INTRO) % WAVE_PTERO_INTERVAL === 0) {
+    pterodactyls = waveNumber >= 23 ? 2 : 1;
+  }
+
+  return { bounders, hunters, shadowLords, pterodactyls };
 }

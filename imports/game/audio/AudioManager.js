@@ -64,6 +64,18 @@ const GAME_SFX = [
   { name: 'squawk-1', url: '/audio/sfx/bonus/squawk-1.mp3', pool: 1, volume: 0.4 },
   { name: 'squawk-2', url: '/audio/sfx/bonus/squawk-2.mp3', pool: 1, volume: 0.4 },
 
+  // Pterodactyl
+  { name: 'ptero-screech-1', url: '/audio/sfx/combat/ptero-screech-1.mp3', pool: 1, volume: 0.7 },
+  { name: 'ptero-screech-2', url: '/audio/sfx/combat/ptero-screech-2.mp3', pool: 1, volume: 0.7 },
+  { name: 'ptero-flap-1', url: '/audio/sfx/movement/ptero-flap-1.mp3', pool: 2, volume: 0.5 },
+  { name: 'ptero-flap-2', url: '/audio/sfx/movement/ptero-flap-2.mp3', pool: 2, volume: 0.5 },
+  { name: 'ptero-flap-3', url: '/audio/sfx/movement/ptero-flap-3.mp3', pool: 2, volume: 0.5 },
+  { name: 'ptero-death', url: '/audio/sfx/combat/ptero-death.mp3', pool: 1, volume: 0.7 },
+  { name: 'ptero-snap-1', url: '/audio/sfx/combat/ptero-snap-1.mp3', pool: 1, volume: 0.5 },
+  { name: 'ptero-snap-2', url: '/audio/sfx/combat/ptero-snap-2.mp3', pool: 1, volume: 0.5 },
+  { name: 'ptero-warning', url: '/audio/sfx/combat/ptero-warning.mp3', pool: 1, volume: 0.6 },
+  { name: 'ptero-swoop', url: '/audio/sfx/combat/ptero-swoop.mp3', pool: 1, volume: 0.5 },
+
   // Progression
   { name: 'materialize', url: '/audio/sfx/progression/materialize.mp3', pool: 2, volume: 0.5 },
   { name: 'materialize-done', url: '/audio/sfx/progression/materialize-done.mp3', pool: 1, volume: 0.5 },

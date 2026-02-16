@@ -25,6 +25,7 @@ export const G_SPAWN_QUEUE_LEN = 8;
 // G_SPAWN_QUEUE: 9..18 (up to 10 queued enemy types)
 export const G_SPAWN_QUEUE_START = 9;
 export const G_SPAWN_QUEUE_MAX = 10;
+export const G_IDLE_TIMER = 19;  // frame counter for hurry-up pterodactyl mechanic
 
 // ---- Character slot (shared between humans and enemies) ----
 export const CHAR_SIZE = 34;
@@ -66,11 +67,16 @@ export const C_BOUNCE_COUNT = 32;
 export const C_EDGE_BUMP_COUNT = 33;
 
 // ---- Enemy AI state slot (parallel to enemy character slots) ----
-export const AI_SIZE = 4;
+export const AI_SIZE = 6;
 export const AI_DIR_TIMER = 0;       // fixed-point
 export const AI_CURRENT_DIR = 1;     // -1 or 1
 export const AI_FLAP_ACCUM = 2;      // fixed-point
 export const AI_ENEMY_TYPE = 3;      // mirrors C_ENEMY_TYPE for AI lookup
+export const AI_JAW_TIMER = 4;       // pterodactyl jaw open/close cycle timer (frame count)
+export const AI_PTERO_PHASE = 5;     // pterodactyl behavior phase (0=ENTER, 1=SWOOP, 2=PULL_UP, 3=CIRCLE)
+
+// ---- Pterodactyl enemy type ----
+export const ENEMY_TYPE_PTERODACTYL = 3;
 
 // ---- Egg slot ----
 export const EGG_SIZE = 12;
@@ -93,7 +99,7 @@ export const ENEMIES_OFFSET = HUMANS_OFFSET + MAX_HUMANS * CHAR_SIZE;
 export const ENEMY_AI_OFFSET = ENEMIES_OFFSET + MAX_ENEMIES * CHAR_SIZE;
 export const EGGS_OFFSET = ENEMY_AI_OFFSET + MAX_ENEMIES * AI_SIZE;
 export const TOTAL_INTS = EGGS_OFFSET + MAX_EGGS * EGG_SIZE;
-// ~556 ints = ~2224 bytes
+// ~572 ints = ~2288 bytes (AI_SIZE=6 adds 16 ints)
 
 // ---- Wave state enum ----
 export const WAVE_SPAWNING = 0;

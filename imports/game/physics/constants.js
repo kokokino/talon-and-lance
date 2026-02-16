@@ -94,6 +94,27 @@ export const ENEMY_SPAWN_POINTS = [
   { x:  5.0, platformId: 'midLowR' },  // mid-right
 ];
 
+// ---- Pterodactyl physics ----
+export const PTERO_SWOOP_SPEED = 14.0;       // Faster than MAX_SPEED
+export const PTERO_ENTER_SPEED = 8.0;        // Entrance speed
+export const PTERO_PULL_UP_SPEED = 6.0;      // Vertical escape speed
+export const PTERO_CIRCLE_SPEED = 5.0;       // Repositioning speed
+
+// ---- Pterodactyl jaw cycle (frames at 60fps) ----
+export const PTERO_JAW_OPEN_FRAMES = 30;     // 0.5s vulnerable window
+export const PTERO_JAW_CLOSED_FRAMES = 45;   // 0.75s invulnerable window
+export const PTERO_JAW_TOTAL = 75;           // Full cycle = 1.25s
+
+// ---- Pterodactyl phase durations (frames at 60fps) ----
+export const PTERO_ENTER_FRAMES = 60;        // 1s entrance
+export const PTERO_SWOOP_FRAMES = 90;        // 1.5s swoop charge
+export const PTERO_PULL_UP_FRAMES = 30;      // 0.5s upward veer
+export const PTERO_CIRCLE_FRAMES = 60;       // 1s repositioning
+
+// ---- Idle timer thresholds (frames at 60fps) ----
+export const IDLE_TIMER_THRESHOLD = 3600;    // 60 seconds before pterodactyl spawns
+export const IDLE_TIMER_WARNING = 3300;      // 55 seconds — audio warning cue (5s before spawn)
+
 // ---- Game modes ----
 export const GAME_MODE_TEAM = 'team';
 export const GAME_MODE_PVP = 'pvp';
@@ -177,6 +198,18 @@ export const HATCHLING_HALF_WIDTH = 4 * VOXEL_SIZE;
 export const HATCHLING_HEIGHT = 13 * VOXEL_SIZE;
 export const FP_HATCHLING_HALF_WIDTH = Math.round(HATCHLING_HALF_WIDTH * FP);
 export const FP_HATCHLING_HEIGHT = Math.round(HATCHLING_HEIGHT * FP);
+
+// ---- Pterodactyl FP velocities (per second, converted to FP) ----
+export const FP_PTERO_SWOOP_SPEED = Math.round(PTERO_SWOOP_SPEED * FP);
+export const FP_PTERO_ENTER_SPEED = Math.round(PTERO_ENTER_SPEED * FP);
+export const FP_PTERO_PULL_UP_SPEED = Math.round(PTERO_PULL_UP_SPEED * FP);
+export const FP_PTERO_CIRCLE_SPEED = Math.round(PTERO_CIRCLE_SPEED * FP);
+
+// ---- Pterodactyl spawn margin (FP) ----
+export const FP_PTERO_SPAWN_MARGIN = Math.round(2.0 * FP);
+
+// ---- Pterodactyl platform avoidance margin (FP) ----
+export const FP_PTERO_AVOID_MARGIN = Math.round(1.0 * FP);
 
 // ---- Misc FP thresholds ----
 export const FP_LAVA_OFFSET = Math.round(1.0 * FP);

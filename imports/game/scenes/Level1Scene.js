@@ -33,6 +33,7 @@ import {
   buildPlatformCollisionData,
   GAME_MODE_TEAM,
   EGG_RADIUS,
+  IDLE_TIMER_WARNING,
 } from '../physics/constants.js';
 
 // Idle animation constants
@@ -51,7 +52,7 @@ const IDLE_YAW_AMOUNT = 0.8;
 const IDLE_YAW_EASE_RATE = 3.0;
 
 import {
-  ENEMY_TYPE_BOUNDER,
+  ENEMY_TYPE_BOUNDER, ENEMY_TYPE_PTERODACTYL,
 } from '../scoring.js';
 import { DeterministicRNG } from '../physics/mulberry32.js';
 import { SkyBackground } from './SkyBackground.js';
@@ -60,6 +61,7 @@ import { knightModel } from '../voxels/models/knightModel.js';
 import { lanceModel } from '../voxels/models/lanceModel.js';
 import { ostrichModel } from '../voxels/models/ostrichModel.js';
 import { buzzardModel } from '../voxels/models/buzzardModel.js';
+import { pterodactylModel } from '../voxels/models/pterodactylModel.js';
 import { evilKnightModel } from '../voxels/models/evilKnightModel.js';
 import { eggModel } from '../voxels/models/eggModel.js';
 import { buildKnightPalette } from '../voxels/models/knightPalettes.js';
@@ -387,6 +389,9 @@ export class Level1Scene {
       hitLava: e.hitLava,
       bounceCount: e.bounceCount,
       edgeBumpCount: e.edgeBumpCount,
+      enemyType: e.enemyType,
+      jawOpen: e.jawOpen,
+      pteroPhase: e.pteroPhase,
     }));
     const eggs = {};
     for (const egg of gameState.eggs) {
@@ -402,6 +407,7 @@ export class Level1Scene {
       waveNumber: gameState.waveNumber,
       waveState: gameState.waveState,
       gameOver: gameState.gameOver,
+      idleTimer: gameState.idleTimer,
       humans,
       enemies,
       eggs,
@@ -546,6 +552,8 @@ export class Level1Scene {
     view.isFlapping = charState.isFlapping;
     view.flapTimer = charState.flapTimer;
     view.wingMode = charState.wingMode;
+    view.jawOpen = charState.jawOpen || false;
+    view.pteroPhase = charState.pteroPhase || 0;
 
     // Turn animation
     this._updateTurn(dt, view);
@@ -592,6 +600,7 @@ export class Level1Scene {
       wingMode: charState.wingMode,
       enemyType: charState.enemyType,
       paletteIndex: charState.paletteIndex,
+      jawPivot: slot.jawPivot,
     };
 
     const charIdx = type === 'human' ? 0 : 1;
@@ -1044,6 +1053,11 @@ export class Level1Scene {
   }
 
   _syncCharSounds(char, prev, type) {
+    // Pterodactyl entrance screech
+    if (char.active && !prev.active && char.enemyType === ENEMY_TYPE_PTERODACTYL) {
+      this._audioManager.playSfx('ptero-screech', 2);
+    }
+
     // Materialization start
     if (char.active && !prev.active && char.materializing) {
       if (type === 'human') {
@@ -1057,6 +1071,10 @@ export class Level1Scene {
     if (char.dead && !prev.dead) {
       if (char.hitLava) {
         this._audioManager.playSfx('lava-death');
+      } else if (char.enemyType === ENEMY_TYPE_PTERODACTYL) {
+        this._audioManager.playSfx('ptero-death');
+        this._audioManager.playSfx('death-explode');
+        this._audioManager.playSfx('joust-kill');
       } else {
         this._audioManager.playSfx('death-explode');
         this._audioManager.playSfx('joust-kill');
@@ -1130,6 +1148,31 @@ export class Level1Scene {
     // Score tick (humans only)
     if (type === 'human' && char.score > prev.score) {
       this._audioManager.playSfx('score-tick');
+    }
+
+    // Pterodactyl jaw snap (jaw opened this frame)
+    if (type === 'enemy' && char.enemyType === ENEMY_TYPE_PTERODACTYL &&
+        char.jawOpen && !prev.jawOpen) {
+      const now = performance.now();
+      if (!this._lastPteroSnapTime || now - this._lastPteroSnapTime >= 400) {
+        this._audioManager.playSfx('ptero-snap', 2);
+        this._lastPteroSnapTime = now;
+      }
+    }
+
+    // Pterodactyl swoop start (entered swoop phase)
+    if (type === 'enemy' && char.enemyType === ENEMY_TYPE_PTERODACTYL &&
+        char.pteroPhase === 1 && prev.pteroPhase !== 1) {
+      this._audioManager.playSfx('ptero-swoop');
+    }
+
+    // Pterodactyl wing flap (periodic cooldown — always flying)
+    if (type === 'enemy' && char.enemyType === ENEMY_TYPE_PTERODACTYL) {
+      const now = performance.now();
+      if (!this._lastPteroFlapTime || now - this._lastPteroFlapTime >= 400) {
+        this._audioManager.playSfx('ptero-flap', 3);
+        this._lastPteroFlapTime = now;
+      }
     }
 
     // Idle squawk (humans only, grounded, near-zero velocity)
@@ -1213,6 +1256,12 @@ export class Level1Scene {
     // Game over
     if (gameState.gameOver && !this._prevState.gameOver) {
       this._audioManager.playSfx('game-over');
+    }
+
+    // Pterodactyl idle warning (5 seconds before spawn)
+    if (gameState.idleTimer >= IDLE_TIMER_WARNING &&
+        (this._prevState.idleTimer || 0) < IDLE_TIMER_WARNING) {
+      this._audioManager.playSfx('ptero-warning');
     }
   }
 
@@ -1743,6 +1792,39 @@ export class Level1Scene {
     }
   }
 
+  _assemblePterodactyl(slot, VS) {
+    const bParts = slot.birdRig.parts;
+
+    // Wing pivots — positioned to match larger body
+    if (bParts.leftWing && bParts.body) {
+      slot.leftWingPivot = new TransformNode('leftWingPivot', this.scene);
+      slot.leftWingPivot.parent = bParts.body.mesh;
+      slot.leftWingPivot.position = new Vector3(0, 5 * VS, 3 * VS);
+      bParts.leftWing.mesh.parent = slot.leftWingPivot;
+      bParts.leftWing.mesh.position = new Vector3(0, -5 * VS, 0);
+    }
+
+    if (bParts.rightWing && bParts.body) {
+      slot.rightWingPivot = new TransformNode('rightWingPivot', this.scene);
+      slot.rightWingPivot.parent = bParts.body.mesh;
+      slot.rightWingPivot.position = new Vector3(0, 5 * VS, -3 * VS);
+      bParts.rightWing.mesh.parent = slot.rightWingPivot;
+      bParts.rightWing.mesh.position = new Vector3(0, -5 * VS, 0);
+    }
+
+    // Jaw pivot — positioned for larger head
+    if (bParts.jaw && bParts.head) {
+      slot.jawPivot = new TransformNode('jawPivot', this.scene);
+      slot.jawPivot.parent = bParts.head.mesh;
+      slot.jawPivot.position = new Vector3(2 * VS, -2 * VS, 0);
+      bParts.jaw.mesh.parent = slot.jawPivot;
+      bParts.jaw.mesh.position = new Vector3(0, 0, 0);
+    }
+
+    // No knight/lance/shoulder/hip pivots for pterodactyl
+    slot.knightMountY = 0;
+  }
+
   _setupBirdLegPivots(char, bParts, VS) {
     if (bParts.leftThigh && bParts.body) {
       char.leftHipPivot = new TransformNode('leftHipPivot', this.scene);
@@ -1856,6 +1938,7 @@ export class Level1Scene {
       rightKneePivot: null,
       leftWingPivot: null,
       rightWingPivot: null,
+      jawPivot: null,
       knightMountY: 0,
       materializeParticles: null,
       // Renderer-local turn animation state
@@ -1885,6 +1968,10 @@ export class Level1Scene {
       const mergedPalette = buildKnightPalette(charState.paletteIndex);
       slot.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS, notLit);
       slot.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
+    } else if (charState.enemyType === ENEMY_TYPE_PTERODACTYL) {
+      slot.birdRig = buildRig(this.scene, pterodactylModel, VS, notLit);
+      slot.knightRig = null;
+      slot.lanceRig = null;
     } else {
       slot.birdRig = buildRig(this.scene, buzzardModel, VS, notLit);
       const evilPalette = buildEvilKnightPalette(charState.enemyType);
@@ -1892,7 +1979,11 @@ export class Level1Scene {
       slot.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
     }
 
-    this._assembleCharacter(slot, VS);
+    if (charState.enemyType === ENEMY_TYPE_PTERODACTYL) {
+      this._assemblePterodactyl(slot, VS);
+    } else {
+      this._assembleCharacter(slot, VS);
+    }
 
     if (slot.birdRig.root) {
       slot.birdRig.root.position = new Vector3(charState.positionX, charState.positionY, 0);
@@ -1914,6 +2005,7 @@ export class Level1Scene {
       slot.leftWingPivot, slot.rightWingPivot,
       slot.leftShoulderNode, slot.rightShoulderNode,
       slot.leftHipNode, slot.rightHipNode,
+      slot.jawPivot,
     ];
     for (const node of nodes) {
       if (node) {
@@ -1948,6 +2040,7 @@ export class Level1Scene {
     slot.rightKneePivot = null;
     slot.leftWingPivot = null;
     slot.rightWingPivot = null;
+    slot.jawPivot = null;
     slot.knightMountY = 0;
     slot.meshCreated = false;
     // Reset idle animation state
@@ -2108,6 +2201,11 @@ export class Level1Scene {
 
   _animateChar(dt, char) {
     this._animateWingFlap(dt, char);
+
+    // Pterodactyl jaw animation
+    if (char.wingMode === 'membrane') {
+      this._animateJaw(char);
+    }
 
     if (char.playerState === 'GROUNDED') {
       this._animateRunning(dt, char);
@@ -2298,6 +2396,8 @@ export class Level1Scene {
 
     if (char.wingMode === 'updown') {
       this._animateWingFlapUpDown(char);
+    } else if (char.wingMode === 'membrane') {
+      this._animateWingFlapMembrane(char);
     } else {
       this._animateWingFlapSweep(char);
     }
@@ -2365,6 +2465,55 @@ export class Level1Scene {
     }
   }
 
+  _animateWingFlapMembrane(char) {
+    // Membrane wings: larger amplitude, sweep-style rotation.z
+    // During swoop phase (pteroPhase===1): wings swept back
+    const MEMBRANE_FORWARD = 1.0;
+    const MEMBRANE_BACKWARD = -0.8;
+    const MEMBRANE_GLIDE = 0.3;
+    const MEMBRANE_SWEPT = -0.5;
+
+    let sweepAngle = MEMBRANE_GLIDE;
+
+    if (char.pteroPhase === 1) {
+      // SWOOP — wings swept back
+      sweepAngle = MEMBRANE_SWEPT;
+    } else if (char.isFlapping) {
+      const t = char.flapTimer / FLAP_DURATION;
+      if (t < 0.3) {
+        const phase = t / 0.3;
+        const eased = Math.sin(phase * Math.PI / 2);
+        sweepAngle = eased * MEMBRANE_FORWARD;
+      } else if (t < 0.7) {
+        const phase = (t - 0.3) / 0.4;
+        const eased = 0.5 - 0.5 * Math.cos(phase * Math.PI);
+        sweepAngle = MEMBRANE_FORWARD + eased * (MEMBRANE_BACKWARD - MEMBRANE_FORWARD);
+      } else {
+        const phase = (t - 0.7) / 0.3;
+        const eased = 0.5 - 0.5 * Math.cos(phase * Math.PI);
+        sweepAngle = MEMBRANE_BACKWARD + eased * (0 - MEMBRANE_BACKWARD);
+      }
+    }
+
+    if (char.leftWingPivot) {
+      char.leftWingPivot.rotation.z = sweepAngle;
+    }
+    if (char.rightWingPivot) {
+      char.rightWingPivot.rotation.z = sweepAngle;
+    }
+  }
+
+  _animateJaw(char) {
+    if (!char.jawPivot) {
+      return;
+    }
+
+    const targetAngle = char.jawOpen ? 0.7 : 0;
+    const current = char.jawPivot.rotation.x;
+    // Smooth lerp toward target
+    char.jawPivot.rotation.x = current + (targetAngle - current) * 0.15;
+  }
+
   _animateFlying(dt, char) {
     const bParts = char.birdRig?.parts;
     const kParts = char.knightRig?.parts;
@@ -2392,6 +2541,11 @@ export class Level1Scene {
       if (char.rightWingPivot) {
         char.rightWingPivot.rotation.z = 0;
       }
+    }
+
+    // Pterodactyls skip leg/knight animations
+    if (char.wingMode === 'membrane') {
+      return;
     }
 
     this._animateTuckedLegs(char);
@@ -2795,23 +2949,36 @@ export class Level1Scene {
    * voxel to reduce particle count (~1000 → ~333). Returns array of {wx, wy, wz, hex}.
    */
   _collectDebrisVoxels(char, charIdx) {
-    const birdModelDef = char.wingMode === 'updown' ? ostrichModel : buzzardModel;
-    let knightPalette;
-    let knightModelDef;
-    if (charIdx === 0) {
-      knightModelDef = knightModel;
-      knightPalette = buildKnightPalette(char.paletteIndex);
+    let birdModelDef;
+    if (char.wingMode === 'membrane') {
+      birdModelDef = pterodactylModel;
+    } else if (char.wingMode === 'updown') {
+      birdModelDef = ostrichModel;
     } else {
-      knightModelDef = evilKnightModel;
-      const paletteIdx = char.enemyType !== undefined ? char.enemyType : ENEMY_TYPE_BOUNDER;
-      knightPalette = buildEvilKnightPalette(paletteIdx);
+      birdModelDef = buzzardModel;
     }
 
     const rigSources = [
       { rig: char.birdRig, modelDef: birdModelDef, palette: birdModelDef.palette },
-      { rig: char.knightRig, modelDef: knightModelDef, palette: knightPalette },
-      { rig: char.lanceRig, modelDef: lanceModel, palette: lanceModel.palette },
     ];
+
+    // Pterodactyls have no knight or lance
+    if (char.wingMode !== 'membrane') {
+      let knightPalette;
+      let knightModelDef;
+      if (charIdx === 0) {
+        knightModelDef = knightModel;
+        knightPalette = buildKnightPalette(char.paletteIndex);
+      } else {
+        knightModelDef = evilKnightModel;
+        const paletteIdx = char.enemyType !== undefined ? char.enemyType : ENEMY_TYPE_BOUNDER;
+        knightPalette = buildEvilKnightPalette(paletteIdx);
+      }
+      rigSources.push(
+        { rig: char.knightRig, modelDef: knightModelDef, palette: knightPalette },
+        { rig: char.lanceRig, modelDef: lanceModel, palette: lanceModel.palette },
+      );
+    }
 
     const voxels = [];
     let counter = 0;

@@ -22,18 +22,20 @@ import {
   FP_HATCHLING_HALF_WIDTH, FP_HATCHLING_HEIGHT,
   SPAWN_POINTS_FP, ENEMY_SPAWN_POINTS_FP,
   GAME_MODE_TEAM, GAME_MODE_PVP,
+  IDLE_TIMER_THRESHOLD,
+  FP_PTERO_SPAWN_MARGIN,
   buildPlatformCollisionDataFP,
 } from './physics/constants.js';
 import {
   checkPlatformCollisions, resolveJoust, applyBounce, applyKillToWinner,
-  checkLavaKill, applyScreenWrap,
+  checkLavaKill, applyScreenWrap, resolvePterodactylCollision,
 } from './physics/CollisionSystem.js';
 import { DISCONNECT_BIT } from '../netcode/InputEncoder.js';
 import { applyInput, applyIdle, applyFriction, applyGravity } from './physics/PhysicsSystem.js';
 import {
   STARTING_LIVES, EXTRA_LIFE_THRESHOLD,
   POINTS_SURVIVAL_WAVE, POINTS_EGG_MID_AIR,
-  ENEMY_TYPE_BOUNDER, ENEMY_TYPE_SHADOW_LORD,
+  ENEMY_TYPE_BOUNDER, ENEMY_TYPE_SHADOW_LORD, ENEMY_TYPE_PTERODACTYL,
   getKillPoints, getEggPoints, getWaveComposition,
 } from './scoring.js';
 import {
@@ -44,6 +46,7 @@ import {
   G_FRAME, G_RNG_SEED, G_WAVE_NUMBER, G_WAVE_STATE,
   G_SPAWN_TIMER, G_WAVE_TRANSITION_TIMER, G_GAME_MODE, G_GAME_OVER,
   G_SPAWN_QUEUE_LEN, G_SPAWN_QUEUE_START, G_SPAWN_QUEUE_MAX,
+  G_IDLE_TIMER,
   C_ACTIVE, C_POS_X, C_POS_Y, C_VEL_X, C_VEL_Y, C_STATE,
   C_FACING_DIR, C_IS_TURNING, C_TURN_TIMER, C_STRIDE_PHASE,
   C_IS_FLAPPING, C_FLAP_TIMER, C_DEAD, C_RESPAWN_TIMER,
@@ -54,6 +57,7 @@ import {
   C_NEXT_LIFE_SCORE, C_PALETTE_INDEX, C_PLAYER_DIED_WAVE, C_ENEMY_TYPE, C_HIT_LAVA, C_PLATFORM_INDEX,
   C_BOUNCE_COUNT, C_EDGE_BUMP_COUNT,
   AI_DIR_TIMER, AI_CURRENT_DIR, AI_FLAP_ACCUM, AI_ENEMY_TYPE,
+  AI_JAW_TIMER, AI_PTERO_PHASE,
   E_ACTIVE, E_POS_X, E_POS_Y, E_VEL_X, E_VEL_Y,
   E_ON_PLATFORM, E_ENEMY_TYPE, E_HATCH_STATE, E_HATCH_TIMER,
   E_BOUNCE_COUNT, E_PREV_POS_Y, E_HIT_LAVA,
@@ -105,6 +109,7 @@ export class GameSimulation {
     this._waveTransitionTimer = 0;  // frame count
     this._gameOver = false;
     this._spawnQueue = [];
+    this._idleTimer = 0;           // frame count — hurry-up pterodactyl mechanic
 
     // Character slots: 0..3 = humans, 4..11 = enemies
     // All positions/velocities are FP integers, all timers are frame counts
@@ -277,8 +282,36 @@ export class GameSimulation {
         const ai = this._ais[aiIdx];
         if (ai) {
           const target = this._findClosestActiveHuman(char);
-          const aiInput = ai.decide(char, target, FP_ORTHO_BOTTOM, this._rng);
-          applyInput(char, aiInput, this._platforms, FP_ORTHO_TOP, FP_ORTHO_BOTTOM);
+          const aiResult = ai.decide(char, target, FP_ORTHO_BOTTOM, this._rng, this._platforms);
+
+          if (aiResult.isPterodactyl) {
+            // Pterodactyl: direct velocity control, skip normal physics
+            char.positionX += aiResult.velX;
+            char.positionY += aiResult.velY;
+            char.velocityX = aiResult.velX;
+            char.velocityY = aiResult.velY;
+            char.facingDir = aiResult.facingDir;
+            char.playerState = 'AIRBORNE';
+
+            if (aiResult.isExiting) {
+              // No screen wrap during exit — deactivate once fully off-screen
+              if (char.positionX > FP_ORTHO_RIGHT + FP_PTERO_SPAWN_MARGIN ||
+                  char.positionX < FP_ORTHO_LEFT - FP_PTERO_SPAWN_MARGIN) {
+                char.active = false;
+                this._ais[aiIdx] = null;
+                continue;
+              }
+            } else {
+              // Screen wrap only (no platform collisions, no gravity)
+              applyScreenWrap(char, FP_ORTHO_LEFT, FP_ORTHO_RIGHT);
+            }
+            // Lava check — pterodactyl can die in lava
+            if (checkLavaKill(char, FP_ORTHO_BOTTOM)) {
+              char.hitLava = true;
+            }
+          } else {
+            applyInput(char, aiResult, this._platforms, FP_ORTHO_TOP, FP_ORTHO_BOTTOM);
+          }
         } else {
           applyIdle(char, this._platforms, FP_ORTHO_TOP, FP_ORTHO_BOTTOM);
         }
@@ -291,8 +324,8 @@ export class GameSimulation {
         continue;
       }
 
-      // Advance turn animation timer (frame count)
-      if (char.isTurning) {
+      // Advance turn animation timer (frame count) — skip for pterodactyls
+      if (char.isTurning && char.enemyType !== ENEMY_TYPE_PTERODACTYL) {
         char.turnTimer += 1;
         if (char.turnTimer >= TURN_FRAMES) {
           char.isTurning = false;
@@ -348,6 +381,7 @@ export class GameSimulation {
     buf[GLOBAL_OFFSET + G_WAVE_TRANSITION_TIMER] = this._waveTransitionTimer;
     buf[GLOBAL_OFFSET + G_GAME_MODE] = this._gameMode === GAME_MODE_PVP ? 1 : 0;
     buf[GLOBAL_OFFSET + G_GAME_OVER] = this._gameOver ? 1 : 0;
+    buf[GLOBAL_OFFSET + G_IDLE_TIMER] = this._idleTimer;
     buf[GLOBAL_OFFSET + G_SPAWN_QUEUE_LEN] = Math.min(this._spawnQueue.length, G_SPAWN_QUEUE_MAX);
     for (let i = 0; i < Math.min(this._spawnQueue.length, G_SPAWN_QUEUE_MAX); i++) {
       buf[GLOBAL_OFFSET + G_SPAWN_QUEUE_START + i] = this._spawnQueue[i];
@@ -372,6 +406,8 @@ export class GameSimulation {
         buf[offset + AI_CURRENT_DIR] = ai._currentDir;
         buf[offset + AI_FLAP_ACCUM] = ai._flapAccum;
         buf[offset + AI_ENEMY_TYPE] = ai.enemyType;
+        buf[offset + AI_JAW_TIMER] = ai._jawTimer;
+        buf[offset + AI_PTERO_PHASE] = ai._pteroPhase;
       }
     }
 
@@ -398,6 +434,7 @@ export class GameSimulation {
     this._waveTransitionTimer = buf[GLOBAL_OFFSET + G_WAVE_TRANSITION_TIMER];
     this._gameMode = buf[GLOBAL_OFFSET + G_GAME_MODE] === 1 ? GAME_MODE_PVP : GAME_MODE_TEAM;
     this._gameOver = buf[GLOBAL_OFFSET + G_GAME_OVER] === 1;
+    this._idleTimer = buf[GLOBAL_OFFSET + G_IDLE_TIMER];
     const queueLen = buf[GLOBAL_OFFSET + G_SPAWN_QUEUE_LEN];
     this._spawnQueue = [];
     for (let i = 0; i < queueLen; i++) {
@@ -427,10 +464,14 @@ export class GameSimulation {
             buf[offset + AI_CURRENT_DIR]
           );
           this._ais[i]._flapAccum = buf[offset + AI_FLAP_ACCUM];
+          this._ais[i]._jawTimer = buf[offset + AI_JAW_TIMER];
+          this._ais[i]._pteroPhase = buf[offset + AI_PTERO_PHASE];
         } else {
           this._ais[i]._dirTimer = buf[offset + AI_DIR_TIMER];
           this._ais[i]._currentDir = buf[offset + AI_CURRENT_DIR];
           this._ais[i]._flapAccum = buf[offset + AI_FLAP_ACCUM];
+          this._ais[i]._jawTimer = buf[offset + AI_JAW_TIMER];
+          this._ais[i]._pteroPhase = buf[offset + AI_PTERO_PHASE];
         }
       } else {
         this._ais[i] = null;
@@ -541,7 +582,10 @@ export class GameSimulation {
 
     const composition = getWaveComposition(waveNumber);
 
-    // Build spawn queue
+    // Reset idle timer on wave start
+    this._idleTimer = 0;
+
+    // Build spawn queue (regular enemies only — pterodactyls spawn separately)
     this._spawnQueue = [];
     for (let i = 0; i < composition.bounders; i++) {
       this._spawnQueue.push(0); // ENEMY_TYPE_BOUNDER
@@ -563,6 +607,11 @@ export class GameSimulation {
 
     this._spawnTimer = 0;
     this._spawnNextGroup();
+
+    // Spawn wave pterodactyls (appear from screen edge, no materialization)
+    for (let i = 0; i < composition.pterodactyls; i++) {
+      this._spawnPterodactyl();
+    }
   }
 
   _spawnNextGroup() {
@@ -666,6 +715,73 @@ export class GameSimulation {
     }
   }
 
+  _spawnPterodactyl() {
+    // Find free enemy slot
+    let slotIdx = -1;
+    for (let i = 0; i < MAX_ENEMIES; i++) {
+      if (!this._chars[MAX_HUMANS + i].active) {
+        slotIdx = i;
+        break;
+      }
+    }
+    if (slotIdx < 0) {
+      return;
+    }
+
+    // Spawn from screen edge at bottom level — just above lava, below all platforms
+    const target = this._findClosestActiveHuman(this._chars[0]);
+    const enterFromLeft = target ? target.positionX > 0 : this._rng.nextInt(2) === 0;
+    const spawnX = enterFromLeft
+      ? FP_ORTHO_LEFT - FP_PTERO_SPAWN_MARGIN
+      : FP_ORTHO_RIGHT + FP_PTERO_SPAWN_MARGIN;
+    const spawnY = FP_ORTHO_BOTTOM + FP_LAVA_OFFSET + toFP(0.5);
+    const facingDir = enterFromLeft ? 1 : -1;
+
+    const char = this._chars[MAX_HUMANS + slotIdx];
+    char.active = true;
+    char.positionX = spawnX;
+    char.positionY = spawnY;
+    char.velocityX = 0;
+    char.velocityY = 0;
+    char.playerState = 'AIRBORNE';
+    char.currentPlatform = null;
+    char.platformIndex = -1;
+    char.facingDir = facingDir;
+    char.isTurning = false;
+    char.turnTimer = 0;
+    char.dead = false;
+    char.respawnTimer = 0;
+    char.invincible = false;
+    char.invincibleTimer = 0;
+    char.joustCooldown = 0;
+    char.materializing = false;  // No materialization — rises from below
+    char.materializeTimer = 0;
+    char.materializeDuration = 0;
+    char.materializeQuickEnd = false;
+    char.enemyType = ENEMY_TYPE_PTERODACTYL;
+    char.isFlapping = false;
+    char.flapTimer = 0;
+    char.stridePhase = 0;
+    char.prevPositionX = char.positionX;
+    char.prevPositionY = char.positionY;
+    char.hitLava = false;
+    char.bounceCount = 0;
+    char.edgeBumpCount = 0;
+
+    const ai = new EnemyAI(ENEMY_TYPE_PTERODACTYL, 60, facingDir); // 60 = PTERO_ENTER_FRAMES
+    this._ais[slotIdx] = ai;
+  }
+
+  _hasPterodactylAlive() {
+    for (let i = 0; i < MAX_ENEMIES; i++) {
+      const char = this._chars[MAX_HUMANS + i];
+      if (char.active && !char.dead && char.enemyType === ENEMY_TYPE_PTERODACTYL) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   _updateWaveSystem() {
     if (this._gameOver) {
       return;
@@ -684,10 +800,18 @@ export class GameSimulation {
     if (this._waveState === WAVE_PLAYING || (this._waveState === WAVE_SPAWNING && this._spawnQueue.length === 0)) {
       this._waveState = WAVE_PLAYING;
 
+      // Idle timer — hurry-up pterodactyl
+      this._idleTimer += 1;
+      if (this._idleTimer >= IDLE_TIMER_THRESHOLD && !this._hasPterodactylAlive()) {
+        this._spawnPterodactyl();
+        this._idleTimer = 0;
+      }
+
+      // Count living enemies (exclude pterodactyls from wave completion)
       let livingEnemies = 0;
       for (let i = 0; i < MAX_ENEMIES; i++) {
         const char = this._chars[MAX_HUMANS + i];
-        if (char.active && !char.dead) {
+        if (char.active && !char.dead && char.enemyType !== ENEMY_TYPE_PTERODACTYL) {
           livingEnemies++;
         }
       }
@@ -711,7 +835,7 @@ export class GameSimulation {
           }
         }
 
-        // Clean up dead enemy slots
+        // Clean up ALL enemy slots (including pterodactyls)
         for (let i = 0; i < MAX_ENEMIES; i++) {
           this._chars[MAX_HUMANS + i].active = false;
           this._ais[i] = null;
@@ -731,12 +855,63 @@ export class GameSimulation {
   // ---- Joust collisions ----
 
   _checkJoustCollisions() {
+    // Pterodactyl vs human collisions (checked first — pterodactyl is instant-kill)
+    for (let ei = 0; ei < MAX_ENEMIES; ei++) {
+      const enemy = this._chars[MAX_HUMANS + ei];
+      if (!enemy.active || enemy.dead || enemy.enemyType !== ENEMY_TYPE_PTERODACTYL) {
+        continue;
+      }
+      const ai = this._ais[ei];
+      const jawOpen = ai ? ai.isJawOpen() : false;
+
+      for (let hi = 0; hi < MAX_HUMANS; hi++) {
+        const human = this._chars[hi];
+        if (!human.active || human.dead) {
+          continue;
+        }
+
+        const result = resolvePterodactylCollision(enemy, human, MAX_HUMANS + ei, hi, jawOpen);
+        if (!result) {
+          continue;
+        }
+
+        if (result.type === 'pteroKill') {
+          // Player killed the pterodactyl — award points, no egg drop.
+          // Set dead=true (not active=false) so the renderer triggers
+          // the death explosion effect. The dead pterodactyl slot stays
+          // occupied until wave completion cleans it up.
+          this._addScore(hi, getKillPoints(ENEMY_TYPE_PTERODACTYL));
+          enemy.dead = true;
+          enemy.respawnTimer = RESPAWN_FRAMES;
+          this._ais[ei] = null;
+          this._idleTimer = 0;
+          break; // Pterodactyl is dead — stop checking more humans this frame
+        } else if (result.type === 'playerKill') {
+          // Pterodactyl killed the player
+          const knockDir = enemy.positionX < human.positionX ? 1 : -1;
+          this._killCharacter(human, hi, knockDir);
+        } else if (result.type === 'bounce') {
+          // Invincible player — bounce both
+          const pushDir = enemy.positionX <= human.positionX ? -1 : 1;
+          applyBounce(enemy, human, pushDir);
+          enemy.bounceCount += 1;
+          human.bounceCount += 1;
+        }
+      }
+    }
+
+    // Standard joust collisions (skip pterodactyl enemies — handled above)
     const totalChars = MAX_HUMANS + MAX_ENEMIES;
     for (let a = 0; a < totalChars; a++) {
       for (let b = a + 1; b < totalChars; b++) {
         const charA = this._chars[a];
         const charB = this._chars[b];
         if (!charA.active || !charB.active) {
+          continue;
+        }
+
+        // Skip if either is a pterodactyl (already handled above)
+        if (charA.enemyType === ENEMY_TYPE_PTERODACTYL || charB.enemyType === ENEMY_TYPE_PTERODACTYL) {
           continue;
         }
 
@@ -769,6 +944,16 @@ export class GameSimulation {
     char.dead = true;
     char.respawnTimer = RESPAWN_FRAMES;
 
+    // Reset idle timer when an enemy dies
+    if (charIdx >= MAX_HUMANS) {
+      this._idleTimer = 0;
+    }
+
+    // Pterodactyls don't drop eggs — they just die
+    if (char.enemyType === ENEMY_TYPE_PTERODACTYL) {
+      return;
+    }
+
     // Spawn egg — store the upgraded type it will hatch into
     // Bounder → Hunter, Hunter → Shadow Lord, Shadow Lord → Shadow Lord, Human → Bounder
     const eggType = charIdx >= MAX_HUMANS
@@ -793,10 +978,12 @@ export class GameSimulation {
       this._addScore(killerIdx, getKillPoints(char.enemyType));
     }
 
-    // Human death: decrement lives
+    // Human death: decrement lives, dismiss pterodactyls, reset idle timer
     if (charIdx < MAX_HUMANS) {
       char.lives -= 1;
       char.playerDiedThisWave = true;
+      this._dismissPterodactyls();
+      this._idleTimer = 0;
       if (char.lives <= 0) {
         char.lives = 0;
         this._checkGameOver();
@@ -811,9 +998,23 @@ export class GameSimulation {
     if (charIdx < MAX_HUMANS) {
       char.lives -= 1;
       char.playerDiedThisWave = true;
+      this._dismissPterodactyls();
+      this._idleTimer = 0;
       if (char.lives <= 0) {
         char.lives = 0;
         this._checkGameOver();
+      }
+    }
+  }
+
+  _dismissPterodactyls() {
+    for (let i = 0; i < MAX_ENEMIES; i++) {
+      const char = this._chars[MAX_HUMANS + i];
+      const ai = this._ais[i];
+      if (char.active && !char.dead && char.enemyType === ENEMY_TYPE_PTERODACTYL && ai) {
+        // Fly toward nearest screen edge
+        const exitDir = char.positionX >= 0 ? 1 : -1;
+        ai.startExit(exitDir);
       }
     }
   }
@@ -1040,6 +1241,7 @@ export class GameSimulation {
             this._addScore(h, basePoints + bonus);
             player.eggsCollectedThisWave += 1;
             egg.active = false;
+            this._idleTimer = 0; // Reset idle timer on egg collect
             break;
           }
         }
@@ -1251,6 +1453,8 @@ export class GameSimulation {
     const enemies = [];
     for (let i = 0; i < MAX_ENEMIES; i++) {
       const c = this._chars[MAX_HUMANS + i];
+      const ai = this._ais[i];
+      const isPtero = c.enemyType === ENEMY_TYPE_PTERODACTYL;
       enemies.push({
         ...c,
         positionX: fromFP(c.positionX),
@@ -1268,7 +1472,9 @@ export class GameSimulation {
         materializeTimer: c.materializeTimer / 60,
         materializeDuration: c.materializeDuration / 60,
         slotIndex: MAX_HUMANS + i,
-        wingMode: 'sweep',
+        wingMode: isPtero ? 'membrane' : 'sweep',
+        jawOpen: isPtero && ai ? ai.isJawOpen() : false,
+        pteroPhase: isPtero && ai ? ai._pteroPhase : 0,
       });
     }
 
@@ -1294,6 +1500,7 @@ export class GameSimulation {
       waveState: this._waveState,
       gameOver: this._gameOver,
       gameMode: this._gameMode,
+      idleTimer: this._idleTimer,
       humans,
       enemies,
       eggs,

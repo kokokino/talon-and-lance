@@ -10,6 +10,9 @@ import {
   GAME_MODE_TEAM,
 } from './constants.js';
 
+// Pterodactyl hitbox — larger to match bigger model
+const FP_PTERO_HALF_WIDTH = FP_CHAR_HALF_WIDTH + 50; // ~0.20 wider per side
+
 /**
  * Check platform collisions for a character.
  * All values are FP integers. Mutates char in place.
@@ -239,6 +242,60 @@ export function applyScreenWrap(char, orthoLeftFP, orthoRightFP) {
   } else if (char.positionX < orthoLeftFP - FP_CHAR_HALF_WIDTH) {
     char.positionX = orthoRightFP + FP_CHAR_HALF_WIDTH;
   }
+}
+
+/**
+ * Resolve a pterodactyl collision with a player.
+ * Pterodactyl is an instant-kill threat — killable only by lancing its open mouth head-on.
+ *
+ * Returns { type: 'pteroKill' | 'playerKill' | 'bounce', pteroIdx, playerIdx }
+ * or null if no collision.
+ */
+export function resolvePterodactylCollision(ptero, player, pteroIdx, playerIdx, jawOpen) {
+  if (!ptero || !player) {
+    return null;
+  }
+  if (ptero.dead || player.dead) {
+    return null;
+  }
+  if (ptero.materializing || player.materializing) {
+    return null;
+  }
+  if (ptero.joustCooldown > 0 || player.joustCooldown > 0) {
+    return null;
+  }
+
+  // AABB overlap check (pterodactyl uses slightly wider hitbox)
+  const pLeft = ptero.positionX - FP_PTERO_HALF_WIDTH;
+  const pRight = ptero.positionX + FP_PTERO_HALF_WIDTH;
+  const pFeet = ptero.positionY - FP_FEET_OFFSET;
+  const pHead = ptero.positionY + FP_HEAD_OFFSET;
+
+  const hLeft = player.positionX - FP_CHAR_HALF_WIDTH;
+  const hRight = player.positionX + FP_CHAR_HALF_WIDTH;
+  const hFeet = player.positionY - FP_FEET_OFFSET;
+  const hHead = player.positionY + FP_HEAD_OFFSET;
+
+  const collided = !(pRight < hLeft || pLeft > hRight || pHead < hFeet || pFeet > hHead);
+  if (!collided) {
+    return null;
+  }
+
+  // Invincible player bounces off
+  if (player.invincible) {
+    return { type: 'bounce', pteroIdx, playerIdx };
+  }
+
+  // Kill check: player kills pterodactyl if facing it AND jaw is open
+  const playerFacingPtero = (player.facingDir === 1 && ptero.positionX > player.positionX) ||
+                            (player.facingDir === -1 && ptero.positionX < player.positionX);
+
+  if (playerFacingPtero && jawOpen) {
+    return { type: 'pteroKill', pteroIdx, playerIdx };
+  }
+
+  // Otherwise, pterodactyl kills the player
+  return { type: 'playerKill', pteroIdx, playerIdx };
 }
 
 /**
