@@ -645,6 +645,7 @@ export class GameSimulation {
     const initialDirTimer = 90 + this._rng.nextInt(90); // ~1.5s + random up to 1.5s in frames
     const initialDir = this._rng.nextInt(2) === 1 ? 1 : -1;
     this._ais[slotIdx] = new EnemyAI(enemyType, initialDirTimer, initialDir);
+    return slotIdx;
   }
 
   _spawnEnemyFromHatchling(enemyType, fpX, egg) {
@@ -659,7 +660,11 @@ export class GameSimulation {
       }
     }
     const spawnY = platform ? platform.top + FP_FEET_OFFSET : egg.positionY + FP_EGG_HATCH_LIFT;
-    this._spawnEnemy(enemyType, fpX, spawnY, platform);
+    const slotIdx = this._spawnEnemy(enemyType, fpX, spawnY, platform);
+    // Skip materialization — hatchling was already visible, enemy should be immediately active
+    if (slotIdx >= 0) {
+      this._chars[MAX_HUMANS + slotIdx].materializing = false;
+    }
   }
 
   _updateWaveSystem() {

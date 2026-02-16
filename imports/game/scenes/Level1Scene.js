@@ -195,6 +195,7 @@ export class Level1Scene {
         // Buzzard arrival
         buzzardArrivalRig: null,
         buzzardArrivalRoot: null,
+        buzzardStartX: 0,
       });
     }
   }
@@ -825,12 +826,21 @@ export class Level1Scene {
       eggSlot.buzzardArrivalRig.root.parent = eggSlot.buzzardArrivalRoot;
     }
 
-    // Start position: above the hatchling
+    // Start position: nearest screen edge, at hatchling height
+    const nearestEdge = (Math.abs(egg.positionX - ORTHO_LEFT) < Math.abs(egg.positionX - ORTHO_RIGHT))
+      ? ORTHO_LEFT
+      : ORTHO_RIGHT;
+    eggSlot.buzzardStartX = nearestEdge;
     eggSlot.buzzardArrivalRoot.position = new Vector3(
-      egg.positionX,
-      egg.positionY + 3.0,
+      nearestEdge,
+      egg.positionY + EGG_RADIUS,
       0
     );
+
+    // Face the buzzard toward the hatchling
+    if (eggSlot.buzzardArrivalRig.root) {
+      eggSlot.buzzardArrivalRig.root.rotation.y = (nearestEdge < egg.positionX) ? 0 : Math.PI;
+    }
   }
 
   /**
@@ -845,12 +855,12 @@ export class Level1Scene {
     // Ease-in: quadratic
     const eased = t * t;
 
+    const startX = eggSlot.buzzardStartX;
     const targetX = eggSlot.hatchlingRoot.position.x;
     const targetY = eggSlot.hatchlingRoot.position.y + EGG_RADIUS;
-    const startY = targetY + 3.0;
 
-    eggSlot.buzzardArrivalRoot.position.x = targetX;
-    eggSlot.buzzardArrivalRoot.position.y = startY + (targetY - startY) * eased;
+    eggSlot.buzzardArrivalRoot.position.x = startX + (targetX - startX) * eased;
+    eggSlot.buzzardArrivalRoot.position.y = targetY;
 
     // Wing flap during descent
     const bParts = eggSlot.buzzardArrivalRig.parts;
@@ -907,6 +917,7 @@ export class Level1Scene {
     eggSlot.hatchlingRightHip = null;
     eggSlot.buzzardArrivalRig = null;
     eggSlot.buzzardArrivalRoot = null;
+    eggSlot.buzzardStartX = 0;
   }
 
   /**
