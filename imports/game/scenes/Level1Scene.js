@@ -46,7 +46,7 @@ const IDLE_LOOK_MIN = 2.0;
 const IDLE_LOOK_MAX = 3.0;
 const IDLE_WING_RUFFLE_DURATION = 0.6;
 const IDLE_LANCE_ADJUST_DURATION = 0.8;
-const IDLE_YAW_AMOUNT = 0.4;
+const IDLE_YAW_AMOUNT = 0.8;
 const IDLE_YAW_EASE_RATE = 3.0;
 
 import {
