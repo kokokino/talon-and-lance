@@ -6,6 +6,9 @@ export const VOXEL_SIZE = 0.07;
 export const ORTHO_WIDTH = 20;
 export const ORTHO_LEFT = -ORTHO_WIDTH / 2;
 export const ORTHO_RIGHT = ORTHO_WIDTH / 2;
+export const ORTHO_HEIGHT = ORTHO_WIDTH * 9 / 16;  // = 11.25 (16:9 aspect)
+export const ORTHO_BOTTOM = -ORTHO_HEIGHT / 2;      // = -5.625
+export const ORTHO_TOP = ORTHO_HEIGHT / 2;           // = 5.625
 
 // ---- Movement ----
 export const ACCELERATION = 4.0;
@@ -151,6 +154,8 @@ export const FP_JOUST_DEADZONE = Math.round(JOUST_HEIGHT_DEADZONE * FP);
 export const FP_ORTHO_LEFT = Math.round(ORTHO_LEFT * FP);
 export const FP_ORTHO_RIGHT = Math.round(ORTHO_RIGHT * FP);
 export const FP_ORTHO_WIDTH = Math.round(ORTHO_WIDTH * FP);
+export const FP_ORTHO_BOTTOM = Math.round(ORTHO_BOTTOM * FP);
+export const FP_ORTHO_TOP = Math.round(ORTHO_TOP * FP);
 
 // ---- Timer constants (frame counts at 60fps) ----
 export const RESPAWN_FRAMES = Math.round(RESPAWN_DELAY * 60);

@@ -125,8 +125,6 @@ export const BabylonPage = {
       scene: this.scene,
       engine: this.engine,
       canvas: this.canvas,
-      orthoBottom: renderer._orthoBottom,
-      orthoTop: renderer._orthoTop,
       onQuitToMenu: () => {
         this._cleanupMultiplayer();
         this._bootMainMenu();

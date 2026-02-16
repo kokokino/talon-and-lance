@@ -16,6 +16,7 @@ import {
   FP_GRAVITY_PF, FP_TERMINAL_VELOCITY, FP_FRICTION_PF,
   FP_FEET_OFFSET, FP_HEAD_OFFSET, FP_CHAR_HALF_WIDTH,
   FP_EGG_RADIUS, FP_ORTHO_LEFT, FP_ORTHO_RIGHT,
+  FP_ORTHO_BOTTOM, FP_ORTHO_TOP,
   FP_LAVA_OFFSET, FP_BOUNCE_THRESHOLD,
   FP_EGG_HATCH_LIFT, FP_KILL_KNOCK_VX,
   FP_HATCHLING_HALF_WIDTH, FP_HATCHLING_HEIGHT,
@@ -89,12 +90,10 @@ const STRIDE_RECIP_Q24 = 55925;
 
 export class GameSimulation {
   /**
-   * @param {{ gameMode: string, seed: number, orthoBottom: number, orthoTop: number }} config
+   * @param {{ gameMode: string, seed: number }} config
    */
-  constructor({ gameMode, seed, orthoBottom, orthoTop }) {
+  constructor({ gameMode, seed }) {
     this._gameMode = gameMode || GAME_MODE_TEAM;
-    this._orthoBottomFP = toFP(orthoBottom);
-    this._orthoTopFP = toFP(orthoTop);
     this._platforms = buildPlatformCollisionDataFP();
     this._rng = new DeterministicRNG(seed);
 
@@ -272,16 +271,16 @@ export class GameSimulation {
       // Apply physics (FP integer, no dt parameter)
       if (i < MAX_HUMANS) {
         const input = this._decodeInput(inputs[i] || 0);
-        applyInput(char, input, this._platforms, this._orthoTopFP, this._orthoBottomFP);
+        applyInput(char, input, this._platforms, FP_ORTHO_TOP, FP_ORTHO_BOTTOM);
       } else {
         const aiIdx = i - MAX_HUMANS;
         const ai = this._ais[aiIdx];
         if (ai) {
           const target = this._findClosestActiveHuman(char);
-          const aiInput = ai.decide(char, target, this._orthoBottomFP, this._rng);
-          applyInput(char, aiInput, this._platforms, this._orthoTopFP, this._orthoBottomFP);
+          const aiInput = ai.decide(char, target, FP_ORTHO_BOTTOM, this._rng);
+          applyInput(char, aiInput, this._platforms, FP_ORTHO_TOP, FP_ORTHO_BOTTOM);
         } else {
-          applyIdle(char, this._platforms, this._orthoTopFP, this._orthoBottomFP);
+          applyIdle(char, this._platforms, FP_ORTHO_TOP, FP_ORTHO_BOTTOM);
         }
       }
 
@@ -1011,7 +1010,7 @@ export class GameSimulation {
         }
 
         // Lava (FP)
-        if (egg.positionY < this._orthoBottomFP + FP_LAVA_OFFSET) {
+        if (egg.positionY < FP_ORTHO_BOTTOM + FP_LAVA_OFFSET) {
           egg.active = false;
           egg.hitLava = true;
           continue;

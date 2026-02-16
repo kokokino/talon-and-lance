@@ -23,8 +23,6 @@ export class MultiplayerManager {
    *   scene: BabylonScene,
    *   engine: BabylonEngine,
    *   canvas: HTMLCanvasElement,
-   *   orthoBottom: number,
-   *   orthoTop: number,
    *   onQuitToMenu: Function,
    *   onGameOver: Function,
    * }} config
@@ -36,8 +34,6 @@ export class MultiplayerManager {
     this._scene = config.scene;
     this._engine = config.engine;
     this._canvas = config.canvas;
-    this._orthoBottom = config.orthoBottom;
-    this._orthoTop = config.orthoTop;
     this._onQuitToMenu = config.onQuitToMenu;
     this._onGameOver = config.onGameOver;
 
@@ -109,8 +105,6 @@ export class MultiplayerManager {
     this._simulation = new GameSimulation({
       gameMode: this._gameMode,
       seed,
-      orthoBottom: this._orthoBottom,
-      orthoTop: this._orthoTop,
     });
 
     // Initialize deterministic environment from shared seed

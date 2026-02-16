@@ -238,8 +238,6 @@ export class Level1Scene {
       this._soloSimulation = new GameSimulation({
         gameMode: GAME_MODE_TEAM,
         seed: soloSeed,
-        orthoBottom: this._orthoBottom,
-        orthoTop: this._orthoTop,
       });
       this._soloSimulation.activatePlayer(0, this._paletteIndex);
       this._soloSimulation.startGame();
