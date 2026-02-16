@@ -51,8 +51,37 @@ The game uses GGPO-style rollback netcode with a request-based API pattern (insp
 - **Fallback:** If P2P fails for a player pair, geckos.io relays through the server (still UDP-like WebRTC)
 - **Postgame:** Results sent back to Meteor via Methods
 
+### Simulation / Renderer Split
+The game has a strict separation between deterministic logic and visual rendering:
+
+- **`GameSimulation`** (`imports/game/GameSimulation.js`) — Pure deterministic game logic. No Babylon dependencies. Owns the `Int32Array` state buffer. Implements `tick(inputs)`, `serialize()`, `deserialize()`. All physics, collision, spawning, scoring, and AI happen here.
+- **`Level1Scene`** (`imports/game/scenes/Level1Scene.js`) — Babylon renderer. Reads game state and syncs meshes/sounds/HUD to match. Never mutates game state.
+- **`MultiplayerManager`** (`imports/game/MultiplayerManager.js`) — Orchestrator that wires GameSimulation + Level1Scene + rollback session + transport for online play.
+
+**Level1Scene operates in two modes:**
+1. **Solo mode** (default) — Owns its own GameSimulation and InputReader, ticks simulation in its `_update()` loop.
+2. **Renderer mode** (`rendererOnly: true`) — External caller (MultiplayerManager) owns GameSimulation and GameLoop. Caller invokes `draw(gameState)` each frame; Level1Scene just renders.
+
 ### Determinism Strategy
 All game physics use integer arithmetic (positions in 1/256th pixel units) — no floating point in game logic. Seedable PRNG (mulberry32) for all randomness. Game state serialized as flat `Int32Array` for microsecond save/restore during rollbacks. Havok physics must **never** be used for gameplay state (not deterministic cross-platform, no snapshot/restore API) — only for cosmetic effects like voxel debris. See `documentation/PHYSICS.md` for full rationale.
+
+### Integer Physics Implementation
+- **Fixed-point scale:** `FP_SCALE = 256` (8 fractional bits). Convert with `toFP(val)` / `fromFP(val)` in `stateLayout.js`.
+- **No dt parameter:** All physics functions assume 60fps fixed timestep. Constants are pre-computed as per-frame deltas (e.g., `FP_GRAVITY_PF`).
+- **Reciprocal-multiply division:** Integer division without float ops — `velPerFrame(vel)` divides by 60 using `(vel * 17477) >> 20`. Also `idiv3()`, `idiv10()`. All in `stateLayout.js`.
+- **No `Math.random()`:** Uses `DeterministicRNG` (mulberry32 with seed stored in game state).
+- **No `Date.now()` in game logic:** All timers use frame counts (integers at 60fps).
+- Float-point only appears in the renderer for visual interpolation, never in physics.
+
+### Game State Layout
+All game state lives in a flat `Int32Array` (532 ints, ~2KB) defined in `imports/game/physics/stateLayout.js`:
+- **GLOBAL** (20 ints): frame counter, RNG seed, wave number/state, spawn timers, game mode
+- **HUMANS** (4 slots × 34 ints): position, velocity, state flags, timers, score, lives
+- **ENEMIES** (8 slots × 34 ints): same structure as humans
+- **ENEMY_AI** (8 slots × 4 ints): direction timer, current direction, flap accumulator
+- **EGGS** (8 slots × 12 ints): position, velocity, hatch state/timer, enemy type
+
+Access pattern: `state[HUMANS_OFFSET + slotIndex * CHAR_SIZE + C_POS_X]`. Constants like `C_POS_X`, `C_VEL_Y` are field offsets within a slot.
 
 ### SSO Flow
 1. User clicks "Launch" in Hub → Hub generates RS256-signed JWT
@@ -62,22 +91,33 @@ All game physics use integer arithmetic (positions in 1/256th pixel units) — n
 5. Spoke creates local Meteor session via custom `Accounts.registerLoginHandler`
 
 ### Babylon Scene Architecture
-`BabylonPage` (Mithril component) owns the Babylon Engine, canvas, render loop, and AudioManager. It orchestrates scene transitions between `MainMenuScene` and `Level1Scene`. Each scene class exposes `dispose()` and is instantiated by BabylonPage when transitioning.
+`BabylonPage` (Mithril component) owns the Babylon Engine, canvas, render loop, and AudioManager. It orchestrates scene transitions between `MainMenuScene` and `Level1Scene`. Each scene class exposes `create(scene, engine, canvas)` and `dispose()`, and is instantiated by BabylonPage when transitioning.
 
 - **MainMenuScene** — 3D menu with animated knight, arc-rotate camera, palette selector (4 knight colors), music track selector (3 tracks), mode select (Team Play/PvP). Preferences saved to localStorage.
-- **Level1Scene** — Full Joust gameplay: multi-tier platforms over lava, flapping flight physics, lance-height jousting, death/respawn with invincibility, egg drop mechanics, voxel explosion debris, day/night cycle. Currently supports local play with switchable player/enemy (ArrowUp/ArrowDown).
+- **Level1Scene** — Full Joust gameplay: multi-tier platforms over lava, flapping flight physics, lance-height jousting, death/respawn with invincibility, egg drop mechanics, voxel explosion debris, day/night cycle.
+
+### Render Slot System
+Level1Scene uses **pre-allocated render slots** (not ECS). 12 character slots (0–3 humans, 4–11 enemies) and 8 egg slots. Each slot stores mesh references and visual-only animation state (idle blend, turn animation, vortex effect). Meshes are created when a slot becomes `active && !dead` and disposed on death or deactivation.
+
+Character assembly: `_createSlotMeshes()` builds three rigs (bird, knight, lance) via VoxelBuilder, then `_assembleCharacter()` wires parent-child hierarchy with TransformNode pivot nodes for shoulders, hips, knees, and wings.
+
+### Sound State Diffing
+`Level1Scene._syncSounds()` compares the current frame's game state against a `_prevState` snapshot to detect transitions (e.g., `char.dead && !prev.dead` → play death sound). Cooldown timestamps via `performance.now()` prevent overlap on rapid-fire sounds. SFX use round-robin pooling in AudioManager for variant selection (e.g., `'flap'` → `'flap-1'` through `'flap-5'`).
 
 ### Voxel Model System
-`VoxelBuilder` converts voxel definitions to Babylon meshes with face culling and flat-shaded cubes. Models in `imports/game/voxels/models/` define shapes as arrays of `[x, y, z, colorIndex]` entries with palette mappings. Each model can have multiple color palettes (e.g., `knightPalettes.js` has 4 variants, `evilKnightPalettes.js` has 3).
+`VoxelBuilder` converts voxel definitions to Babylon meshes with neighbor-based face culling and flat-shaded vertex-colored cubes. Models define parts as `layers[y][z][x]` arrays (y=0 is bottom, z=0 is front facing -Z) with numeric color indices mapped through a palette object. Parts can declare a `parent` and `offset` for hierarchical assembly.
+
+Palette system: Base palette lives in the model file. Override palettes in separate files (e.g., `knightPalettes.js`) swap specific color keys (plume, primary, accent, shield) via spread merge. `buildKnightPalette(index)` produces the final palette for a given variant.
 
 ### Implementation Status
-The game is a playable single-player Joust with polished visuals. The rollback netcode and transport layers are fully built but **not yet wired to the game** — Level1Scene uses direct local input, not the rollback session. Lobby UI (room list, matchmaking flow) has server methods/publications but no frontend pages.
+The game is a playable Joust with polished visuals and working online multiplayer. `MultiplayerManager` orchestrates the full lifecycle: matchmaking via Meteor methods, WebRTC peer connections via `TransportManager`, rollback netcode via `RollbackSession`, drop-in/drop-out with state sync, and desync detection with authority-based resync. Games start in solo mode and seamlessly transition to rollback multiplayer when peers connect (and back to solo when they disconnect).
 
 ### Key Directories
-- `imports/game/scenes/` - Babylon scenes: MainMenuScene (menu + palette picker), Level1Scene (full Joust gameplay)
+- `imports/game/physics/` - Deterministic core: `stateLayout.js` (Int32Array layout + FP helpers), `constants.js` (all game constants), `CollisionSystem.js` (platform/joust/lava/screen-wrap), `PhysicsSystem.js` (input/friction/gravity application), `mulberry32.js` (seedable PRNG)
+- `imports/game/` - `GameSimulation.js` (tick/serialize/deserialize), `GameLoop.js` (fixed 60fps timestep), `InputReader.js` (keyboard sampling with edge detection), `EnemyAI.js`, `MultiplayerManager.js` (online play orchestrator), `scoring.js` (wave composition, point values)
+- `imports/game/scenes/` - Babylon scenes: MainMenuScene (menu + palette picker), Level1Scene (full Joust renderer)
 - `imports/game/voxels/` - VoxelBuilder mesh generator + voxel model definitions (knight, ostrich, evil knight, buzzard, lance, egg)
-- `imports/game/audio/` - AudioManager (Babylon Audio V2, menu music tracks)
-- `imports/game/` - GameLoop (fixed 60fps timestep), InputReader (keyboard sampling with edge detection)
+- `imports/game/audio/` - AudioManager (Babylon Audio V2, SFX pooling, menu music tracks)
 - `imports/netcode/` - Rollback engine (game-agnostic): RollbackSession, InputQueue, StateBuffer, TimeSync, SyncTestSession, InputEncoder
 - `imports/netcode/transport/` - Transport layer: PeerJSTransport (P2P), GeckosTransport (relay), TransportManager (orchestrator)
 - `imports/hub/` - Hub integration (SSO handler, API client, subscription checking)
@@ -181,6 +221,8 @@ DDPRateLimiter.addRule({ type: 'method', name: 'rooms.create' }, 5, 10000);
 
 ### Testing
 Run with `meteor test --driver-package meteortesting:mocha`. Tests use Mocha with Node.js assert. Server-only tests wrap in `if (Meteor.isServer)`.
+
+Game logic tests (`imports/game/tests/`) have **no Babylon dependencies** — they test GameSimulation, CollisionSystem, and multiplayer sync as pure JS. Test helpers like `makeChar(overrides)` and `makeEgg(overrides)` create slot data with sensible defaults. Determinism tests run the same seed + inputs twice and assert `Int32Array` byte-for-byte equality. Roundtrip tests: serialize → deserialize → re-serialize → assert identical buffers.
 
 ### Database Indexes
 Created in `server/indexes.js` during `Meteor.startup()`. Uses TTL indexes for automatic cleanup:
