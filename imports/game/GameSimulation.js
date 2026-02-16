@@ -10,6 +10,7 @@ import {
   RESPAWN_FRAMES, INVINCIBLE_FRAMES,
   MATERIALIZE_FRAMES, MATERIALIZE_QUICK_FRAMES,
   HATCH_FRAMES, WOBBLE_START_FRAMES,
+  HATCHLING_FRAMES,
   SPAWN_INTERVAL_FRAMES, WAVE_DELAY_FRAMES,
   TURN_FRAMES, FLAP_FRAMES, JOUST_COOLDOWN_FRAMES,
   FP_GRAVITY_PF, FP_TERMINAL_VELOCITY, FP_FRICTION_PF,
@@ -17,6 +18,7 @@ import {
   FP_EGG_RADIUS, FP_ORTHO_LEFT, FP_ORTHO_RIGHT,
   FP_LAVA_OFFSET, FP_BOUNCE_THRESHOLD,
   FP_EGG_HATCH_LIFT, FP_KILL_KNOCK_VX,
+  FP_HATCHLING_HALF_WIDTH, FP_HATCHLING_HEIGHT,
   SPAWN_POINTS_FP, ENEMY_SPAWN_POINTS_FP,
   GAME_MODE_TEAM, GAME_MODE_PVP,
   buildPlatformCollisionDataFP,
@@ -55,7 +57,7 @@ import {
   E_ON_PLATFORM, E_ENEMY_TYPE, E_HATCH_STATE, E_HATCH_TIMER,
   E_BOUNCE_COUNT, E_PREV_POS_Y, E_HIT_LAVA,
   WAVE_SPAWNING, WAVE_PLAYING, WAVE_TRANSITION,
-  HATCH_FALLING, HATCH_ON_PLATFORM, HATCH_WOBBLING,
+  HATCH_FALLING, HATCH_ON_PLATFORM, HATCH_WOBBLING, HATCH_HATCHLING,
   STATE_GROUNDED, STATE_AIRBORNE,
   toFP, fromFP, velPerFrame,
 } from './physics/stateLayout.js';
@@ -645,6 +647,21 @@ export class GameSimulation {
     this._ais[slotIdx] = new EnemyAI(enemyType, initialDirTimer, initialDir);
   }
 
+  _spawnEnemyFromHatchling(enemyType, fpX, egg) {
+    // Find the platform under the egg's position
+    let platform = null;
+    for (const plat of this._platforms) {
+      if (fpX + FP_EGG_RADIUS >= plat.left &&
+          fpX - FP_EGG_RADIUS <= plat.right &&
+          Math.abs((egg.positionY - FP_EGG_RADIUS) - plat.top) <= FP_EGG_RADIUS) {
+        platform = plat;
+        break;
+      }
+    }
+    const spawnY = platform ? platform.top + FP_FEET_OFFSET : egg.positionY + FP_EGG_HATCH_LIFT;
+    this._spawnEnemy(enemyType, fpX, spawnY, platform);
+  }
+
   _updateWaveSystem() {
     if (this._gameOver) {
       return;
@@ -1036,9 +1053,50 @@ export class GameSimulation {
           egg.hatchState = HATCH_WOBBLING;
         }
 
-        if (egg.hatchTimer >= HATCH_FRAMES) {
-          // Hatch — egg already stores the upgraded type from _killCharacter
-          this._spawnEnemy(egg.enemyType, egg.positionX, egg.positionY + FP_EGG_HATCH_LIFT, null);
+        if (egg.hatchTimer >= HATCH_FRAMES && egg.hatchState === HATCH_WOBBLING) {
+          // Transition to hatchling — standing knight on platform
+          egg.hatchState = HATCH_HATCHLING;
+          // Timer keeps incrementing from HATCH_FRAMES
+        }
+      }
+
+      // Hatchling state — standing knight, collectible by players
+      if (egg.hatchState === HATCH_HATCHLING) {
+        egg.hatchTimer += 1;
+
+        // Player collection check (AABB using hatchling hitbox)
+        const hLeft = egg.positionX - FP_HATCHLING_HALF_WIDTH;
+        const hRight = egg.positionX + FP_HATCHLING_HALF_WIDTH;
+        const hBottom = egg.positionY - FP_EGG_RADIUS;
+        const hTop = hBottom + FP_HATCHLING_HEIGHT;
+
+        for (let h = 0; h < MAX_HUMANS; h++) {
+          const player = this._chars[h];
+          if (!player.active || player.dead || player.materializing) {
+            continue;
+          }
+
+          const pLeft = player.positionX - FP_CHAR_HALF_WIDTH;
+          const pRight = player.positionX + FP_CHAR_HALF_WIDTH;
+          const pFeet = player.positionY - FP_FEET_OFFSET;
+          const pHead = player.positionY + FP_HEAD_OFFSET;
+
+          if (pRight > hLeft && pLeft < hRight && pHead > hBottom && pFeet < hTop) {
+            const basePoints = getEggPoints(player.eggsCollectedThisWave);
+            this._addScore(h, basePoints);
+            player.eggsCollectedThisWave += 1;
+            egg.active = false;
+            break;
+          }
+        }
+
+        if (!egg.active) {
+          continue;
+        }
+
+        // Mount transition — hatchling timer expired, buzzard arrives
+        if (egg.hatchTimer >= HATCH_FRAMES + HATCHLING_FRAMES) {
+          this._spawnEnemyFromHatchling(egg.enemyType, egg.positionX, egg);
           egg.active = false;
         }
       }

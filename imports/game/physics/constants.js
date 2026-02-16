@@ -164,6 +164,14 @@ export const WAVE_DELAY_FRAMES = Math.round(WAVE_TRANSITION_DELAY * 60);
 export const TURN_FRAMES = Math.round(TURN_DURATION * 60);
 export const FLAP_FRAMES = Math.round(FLAP_DURATION * 60);
 export const JOUST_COOLDOWN_FRAMES = Math.round(0.15 * 60);
+export const HATCHLING_FRAMES = Math.round(LOOK_AROUND_TIME * 60);   // 180 frames
+export const BIRD_ARRIVE_FRAMES = Math.round(BIRD_ARRIVE_TIME * 60); // 90 frames
+
+// ---- Hatchling hitbox (standing knight only, no bird) ----
+export const HATCHLING_HALF_WIDTH = 4 * VOXEL_SIZE;
+export const HATCHLING_HEIGHT = 13 * VOXEL_SIZE;
+export const FP_HATCHLING_HALF_WIDTH = Math.round(HATCHLING_HALF_WIDTH * FP);
+export const FP_HATCHLING_HEIGHT = Math.round(HATCHLING_HEIGHT * FP);
 
 // ---- Misc FP thresholds ----
 export const FP_LAVA_OFFSET = Math.round(1.0 * FP);

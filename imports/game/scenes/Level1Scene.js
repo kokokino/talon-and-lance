@@ -27,11 +27,12 @@ import {
   TURN_DURATION, FLAP_DURATION,
   WING_UP_ANGLE, WING_DOWN_ANGLE, WING_GLIDE_ANGLE,
   SWEEP_FORWARD_ANGLE, SWEEP_BACKWARD_ANGLE, SWEEP_GLIDE_ANGLE,
-  HATCH_TIME, WOBBLE_START,
+  HATCH_TIME, WOBBLE_START, LOOK_AROUND_TIME, BIRD_ARRIVE_TIME,
   WAVE_TRANSITION_DELAY,
   PLATFORM_DEFS, SPAWN_POINTS,
   buildPlatformCollisionData,
   GAME_MODE_TEAM,
+  EGG_RADIUS,
 } from '../physics/constants.js';
 
 // Idle animation constants
@@ -65,7 +66,7 @@ import { buildKnightPalette } from '../voxels/models/knightPalettes.js';
 import { buildEvilKnightPalette } from '../voxels/models/evilKnightPalettes.js';
 import {
   MAX_HUMANS, MAX_ENEMIES, MAX_EGGS,
-  HATCH_WOBBLING, WAVE_PLAYING, WAVE_TRANSITION,
+  HATCH_WOBBLING, HATCH_HATCHLING, WAVE_PLAYING, WAVE_TRANSITION,
 } from '../physics/stateLayout.js';
 
 /**
@@ -177,7 +178,24 @@ export class Level1Scene {
     // Per-egg-slot render data
     this._eggRenderSlots = [];
     for (let i = 0; i < 8; i++) {
-      this._eggRenderSlots.push({ rig: null, prevActive: false, prevHitLava: false, prevOnPlatform: false, prevHatchState: 0 });
+      this._eggRenderSlots.push({
+        rig: null,
+        prevActive: false,
+        prevHitLava: false,
+        prevOnPlatform: false,
+        prevHatchState: 0,
+        // Hatchling rendering state
+        hatchlingRoot: null,
+        hatchlingKnightRig: null,
+        hatchlingLanceRig: null,
+        hatchlingLeftShoulder: null,
+        hatchlingRightShoulder: null,
+        hatchlingLeftHip: null,
+        hatchlingRightHip: null,
+        // Buzzard arrival
+        buzzardArrivalRig: null,
+        buzzardArrivalRoot: null,
+      });
     }
   }
 
@@ -589,13 +607,19 @@ export class Level1Scene {
     for (let i = 0; i < this._eggRenderSlots.length; i++) {
       const eggSlot = this._eggRenderSlots[i];
       if (eggSlot.prevActive && !activeSlots.has(i)) {
-        // Egg was removed
+        // Egg/hatchling was removed
         if (eggSlot.prevHitLava) {
           this._spawnLavaBurst();
-        } else if (eggSlot.prevHatchState !== HATCH_WOBBLING) {
-          // Not lava, not hatching — egg was collected
+        } else if (eggSlot.prevHatchState !== HATCH_WOBBLING && eggSlot.prevHatchState !== HATCH_HATCHLING) {
+          // Not lava, not hatching/mounting — egg was collected
           if (eggSlot.rig && eggSlot.rig.root) {
             const pos = eggSlot.rig.root.position;
+            this._spawnEggCollectEffect(pos.x, pos.y, collectorSlotIndex);
+          }
+        } else if (eggSlot.prevHatchState === HATCH_HATCHLING && collectorSlotIndex >= 0) {
+          // Hatchling was collected by a player (not mounting into enemy)
+          if (eggSlot.hatchlingRoot) {
+            const pos = eggSlot.hatchlingRoot.position;
             this._spawnEggCollectEffect(pos.x, pos.y, collectorSlotIndex);
           }
         }
@@ -603,6 +627,7 @@ export class Level1Scene {
           this._disposeEggRig(eggSlot.rig);
           eggSlot.rig = null;
         }
+        this._disposeHatchlingMeshes(eggSlot);
         eggSlot.prevActive = false;
         eggSlot.prevHitLava = false;
         eggSlot.prevOnPlatform = false;
@@ -614,26 +639,57 @@ export class Level1Scene {
     for (const egg of eggs) {
       const eggSlot = this._eggRenderSlots[egg.slotIndex];
 
-      // New egg — create mesh
-      if (!eggSlot.rig) {
-        const VS = VOXEL_SIZE;
-        eggSlot.rig = buildRig(this.scene, eggModel, VS, true);
-        eggSlot.prevActive = true;
+      // Rollback handling: hatchState reverted from HATCH_HATCHLING back to earlier state
+      if (eggSlot.prevHatchState === HATCH_HATCHLING && egg.hatchState !== HATCH_HATCHLING) {
+        this._disposeHatchlingMeshes(eggSlot);
       }
 
-      // Position
-      if (eggSlot.rig && eggSlot.rig.root) {
-        eggSlot.rig.root.position.x = egg.positionX;
-        eggSlot.rig.root.position.y = egg.positionY;
+      // Egg-to-hatchling transition
+      if (egg.hatchState === HATCH_HATCHLING && eggSlot.prevHatchState !== HATCH_HATCHLING) {
+        // Dispose egg rig, create hatchling meshes
+        if (eggSlot.rig) {
+          this._disposeEggRig(eggSlot.rig);
+          eggSlot.rig = null;
+        }
+        this._createHatchlingMeshes(eggSlot, egg);
+      }
 
-        // Wobble animation
-        if (egg.hatchState === HATCH_WOBBLING) {
-          const wobbleProgress = (egg.hatchTimer - WOBBLE_START) / (HATCH_TIME - WOBBLE_START);
-          const amplitude = 0.2 + wobbleProgress * 0.5;
-          const frequency = 8 + wobbleProgress * 12;
-          eggSlot.rig.root.rotation.z = Math.sin(egg.hatchTimer * frequency) * amplitude;
-        } else {
-          eggSlot.rig.root.rotation.z = 0;
+      // Hatchling frame update
+      if (egg.hatchState === HATCH_HATCHLING && eggSlot.hatchlingRoot) {
+        eggSlot.hatchlingRoot.position.x = egg.positionX;
+        eggSlot.hatchlingRoot.position.y = egg.positionY;
+
+        const hatchlingAge = (egg.hatchTimer - HATCH_TIME);
+        this._animateHatchlingIdle(eggSlot, hatchlingAge);
+
+        // Buzzard arrival in the last BIRD_ARRIVE_TIME seconds
+        if (hatchlingAge > LOOK_AROUND_TIME - BIRD_ARRIVE_TIME) {
+          if (!eggSlot.buzzardArrivalRig) {
+            this._createBuzzardArrival(eggSlot, egg);
+          }
+          const arrivalProgress = (hatchlingAge - (LOOK_AROUND_TIME - BIRD_ARRIVE_TIME)) / BIRD_ARRIVE_TIME;
+          this._animateBuzzardArrival(eggSlot, arrivalProgress);
+        }
+      } else if (egg.hatchState !== HATCH_HATCHLING) {
+        // Regular egg rendering
+        if (!eggSlot.rig) {
+          const VS = VOXEL_SIZE;
+          eggSlot.rig = buildRig(this.scene, eggModel, VS, true);
+        }
+
+        if (eggSlot.rig && eggSlot.rig.root) {
+          eggSlot.rig.root.position.x = egg.positionX;
+          eggSlot.rig.root.position.y = egg.positionY;
+
+          // Wobble animation
+          if (egg.hatchState === HATCH_WOBBLING) {
+            const wobbleProgress = (egg.hatchTimer - WOBBLE_START) / (HATCH_TIME - WOBBLE_START);
+            const amplitude = 0.2 + wobbleProgress * 0.5;
+            const frequency = 8 + wobbleProgress * 12;
+            eggSlot.rig.root.rotation.z = Math.sin(egg.hatchTimer * frequency) * amplitude;
+          } else {
+            eggSlot.rig.root.rotation.z = 0;
+          }
         }
       }
 
@@ -656,6 +712,201 @@ export class Level1Scene {
         part.mesh.dispose();
       }
     }
+  }
+
+  /**
+   * Create hatchling meshes — standalone evil knight standing on platform (no bird).
+   */
+  _createHatchlingMeshes(eggSlot, egg) {
+    const VS = VOXEL_SIZE;
+    const notLit = true;
+    const evilPalette = buildEvilKnightPalette(egg.enemyType);
+
+    eggSlot.hatchlingKnightRig = buildRig(this.scene, { ...evilKnightModel, palette: evilPalette }, VS, notLit);
+    eggSlot.hatchlingLanceRig = buildRig(this.scene, lanceModel, VS, notLit);
+
+    // Create root transform
+    eggSlot.hatchlingRoot = new TransformNode('hatchlingRoot', this.scene);
+    eggSlot.hatchlingRoot.position = new Vector3(egg.positionX, egg.positionY, 0);
+
+    // Parent knight to root — position so feet align with platform surface
+    if (eggSlot.hatchlingKnightRig.root) {
+      eggSlot.hatchlingKnightRig.root.parent = eggSlot.hatchlingRoot;
+      eggSlot.hatchlingKnightRig.root.rotation.y = -Math.PI / 2;
+      // Raise knight so feet sit at root Y (egg bottom is at positionY - EGG_RADIUS)
+      eggSlot.hatchlingKnightRig.root.position = new Vector3(0, EGG_RADIUS, 0);
+    }
+
+    // Set up shoulder pivots (same pattern as _setupKnightShoulders)
+    const kParts = eggSlot.hatchlingKnightRig.parts;
+    if (kParts.leftArm && kParts.torso) {
+      eggSlot.hatchlingLeftShoulder = new TransformNode('hatchLeftShoulder', this.scene);
+      eggSlot.hatchlingLeftShoulder.parent = kParts.torso.mesh;
+      eggSlot.hatchlingLeftShoulder.position = new Vector3(3 * VS, 4 * VS, 0);
+      kParts.leftArm.mesh.parent = eggSlot.hatchlingLeftShoulder;
+      kParts.leftArm.mesh.position = new Vector3(0, -4 * VS, 0);
+      eggSlot.hatchlingLeftShoulder.rotation.x = Math.PI / 2;
+      if (kParts.shield) {
+        kParts.shield.mesh.rotation.x = -Math.PI / 2;
+      }
+    }
+
+    if (kParts.rightArm && kParts.torso) {
+      eggSlot.hatchlingRightShoulder = new TransformNode('hatchRightShoulder', this.scene);
+      eggSlot.hatchlingRightShoulder.parent = kParts.torso.mesh;
+      eggSlot.hatchlingRightShoulder.position = new Vector3(-3 * VS, 4 * VS, 0);
+      kParts.rightArm.mesh.parent = eggSlot.hatchlingRightShoulder;
+      kParts.rightArm.mesh.position = new Vector3(0, -4 * VS, 0);
+      eggSlot.hatchlingRightShoulder.rotation.x = Math.PI / 2;
+    }
+
+    // Set up hip pivots — standing pose (legs straight down, not riding position)
+    if (kParts.leftLeg && kParts.torso) {
+      eggSlot.hatchlingLeftHip = new TransformNode('hatchLeftHip', this.scene);
+      eggSlot.hatchlingLeftHip.parent = kParts.torso.mesh;
+      eggSlot.hatchlingLeftHip.position = new Vector3(1 * VS, 0, 0);
+      kParts.leftLeg.mesh.parent = eggSlot.hatchlingLeftHip;
+      kParts.leftLeg.mesh.position = new Vector3(0, -6 * VS, 0);
+      // Standing: legs straight down (rotation.x = 0), not riding (Math.PI / 2.5)
+    }
+
+    if (kParts.rightLeg && kParts.torso) {
+      eggSlot.hatchlingRightHip = new TransformNode('hatchRightHip', this.scene);
+      eggSlot.hatchlingRightHip.parent = kParts.torso.mesh;
+      eggSlot.hatchlingRightHip.position = new Vector3(-1 * VS, 0, 0);
+      kParts.rightLeg.mesh.parent = eggSlot.hatchlingRightHip;
+      kParts.rightLeg.mesh.position = new Vector3(0, -6 * VS, 0);
+    }
+
+    // Parent lance to right arm
+    if (eggSlot.hatchlingLanceRig.root && kParts.rightArm) {
+      eggSlot.hatchlingLanceRig.root.parent = kParts.rightArm.mesh;
+      eggSlot.hatchlingLanceRig.root.position = new Vector3(0, 0, 0);
+      eggSlot.hatchlingLanceRig.root.rotation.x = Math.PI;
+    }
+  }
+
+  /**
+   * Animate hatchling idle — knight-only idle (head look-around, body sway, arm adjustments).
+   */
+  _animateHatchlingIdle(eggSlot, hatchlingAge) {
+    const kParts = eggSlot.hatchlingKnightRig.parts;
+
+    // Head: slow sinusoidal Y rotation ±45°
+    if (kParts.head && kParts.head.mesh) {
+      kParts.head.mesh.rotation.y = Math.sin(hatchlingAge * 2.5) * (Math.PI / 4);
+    }
+
+    // Body: subtle Z sway
+    if (eggSlot.hatchlingKnightRig.root) {
+      eggSlot.hatchlingKnightRig.root.rotation.z = Math.sin(hatchlingAge * 1.5) * 0.03;
+    }
+
+    // Lance arm (right shoulder): slight Z oscillation
+    if (eggSlot.hatchlingRightShoulder) {
+      eggSlot.hatchlingRightShoulder.rotation.z = Math.sin(hatchlingAge * 1.8) * 0.05;
+    }
+
+    // Shield arm (left shoulder): guard shift
+    if (eggSlot.hatchlingLeftShoulder) {
+      eggSlot.hatchlingLeftShoulder.rotation.z = 0.1 + Math.sin(hatchlingAge * 1.2) * 0.04;
+    }
+  }
+
+  /**
+   * Create buzzard rig for the swoop-in arrival animation.
+   */
+  _createBuzzardArrival(eggSlot, egg) {
+    const VS = VOXEL_SIZE;
+    eggSlot.buzzardArrivalRig = buildRig(this.scene, buzzardModel, VS, true);
+    eggSlot.buzzardArrivalRoot = new TransformNode('buzzardArrivalRoot', this.scene);
+
+    if (eggSlot.buzzardArrivalRig.root) {
+      eggSlot.buzzardArrivalRig.root.parent = eggSlot.buzzardArrivalRoot;
+    }
+
+    // Start position: above the hatchling
+    eggSlot.buzzardArrivalRoot.position = new Vector3(
+      egg.positionX,
+      egg.positionY + 3.0,
+      0
+    );
+  }
+
+  /**
+   * Animate buzzard swooping down toward hatchling.
+   */
+  _animateBuzzardArrival(eggSlot, progress) {
+    if (!eggSlot.buzzardArrivalRoot || !eggSlot.hatchlingRoot) {
+      return;
+    }
+
+    const t = Math.min(progress, 1.0);
+    // Ease-in: quadratic
+    const eased = t * t;
+
+    const targetX = eggSlot.hatchlingRoot.position.x;
+    const targetY = eggSlot.hatchlingRoot.position.y + EGG_RADIUS;
+    const startY = targetY + 3.0;
+
+    eggSlot.buzzardArrivalRoot.position.x = targetX;
+    eggSlot.buzzardArrivalRoot.position.y = startY + (targetY - startY) * eased;
+
+    // Wing flap during descent
+    const bParts = eggSlot.buzzardArrivalRig.parts;
+    const flapAngle = Math.sin(progress * 12) * 0.6;
+    if (bParts.leftWing && bParts.leftWing.mesh) {
+      bParts.leftWing.mesh.rotation.z = flapAngle;
+    }
+    if (bParts.rightWing && bParts.rightWing.mesh) {
+      bParts.rightWing.mesh.rotation.z = -flapAngle;
+    }
+  }
+
+  /**
+   * Dispose all hatchling-specific meshes on an egg slot.
+   */
+  _disposeHatchlingMeshes(eggSlot) {
+    const nodes = [
+      eggSlot.hatchlingLeftShoulder, eggSlot.hatchlingRightShoulder,
+      eggSlot.hatchlingLeftHip, eggSlot.hatchlingRightHip,
+    ];
+    for (const node of nodes) {
+      if (node) {
+        node.dispose();
+      }
+    }
+
+    const rigs = [eggSlot.hatchlingKnightRig, eggSlot.hatchlingLanceRig, eggSlot.buzzardArrivalRig];
+    for (const rig of rigs) {
+      if (rig) {
+        for (const part of Object.values(rig.parts)) {
+          if (part.mesh) {
+            part.mesh.dispose();
+          }
+        }
+        if (rig.root) {
+          rig.root.dispose();
+        }
+      }
+    }
+
+    if (eggSlot.buzzardArrivalRoot) {
+      eggSlot.buzzardArrivalRoot.dispose();
+    }
+    if (eggSlot.hatchlingRoot) {
+      eggSlot.hatchlingRoot.dispose();
+    }
+
+    eggSlot.hatchlingRoot = null;
+    eggSlot.hatchlingKnightRig = null;
+    eggSlot.hatchlingLanceRig = null;
+    eggSlot.hatchlingLeftShoulder = null;
+    eggSlot.hatchlingRightShoulder = null;
+    eggSlot.hatchlingLeftHip = null;
+    eggSlot.hatchlingRightHip = null;
+    eggSlot.buzzardArrivalRig = null;
+    eggSlot.buzzardArrivalRoot = null;
   }
 
   /**
@@ -861,6 +1112,9 @@ export class Level1Scene {
           this._audioManager.playSfx('egg-lava');
         } else if (prevEgg.hatchState === HATCH_WOBBLING) {
           this._audioManager.playSfx('egg-hatch');
+        } else if (prevEgg.hatchState === HATCH_HATCHLING) {
+          // Hatchling collected or mounted — collect sound for collection
+          this._audioManager.playSfx('egg-collect');
         } else if (!prevEgg.onPlatform) {
           this._audioManager.playSfx('egg-catch-air');
         } else {
@@ -990,6 +1244,7 @@ export class Level1Scene {
         this._disposeEggRig(eggSlot.rig);
         eggSlot.rig = null;
       }
+      this._disposeHatchlingMeshes(eggSlot);
     }
     // Dispose any in-flight debris SPS systems
     for (const entry of this._activeDebrisSystems) {

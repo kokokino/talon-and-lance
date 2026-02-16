@@ -104,6 +104,7 @@ export const WAVE_TRANSITION = 2;
 export const HATCH_FALLING = 0;
 export const HATCH_ON_PLATFORM = 1;
 export const HATCH_WOBBLING = 2;
+export const HATCH_HATCHLING = 3;
 
 // ---- Player state enum ----
 export const STATE_GROUNDED = 0;
