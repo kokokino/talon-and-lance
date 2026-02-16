@@ -33,6 +33,22 @@ import {
   buildPlatformCollisionData,
   GAME_MODE_TEAM,
 } from '../physics/constants.js';
+
+// Idle animation constants
+const IDLE_BLEND_IN_RATE = 2.0;
+const IDLE_BLEND_OUT_RATE = 4.0;
+const IDLE_VELOCITY_THRESHOLD = 0.5;
+const IDLE_SETTLE_TIME = 1.5;
+const IDLE_GESTURES = ['lookCamera', 'wingRuffle', 'lookAway', 'lanceAdjust'];
+const IDLE_PAUSE_MIN = 0.8;
+const IDLE_PAUSE_MAX = 2.5;
+const IDLE_LOOK_MIN = 2.0;
+const IDLE_LOOK_MAX = 3.0;
+const IDLE_WING_RUFFLE_DURATION = 0.6;
+const IDLE_LANCE_ADJUST_DURATION = 0.8;
+const IDLE_YAW_AMOUNT = 0.4;
+const IDLE_YAW_EASE_RATE = 3.0;
+
 import {
   ENEMY_TYPE_BOUNDER,
 } from '../scoring.js';
@@ -457,6 +473,9 @@ export class Level1Scene {
       slot.materializeParticles = null;
     }
 
+    // Update idle animation state (must run before building view so blend is current)
+    this._updateIdleState(dt, slot, charState);
+
     // Build a merged view: prototype = slot (mesh refs), own props = physics state
     const view = Object.create(slot);
     view.positionX = charState.positionX;
@@ -480,7 +499,12 @@ export class Level1Scene {
       slot.birdRig.root.rotation.y = view.facingDir === 1 ? 0 : Math.PI;
     }
 
-    // Animate character (running/flying/wings)
+    // Apply idle yaw offset additively
+    if (slot.idleYawOffset !== 0 && slot.birdRig?.root) {
+      slot.birdRig.root.rotation.y += slot.idleYawOffset;
+    }
+
+    // Animate character (running/flying/wings + idle)
     this._animateChar(dt, view);
   }
 
@@ -1537,6 +1561,15 @@ export class Level1Scene {
       // Vortex leave effect
       vortexing: false,
       vortexObserver: null,
+      // Idle animation state
+      idleTime: 0,
+      idleBlend: 0,
+      idlePhase: 'none',
+      idlePhaseTimer: 0,
+      idlePhaseDuration: 0,
+      idleYawOffset: 0,
+      idleTargetYaw: 0,
+      idleGestureIndex: 0,
     };
   }
 
@@ -1614,6 +1647,15 @@ export class Level1Scene {
     slot.rightWingPivot = null;
     slot.knightMountY = 0;
     slot.meshCreated = false;
+    // Reset idle animation state
+    slot.idleTime = 0;
+    slot.idleBlend = 0;
+    slot.idlePhase = 'none';
+    slot.idlePhaseTimer = 0;
+    slot.idlePhaseDuration = 0;
+    slot.idleYawOffset = 0;
+    slot.idleTargetYaw = 0;
+    slot.idleGestureIndex = 0;
   }
 
   // ---- Update loop ----
@@ -1688,6 +1730,77 @@ export class Level1Scene {
     char.birdRig.root.rotation.y = char.turnFrom + (char.turnTo - char.turnFrom) * easedT;
   }
 
+  // ---- Idle state machine ----
+
+  _updateIdleState(dt, slot, charState) {
+    const isIdle = charState.playerState === 'GROUNDED' &&
+      Math.abs(charState.velocityX) < IDLE_VELOCITY_THRESHOLD &&
+      !charState.materializing && !charState.isTurning;
+
+    if (isIdle) {
+      slot.idleBlend = Math.min(1.0, slot.idleBlend + IDLE_BLEND_IN_RATE * dt);
+      slot.idleTime += dt;
+      this._advanceIdlePhase(dt, slot);
+    } else {
+      slot.idleBlend = Math.max(0.0, slot.idleBlend - IDLE_BLEND_OUT_RATE * dt);
+      if (slot.idleBlend === 0) {
+        slot.idleTime = 0;
+        slot.idlePhase = 'none';
+        slot.idlePhaseTimer = 0;
+        slot.idlePhaseDuration = 0;
+        slot.idleTargetYaw = 0;
+        slot.idleGestureIndex = 0;
+      }
+    }
+
+    // Smoothly ease yaw offset toward target (scaled by blend)
+    const targetYaw = slot.idleTargetYaw * slot.idleBlend;
+    const yawDiff = targetYaw - slot.idleYawOffset;
+    slot.idleYawOffset += yawDiff * Math.min(1.0, IDLE_YAW_EASE_RATE * dt);
+  }
+
+  _advanceIdlePhase(dt, slot) {
+    slot.idlePhaseTimer += dt;
+
+    if (slot.idlePhase === 'none') {
+      slot.idlePhase = 'settle';
+      slot.idlePhaseTimer = 0;
+      slot.idlePhaseDuration = IDLE_SETTLE_TIME;
+      slot.idleTargetYaw = 0;
+      return;
+    }
+
+    if (slot.idlePhaseTimer < slot.idlePhaseDuration) {
+      return;
+    }
+
+    // Phase completed — advance to next
+    if (slot.idlePhase === 'settle' || slot.idlePhase === 'pause') {
+      // Move to next gesture
+      const gesture = IDLE_GESTURES[slot.idleGestureIndex];
+      slot.idlePhase = gesture;
+      slot.idlePhaseTimer = 0;
+
+      if (gesture === 'lookCamera') {
+        slot.idlePhaseDuration = IDLE_LOOK_MIN + Math.random() * (IDLE_LOOK_MAX - IDLE_LOOK_MIN);
+        slot.idleTargetYaw = IDLE_YAW_AMOUNT;
+      } else if (gesture === 'lookAway') {
+        slot.idlePhaseDuration = IDLE_LOOK_MIN + Math.random() * (IDLE_LOOK_MAX - IDLE_LOOK_MIN);
+        slot.idleTargetYaw = -IDLE_YAW_AMOUNT;
+      } else if (gesture === 'wingRuffle') {
+        slot.idlePhaseDuration = IDLE_WING_RUFFLE_DURATION;
+      } else if (gesture === 'lanceAdjust') {
+        slot.idlePhaseDuration = IDLE_LANCE_ADJUST_DURATION;
+      }
+    } else {
+      // Gesture completed — go to pause, advance gesture index
+      slot.idlePhase = 'pause';
+      slot.idlePhaseTimer = 0;
+      slot.idlePhaseDuration = IDLE_PAUSE_MIN + Math.random() * (IDLE_PAUSE_MAX - IDLE_PAUSE_MIN);
+      slot.idleGestureIndex = (slot.idleGestureIndex + 1) % IDLE_GESTURES.length;
+    }
+  }
+
   // ---- Animation ----
 
   _animateChar(dt, char) {
@@ -1695,8 +1808,103 @@ export class Level1Scene {
 
     if (char.playerState === 'GROUNDED') {
       this._animateRunning(dt, char);
+      if (char.idleBlend > 0) {
+        this._animateIdle(dt, char);
+      }
     } else {
       this._animateFlying(dt, char);
+    }
+  }
+
+  _animateIdle(dt, char) {
+    const blend = char.idleBlend;
+    const t = this._elapsed;
+    const bParts = char.birdRig?.parts;
+    const kParts = char.knightRig?.parts;
+
+    if (!bParts) {
+      return;
+    }
+
+    // --- Continuous background animations ---
+
+    // Body breathing bob
+    if (bParts.body) {
+      bParts.body.mesh.position.y += Math.sin(t * (2 * Math.PI / 3)) * 0.03 * blend;
+    }
+
+    // Body weight shift (= not += because _animateRunning never touches body rotation.z)
+    if (bParts.body) {
+      bParts.body.mesh.rotation.z = Math.sin(t * (2 * Math.PI / 5)) * 0.012 * blend;
+    }
+
+    // Neck bob
+    if (bParts.neck) {
+      bParts.neck.mesh.rotation.z += Math.sin(t * (2 * Math.PI / 2.5)) * 0.06 * blend;
+    }
+
+    // Tail wag
+    if (bParts.tail) {
+      bParts.tail.mesh.rotation.z += Math.sin(t * (2 * Math.PI / 4)) * 0.08 * blend;
+    }
+
+    // Leg bend synced with weight shift
+    const legBend = Math.sin(t * (2 * Math.PI / 5)) * 0.03 * blend;
+    if (char.leftHipPivot) {
+      char.leftHipPivot.rotation.z += legBend;
+    }
+    if (char.rightHipPivot) {
+      char.rightHipPivot.rotation.z += -legBend;
+    }
+
+    // Knight continuous animations
+    if (kParts) {
+      if (kParts.torso) {
+        kParts.torso.mesh.position.y += Math.sin(t * (2 * Math.PI / 3)) * 0.015 * blend;
+      }
+      if (kParts.head) {
+        kParts.head.mesh.rotation.z += Math.sin(t * (2 * Math.PI / 4)) * 0.025 * blend;
+      }
+      if (char.leftShoulderNode) {
+        char.leftShoulderNode.rotation.z += Math.sin(t * (2 * Math.PI / 3.5)) * 0.02 * blend;
+      }
+      if (char.rightShoulderNode) {
+        char.rightShoulderNode.rotation.z += Math.sin(t * (2 * Math.PI / 3.5) + 0.5) * 0.02 * blend;
+      }
+    }
+
+    // --- Phase-driven gesture animations ---
+
+    const phase = char.idlePhase;
+    const phaseTimer = char.idlePhaseTimer;
+    const phaseDuration = char.idlePhaseDuration;
+
+    if (phase === 'lookCamera' || phase === 'lookAway') {
+      // Neck look-around during look phases
+      if (bParts.neck) {
+        const progress = phaseDuration > 0 ? phaseTimer / phaseDuration : 0;
+        const envelope = Math.sin(progress * Math.PI);
+        bParts.neck.mesh.rotation.y = envelope * 0.15 * (phase === 'lookCamera' ? 1 : -1) * blend;
+      }
+    }
+
+    if (phase === 'wingRuffle') {
+      const progress = phaseDuration > 0 ? phaseTimer / phaseDuration : 0;
+      const flare = Math.sin(progress * Math.PI) * 0.3 * blend;
+      if (char.leftWingPivot) {
+        char.leftWingPivot.rotation.z += flare;
+      }
+      if (char.rightWingPivot) {
+        char.rightWingPivot.rotation.z += -flare;
+      }
+    }
+
+    if (phase === 'lanceAdjust' && kParts) {
+      const progress = phaseDuration > 0 ? phaseTimer / phaseDuration : 0;
+      const dip = Math.sin(progress * Math.PI) * 0.15 * blend;
+      if (char.rightShoulderNode) {
+        char.rightShoulderNode.rotation.z += dip;
+      }
     }
   }
 
