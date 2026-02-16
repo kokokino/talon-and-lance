@@ -274,7 +274,7 @@ Meteor.startup(() => {
 ```
 
 **Methods** (`server/methods/roomMethods.js` and `server/methods/matchmakingMethods.js`)
-- `matchmaking.findOrCreate(gameMode, paletteIndex)` — Arcade drop-in entry point: finds an open room with matching game mode, or creates a new one. Returns `{ roomId, playerSlot, gameSeed, isNewRoom }`. If user is already in a room, returns `{ alreadyPlaying: true }`.
+- `matchmaking.findOrCreate(gameMode, paletteIndex)` — Arcade drop-in entry point: finds an open room with matching game mode, or creates a new one. Returns `{ roomId, playerSlot, gameSeed, isNewRoom }`. If user is already in a room, returns `{ alreadyPlaying: true, roomId }`.
 - `matchmaking.takeoverAndPlay(gameMode, paletteIndex)` — Leave all stale rooms, then find-or-create. Used when user confirms takeover from another session.
 - `rooms.create(settings)` — Create room with custom settings (lobby model, not used by arcade flow)
 - `rooms.join(roomId)` — Join existing room (validates not full, not started)
@@ -291,7 +291,38 @@ Meteor.startup(() => {
 
 ---
 
-### 5. MultiplayerManager (`imports/game/MultiplayerManager.js`)
+### 5. High Scores
+
+**Collection: `HighScores`** (`imports/lib/collections/highScores.js`)
+```javascript
+// Schema:
+// {
+//   userId: String,
+//   username: String,
+//   score: Number,
+//   gameMode: String,         // 'team' | 'pvp'
+//   waveReached: Number,
+//   createdAt: Date,
+// }
+```
+
+One document per user per game mode — updated in-place only if the new score is higher.
+
+**Methods** (`server/methods/highScoreMethods.js`)
+- `highScores.myBest(gameMode)` — Returns the user's best score for a mode (0 if none)
+- `highScores.submit(score, gameMode, waveReached)` — Saves score only if higher than existing. Anti-cheat: rejects scores above 10,000,000 or wave numbers outside 1–1000.
+
+**Publication** (`server/publications/highScorePublications.js`)
+- `highScores.top10(gameMode)` — Top 10 scores sorted by score descending. Optional `gameMode` filter. Exposes `username`, `score`, `gameMode`, `waveReached`, `createdAt` (no `userId`).
+
+**Client Tracker** (`imports/game/HighScoreTracker.js`)
+- Fetches personal best on `start()`, then checks every 15 seconds during gameplay
+- On `stop()` (game over), does a final check+submit
+- All Meteor calls wrapped in try/catch so score tracking never interrupts gameplay
+
+---
+
+### 6. MultiplayerManager (`imports/game/MultiplayerManager.js`)
 
 Central orchestrator that wires together GameSimulation, GameLoop, RollbackSession, TransportManager, and Level1Scene for online play.
 
@@ -319,7 +350,7 @@ Calls `rooms.touch` every 2 minutes to keep the room alive. Also touches on `vis
 
 ---
 
-### 6. Drop-In / Drop-Out
+### 7. Drop-In / Drop-Out
 
 The game uses an **arcade drop-in model** — no waiting room or ready-check for gameplay. Games start immediately in solo mode and seamlessly accept new players mid-game.
 
@@ -354,7 +385,7 @@ The resync authority is always the **lowest active player slot** across all conn
 
 ---
 
-### 7. Desync Detection & Recovery
+### 8. Desync Detection & Recovery
 
 **Checksum Exchange:**
 - `RollbackSession.getCurrentChecksum()` returns a checksum every `CHECKSUM_INTERVAL` (60) frames
@@ -382,7 +413,7 @@ The resync authority is always the **lowest active player slot** across all conn
 
 ---
 
-### 8. Determinism Strategy
+### 9. Determinism Strategy
 
 All game physics use **integer/fixed-point arithmetic** — no floating point in game logic:
 
@@ -442,7 +473,7 @@ All game physics use **integer/fixed-point arithmetic** — no floating point in
 
 ---
 
-### 9. Game Loop (`imports/game/GameLoop.js`)
+### 10. Game Loop (`imports/game/GameLoop.js`)
 
 The `GameLoop` class implements a fixed-timestep simulation loop that decouples rendering from game ticks. It supports two modes and can transition between them at runtime.
 
@@ -474,14 +505,14 @@ const CATASTROPHIC_CAP_MS = TICK_MS * 300;  // 5 second hard clamp
 
 ---
 
-### 10. Connection Flow (Step by Step)
+### 11. Connection Flow (Step by Step)
 
 ```
 1. MATCHMAKING (Meteor DDP)
    ├── Player calls matchmaking.findOrCreate(gameMode, paletteIndex)
    ├── Server finds open room with matching mode, or creates new one
    ├── Returns { roomId, playerSlot, gameSeed, isNewRoom }
-   └── If already in a room: returns { alreadyPlaying: true }
+   └── If already in a room: returns { alreadyPlaying: true, roomId }
 
 2. SOLO MODE START (immediate)
    ├── MultiplayerManager creates GameSimulation with shared gameSeed
@@ -531,7 +562,7 @@ const CATASTROPHIC_CAP_MS = TICK_MS * 300;  // 5 second hard clamp
 
 ---
 
-### 11. npm Dependencies
+### 12. npm Dependencies
 
 ```
 # P2P WebRTC (primary transport)
@@ -546,7 +577,7 @@ No other networking dependencies needed. The rollback engine is pure JS with no 
 
 ---
 
-### 12. File Structure
+### 13. File Structure
 
 ```
 talon-and-lance/
@@ -565,7 +596,8 @@ talon-and-lance/
 │   │       └── TransportManager.js       # P2P-first with per-pair fallback
 │   ├── lib/
 │   │   └── collections/
-│   │       └── gameRooms.js              # Room collection + status/mode constants
+│   │       ├── gameRooms.js              # Room collection + status/mode constants
+│   │       └── highScores.js            # High score collection (per user per mode)
 │   ├── game/
 │   │   ├── GameSimulation.js             # Deterministic simulation (tick/serialize/deserialize)
 │   │   ├── GameLoop.js                   # Fixed 60fps timestep (solo + multiplayer modes)
@@ -597,9 +629,11 @@ talon-and-lance/
 │   ├── main.js
 │   ├── methods/
 │   │   ├── roomMethods.js                # Room CRUD (create/join/leave/touch/start/result)
-│   │   └── matchmakingMethods.js         # matchmaking.findOrCreate / takeoverAndPlay
+│   │   ├── matchmakingMethods.js         # matchmaking.findOrCreate / takeoverAndPlay
+│   │   └── highScoreMethods.js           # highScores.myBest / highScores.submit
 │   ├── publications/
-│   │   └── roomPublications.js           # rooms.lobby, rooms.current
+│   │   ├── roomPublications.js           # rooms.lobby, rooms.current
+│   │   └── highScorePublications.js     # highScores.top10
 │   └── relay/
 │       └── geckosBridge.js               # geckos.io server relay (initGeckosRelay)
 ├── client/
@@ -609,7 +643,7 @@ talon-and-lance/
 
 ---
 
-### 13. Testing
+### 14. Testing
 
 #### SyncTestSession (Development)
 Run every frame with forced rollbacks during development. Any checksum mismatch = non-determinism bug. Fix before testing multiplayer. Configured with `rollbackDepth: 2` — rolls back 2 frames, resimulates, and compares checksums.
@@ -640,7 +674,7 @@ Uses a **`MockNetwork`** class — in-memory FIFO queue with realistic network s
 - Optional packet loss via `dropRate` parameter (0.0-1.0)
 - Independent random seed per channel instance
 
-**Test cases (18 total):**
+**Test cases (16 total):**
 
 | Category | Test | Frames |
 |----------|------|--------|
