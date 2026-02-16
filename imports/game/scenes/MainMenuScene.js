@@ -974,8 +974,12 @@ export class MainMenuScene {
     const prev = this._prevButtons;
     const prevAxes = this._prevAxes;
 
-    // Rising edge detection for buttons
+    // Rising edge (button down) — used for navigation
     const pressed = (idx) => idx < buttons.length && buttons[idx] && (!prev || !prev[idx]);
+    // Falling edge (button up) — used for confirm/cancel actions.
+    // Immune to stale gamepad data from page navigation: stale data is frozen
+    // with buttons stuck "pressed" and can never produce a release transition.
+    const released = (idx) => idx < buttons.length && !buttons[idx] && prev && prev[idx];
 
     // Axis to digital with deadzone
     const DEADZONE = 0.5;
@@ -998,8 +1002,8 @@ export class MainMenuScene {
     const downPressed = pressed(13) || (axisY === 1 && prevAxisY !== 1);
     const leftPressed = pressed(14) || (axisX === -1 && prevAxisX !== -1);
     const rightPressed = pressed(15) || (axisX === 1 && prevAxisX !== 1);
-    const confirmPressed = pressed(0);
-    const cancelPressed = pressed(1);
+    const confirmPressed = released(0);
+    const cancelPressed = released(1);
 
     this._prevButtons = buttons;
     this._prevAxes = axes;
