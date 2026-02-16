@@ -585,11 +585,11 @@ export class GameSimulation {
       const enemyType = this._spawnQueue.shift();
       const sp = shuffledSpawns[i % shuffledSpawns.length];
       const platform = this._platforms.find(p => p.id === sp.platformId);
-      this._spawnEnemy(enemyType, sp.x, platform);
+      this._spawnEnemy(enemyType, sp.x, platform.top + FP_FEET_OFFSET, platform);
     }
   }
 
-  _spawnEnemy(enemyType, x, platform) {
+  _spawnEnemy(enemyType, x, y, platform) {
     // Find free enemy slot
     let slotIdx = -1;
     for (let i = 0; i < MAX_ENEMIES; i++) {
@@ -605,12 +605,18 @@ export class GameSimulation {
     const char = this._chars[MAX_HUMANS + slotIdx];
     char.active = true;
     char.positionX = x;
-    char.positionY = platform.top + FP_FEET_OFFSET;
+    char.positionY = y;
     char.velocityX = 0;
     char.velocityY = 0;
-    char.playerState = 'GROUNDED';
-    char.currentPlatform = platform;
-    char.platformIndex = this._platforms.indexOf(platform);
+    if (platform) {
+      char.playerState = 'GROUNDED';
+      char.currentPlatform = platform;
+      char.platformIndex = this._platforms.indexOf(platform);
+    } else {
+      char.playerState = 'AIRBORNE';
+      char.currentPlatform = null;
+      char.platformIndex = -1;
+    }
     char.facingDir = 1;
     char.isTurning = false;
     char.turnTimer = 0;
@@ -1029,7 +1035,7 @@ export class GameSimulation {
 
         if (egg.hatchTimer >= HATCH_FRAMES) {
           // Hatch — spawn enemy at egg position (FP)
-          this._spawnEnemy(egg.enemyType, egg.positionX, egg.positionY + FP_EGG_HATCH_LIFT);
+          this._spawnEnemy(egg.enemyType, egg.positionX, egg.positionY + FP_EGG_HATCH_LIFT, null);
           egg.active = false;
         }
       }
