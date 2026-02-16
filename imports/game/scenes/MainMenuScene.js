@@ -59,7 +59,7 @@ export class MainMenuScene {
     this.lavaUvOffset = 0;
 
     // Menu state machine
-    this._menuState = 'main';   // 'main' | 'modeSelect' | 'highScores'
+    this._menuState = 'main';   // 'main' | 'modeSelect' | 'highScores' | 'instructions'
     this._selectedMode = null;  // 'team' | 'pvp'
 
     // High scores panel refs
@@ -77,6 +77,16 @@ export class MainMenuScene {
     this._colorLabel = null;
     this._trackLabel = null;
 
+    // Title text
+    this._titleText = null;
+
+    // Instructions panel refs
+    this._instructionsBackdrop = null;
+    this._instructionsPanel = null;
+    this._instructionsKeyHandler = null;
+    this._instrModeBody = null;
+    this._instrPrompt = null;
+
     // Gamepad navigation
     this._focusIndex = 0;
     this._gamepadActive = false;
@@ -93,7 +103,7 @@ export class MainMenuScene {
     this._trackRow = null;
     this._playBtn = null;
     this._scoresBackBtn = null;
-    this._navMap = { main: [], modeSelect: [], highScores: [] };
+    this._navMap = { main: [], modeSelect: [], highScores: [], instructions: [] };
   }
 
   /**
@@ -156,13 +166,17 @@ export class MainMenuScene {
       this._highScoresComputation.stop();
       this._highScoresComputation = null;
     }
+    if (this._instructionsKeyHandler) {
+      window.removeEventListener('keydown', this._instructionsKeyHandler);
+      this._instructionsKeyHandler = null;
+    }
     if (this._onGamepadDisconnected) {
       window.removeEventListener('gamepaddisconnected', this._onGamepadDisconnected);
       this._onGamepadDisconnected = null;
     }
     this._prevButtons = null;
     this._prevAxes = null;
-    this._navMap = { main: [], modeSelect: [], highScores: [] };
+    this._navMap = { main: [], modeSelect: [], highScores: [], instructions: [] };
     if (this._gui) {
       this._gui.dispose();
       this._gui = null;
@@ -493,6 +507,7 @@ export class MainMenuScene {
     }
 
     this._gui = gui;
+    this._createTitle(gui);
     this._createMainPanel(gui);
     this._createModeSelectPanel(gui);
     this._buildNavMap();
@@ -665,9 +680,7 @@ export class MainMenuScene {
     this._playBtn = playBtn;
     playBtn.onPointerClickObservable.add(() => {
       this._audioManager.playSfx('ui-select');
-      if (this._onPlay) {
-        this._onPlay(this._paletteIndex, this._selectedMode);
-      }
+      this._showInstructions();
     });
     panel.addControl(playBtn);
   }
@@ -687,6 +700,16 @@ export class MainMenuScene {
     if (this._highScoresPanel) {
       this._highScoresPanel.isVisible = false;
     }
+    if (this._instructionsBackdrop) {
+      this._instructionsBackdrop.isVisible = false;
+    }
+    if (this._instructionsPanel) {
+      this._instructionsPanel.isVisible = false;
+    }
+    if (this._instructionsKeyHandler) {
+      window.removeEventListener('keydown', this._instructionsKeyHandler);
+      this._instructionsKeyHandler = null;
+    }
     if (this._highScoresSub) {
       this._highScoresSub.stop();
       this._highScoresSub = null;
@@ -705,6 +728,16 @@ export class MainMenuScene {
     this._mainPanel.isVisible = false;
     this._modeBackdrop.isVisible = true;
     this._modePanel.isVisible = true;
+    if (this._instructionsBackdrop) {
+      this._instructionsBackdrop.isVisible = false;
+    }
+    if (this._instructionsPanel) {
+      this._instructionsPanel.isVisible = false;
+    }
+    if (this._instructionsKeyHandler) {
+      window.removeEventListener('keydown', this._instructionsKeyHandler);
+      this._instructionsKeyHandler = null;
+    }
     this._applyInitialFocus();
   }
 
@@ -893,6 +926,211 @@ export class MainMenuScene {
     return btn;
   }
 
+  // ---- Title ----
+
+  _createTitle(gui) {
+    const title = new TextBlock('gameTitle', 'TALON & LANCE');
+    title.fontSize = 52;
+    title.fontFamily = 'monospace';
+    title.color = '#FFD740';
+    title.outlineWidth = 4;
+    title.outlineColor = '#000000';
+    title.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    title.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+    title.top = '30px';
+    title.heightInPixels = 70;
+    gui.addControl(title);
+    this._titleText = title;
+  }
+
+  // ---- Instructions screen ----
+
+  _createInstructionsPanel(gui) {
+    // Full-screen semi-transparent backdrop
+    const backdrop = new Rectangle('instrBackdrop');
+    backdrop.width = '100%';
+    backdrop.height = '100%';
+    backdrop.thickness = 0;
+    backdrop.background = 'rgba(0, 0, 0, 0.75)';
+    backdrop.isVisible = false;
+    gui.addControl(backdrop);
+    this._instructionsBackdrop = backdrop;
+
+    const panel = new StackPanel('instrPanel');
+    panel.widthInPixels = 500;
+    panel.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    panel.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    panel.spacing = 8;
+    panel.isVisible = false;
+    gui.addControl(panel);
+    this._instructionsPanel = panel;
+
+    // Heading
+    const heading = new TextBlock('instrHeading', 'HOW TO PLAY');
+    heading.heightInPixels = 50;
+    heading.fontSize = 32;
+    heading.fontFamily = 'monospace';
+    heading.color = '#FFD740';
+    heading.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    panel.addControl(heading);
+
+    // Controls section heading
+    const controlsHead = new TextBlock('ctrlHead', 'CONTROLS');
+    controlsHead.heightInPixels = 35;
+    controlsHead.fontSize = 22;
+    controlsHead.fontFamily = 'monospace';
+    controlsHead.color = '#FFF176';
+    controlsHead.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    panel.addControl(controlsHead);
+
+    // Control lines
+    const controlLines = [
+      'Move: Arrow Keys or A/D  |  D-pad or Left Stick',
+      'Flap: Any Other Key  |  Any Face Button',
+      'End Game: Escape  |  Start Button',
+    ];
+    for (const line of controlLines) {
+      const text = new TextBlock(`ctrl_${line.substring(0, 8)}`, line);
+      text.heightInPixels = 28;
+      text.fontSize = 16;
+      text.fontFamily = 'monospace';
+      text.color = '#FFFFFF';
+      text.textWrapping = 1; // TextWrapping.WordWrap
+      text.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+      panel.addControl(text);
+    }
+
+    // Spacer
+    const spacer1 = new TextBlock('spacer1', '');
+    spacer1.heightInPixels = 10;
+    panel.addControl(spacer1);
+
+    // Objective section
+    const objectiveHead = new TextBlock('objHead', 'OBJECTIVE');
+    objectiveHead.heightInPixels = 35;
+    objectiveHead.fontSize = 22;
+    objectiveHead.fontFamily = 'monospace';
+    objectiveHead.color = '#FFF176';
+    objectiveHead.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    panel.addControl(objectiveHead);
+
+    const objectiveBody = new TextBlock('objBody',
+      'Fly above your enemies — the higher lance wins! ' +
+      'When an enemy is defeated, they drop an egg. ' +
+      'Collect eggs before they hatch into tougher foes.'
+    );
+    objectiveBody.heightInPixels = 65;
+    objectiveBody.fontSize = 16;
+    objectiveBody.fontFamily = 'monospace';
+    objectiveBody.color = '#FFFFFF';
+    objectiveBody.textWrapping = 1; // TextWrapping.WordWrap
+    objectiveBody.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    panel.addControl(objectiveBody);
+
+    // Spacer
+    const spacer2 = new TextBlock('spacer2', '');
+    spacer2.heightInPixels = 10;
+    panel.addControl(spacer2);
+
+    // Game mode section
+    const modeHead = new TextBlock('modeHead', 'GAME MODE');
+    modeHead.heightInPixels = 35;
+    modeHead.fontSize = 22;
+    modeHead.fontFamily = 'monospace';
+    modeHead.color = '#FFF176';
+    modeHead.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    panel.addControl(modeHead);
+
+    const modeBody = new TextBlock('modeBody', '');
+    modeBody.heightInPixels = 45;
+    modeBody.fontSize = 16;
+    modeBody.fontFamily = 'monospace';
+    modeBody.color = '#FFFFFF';
+    modeBody.textWrapping = 1; // TextWrapping.WordWrap
+    modeBody.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    panel.addControl(modeBody);
+    this._instrModeBody = modeBody;
+
+    // Spacer
+    const spacer3 = new TextBlock('spacer3', '');
+    spacer3.heightInPixels = 20;
+    panel.addControl(spacer3);
+
+    // Pulsing prompt
+    const prompt = new TextBlock('instrPrompt', 'Press any key to continue');
+    prompt.heightInPixels = 35;
+    prompt.fontSize = 20;
+    prompt.fontFamily = 'monospace';
+    prompt.color = '#FFD740';
+    prompt.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    panel.addControl(prompt);
+    this._instrPrompt = prompt;
+  }
+
+  _showInstructions() {
+    this._resetFocusForTransition();
+    this._menuState = 'instructions';
+    this._mainBackdrop.isVisible = false;
+    this._mainPanel.isVisible = false;
+    this._modeBackdrop.isVisible = false;
+    this._modePanel.isVisible = false;
+
+    if (!this._instructionsBackdrop) {
+      this._createInstructionsPanel(this._gui);
+    }
+
+    // Update mode description
+    if (this._selectedMode === 'team') {
+      this._instrModeBody.text = 'Team Play — work together with up to 4 players to defeat waves of enemy knights.';
+    } else {
+      this._instrModeBody.text = 'PvP Arena — up to 4 players battle each other. Last knight standing wins!';
+    }
+
+    this._instructionsBackdrop.isVisible = true;
+    this._instructionsPanel.isVisible = true;
+
+    // Keyboard listener — any key starts, Escape goes back
+    this._instructionsKeyHandler = (e) => {
+      if (this._menuState !== 'instructions') {
+        return;
+      }
+      if (e.key === 'Escape') {
+        setTimeout(() => this._handleCancel(), 0);
+      } else {
+        setTimeout(() => this._dismissInstructions(), 0);
+      }
+    };
+    window.addEventListener('keydown', this._instructionsKeyHandler);
+  }
+
+  _dismissInstructions() {
+    if (this._menuState !== 'instructions') {
+      return;
+    }
+    if (this._instructionsKeyHandler) {
+      window.removeEventListener('keydown', this._instructionsKeyHandler);
+      this._instructionsKeyHandler = null;
+    }
+    if (this._instructionsBackdrop) {
+      this._instructionsBackdrop.isVisible = false;
+    }
+    if (this._instructionsPanel) {
+      this._instructionsPanel.isVisible = false;
+    }
+    if (this._onPlay) {
+      this._onPlay(this._paletteIndex, this._selectedMode);
+    }
+  }
+
+  _animateInstructionsPrompt() {
+    if (!this._instrPrompt || this._menuState !== 'instructions') {
+      return;
+    }
+    // Pulse alpha between 0.3 and 1.0 on a ~2s sine cycle
+    const alpha = 0.65 + 0.35 * Math.sin(this.elapsed * Math.PI);
+    this._instrPrompt.alpha = alpha;
+  }
+
   // ---- Gamepad navigation ----
 
   _buildNavMap() {
@@ -947,9 +1185,7 @@ export class MainMenuScene {
       {
         control: this._playBtn,
         onConfirm: () => {
-          if (this._onPlay) {
-            this._onPlay(this._paletteIndex, this._selectedMode);
-          }
+          this._showInstructions();
         }
       }
     ];
@@ -1008,6 +1244,17 @@ export class MainMenuScene {
     this._prevButtons = buttons;
     this._prevAxes = axes;
 
+    // Instructions state: any face button starts game, cancel goes back
+    if (this._menuState === 'instructions') {
+      const anyFaceButton = pressed(0) || pressed(1) || pressed(2) || pressed(3);
+      if (cancelPressed) {
+        setTimeout(() => this._handleCancel(), 0);
+      } else if (anyFaceButton || confirmPressed) {
+        setTimeout(() => this._dismissInstructions(), 0);
+      }
+      return;
+    }
+
     const anyInput = upPressed || downPressed || leftPressed || rightPressed || confirmPressed || cancelPressed;
     if (!anyInput) {
       return;
@@ -1057,7 +1304,10 @@ export class MainMenuScene {
   }
 
   _handleCancel() {
-    if (this._menuState === 'modeSelect' || this._menuState === 'highScores') {
+    if (this._menuState === 'instructions') {
+      this._audioManager.playSfx('ui-cancel');
+      this._showModeSelect();
+    } else if (this._menuState === 'modeSelect' || this._menuState === 'highScores') {
       this._audioManager.playSfx('ui-cancel');
       this._showMainMenu();
     }
@@ -1118,6 +1368,7 @@ export class MainMenuScene {
     this._animateKnight();
     this._animateOstrich();
     this._animateLava(dt);
+    this._animateInstructionsPrompt();
   }
 
   _animateKnight() {
