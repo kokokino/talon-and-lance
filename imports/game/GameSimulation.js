@@ -30,7 +30,7 @@ import { applyInput, applyIdle, applyFriction, applyGravity } from './physics/Ph
 import {
   STARTING_LIVES, EXTRA_LIFE_THRESHOLD,
   POINTS_SURVIVAL_WAVE, POINTS_EGG_MID_AIR,
-  ENEMY_TYPE_BOUNDER,
+  ENEMY_TYPE_BOUNDER, ENEMY_TYPE_SHADOW_LORD,
   getKillPoints, getEggPoints, getWaveComposition,
 } from './scoring.js';
 import {
@@ -748,9 +748,12 @@ export class GameSimulation {
     char.dead = true;
     char.respawnTimer = RESPAWN_FRAMES;
 
-    // Spawn egg (FP position + velocity)
-    const enemyType = charIdx >= MAX_HUMANS ? char.enemyType : ENEMY_TYPE_BOUNDER;
-    this._spawnEgg(char.positionX, char.positionY, char.velocityX + knockDir * FP_KILL_KNOCK_VX, char.velocityY, enemyType);
+    // Spawn egg — store the upgraded type it will hatch into
+    // Bounder → Hunter, Hunter → Shadow Lord, Shadow Lord → Shadow Lord, Human → Bounder
+    const eggType = charIdx >= MAX_HUMANS
+      ? Math.min(char.enemyType + 1, ENEMY_TYPE_SHADOW_LORD)
+      : ENEMY_TYPE_BOUNDER;
+    this._spawnEgg(char.positionX, char.positionY, char.velocityX + knockDir * FP_KILL_KNOCK_VX, char.velocityY, eggType);
 
     // Award kill points to the closest active human if enemy was killed
     if (charIdx >= MAX_HUMANS) {
@@ -1034,7 +1037,7 @@ export class GameSimulation {
         }
 
         if (egg.hatchTimer >= HATCH_FRAMES) {
-          // Hatch — spawn enemy at egg position (FP)
+          // Hatch — egg already stores the upgraded type from _killCharacter
           this._spawnEnemy(egg.enemyType, egg.positionX, egg.positionY + FP_EGG_HATCH_LIFT, null);
           egg.active = false;
         }
