@@ -7,6 +7,7 @@ import "../imports/netcode/tests/InputQueue.test.js";
 import "../imports/game/tests/CollisionSystem.test.js";
 import "../imports/game/tests/GameSimulation.test.js";
 import "../imports/game/tests/MultiplayerSync.test.js";
+import "../imports/game/tests/LavaTroll.test.js";
 
 // Import server modules to ensure methods are registered
 if (Meteor.isServer) {

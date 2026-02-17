@@ -34,6 +34,8 @@ import {
   GAME_MODE_TEAM,
   EGG_RADIUS,
   IDLE_TIMER_WARNING,
+  SPAWN_PILLAR_LEFT, SPAWN_PILLAR_RIGHT,
+  TROLL_GRAB_FRAMES,
 } from '../physics/constants.js';
 
 // Idle animation constants
@@ -64,11 +66,13 @@ import { buzzardModel } from '../voxels/models/buzzardModel.js';
 import { pterodactylModel } from '../voxels/models/pterodactylModel.js';
 import { evilKnightModel } from '../voxels/models/evilKnightModel.js';
 import { eggModel } from '../voxels/models/eggModel.js';
+import { trollHandModel } from '../voxels/models/trollHandModel.js';
 import { buildKnightPalette } from '../voxels/models/knightPalettes.js';
 import { buildEvilKnightPalette } from '../voxels/models/evilKnightPalettes.js';
 import {
   MAX_HUMANS, MAX_ENEMIES, MAX_EGGS,
   HATCH_WOBBLING, HATCH_HATCHLING, WAVE_PLAYING, WAVE_TRANSITION,
+  LT_IDLE, LT_REACHING, LT_GRABBING, LT_PULLING, LT_RETREATING, LT_PUNCH_INTRO,
 } from '../physics/stateLayout.js';
 
 /**
@@ -206,6 +210,15 @@ export class Level1Scene {
         buzzardStartX: 0,
       });
     }
+
+    // Lava Troll rendering state
+    this._trollHandRig = null;
+    this._trollFingerPivots = null;
+    this._trollHandCreated = false;
+    this._trollPlatformsDestroyed = false;
+    this._trollPlatformMeshes = { baseLeft: [], baseRight: [] };
+    this._trollPillarMeshes = [];
+    this._trollPrevState = null;
   }
 
   /**
@@ -318,6 +331,9 @@ export class Level1Scene {
 
     // Sync banners (wave transitions, game over)
     this._syncBanners(gameState);
+
+    // Sync lava troll
+    this._syncLavaTroll(gameState, dt);
 
     // Sync sounds
     this._syncSounds(gameState);
@@ -507,6 +523,13 @@ export class Level1Scene {
     // Position root mesh
     if (slot.birdRig?.root) {
       slot.birdRig.root.position.x = renderX;
+    }
+
+    // Grabbed by Lava Troll — position follows hand with struggle shake
+    if (charState.playerState === 'GRABBED' && slot.birdRig?.root) {
+      const shake = Math.sin(performance.now() / 50) * 0.05;
+      slot.birdRig.root.position.x = renderX + shake;
+      return;
     }
 
     // Detect new turn: isTurning became true or turnTimer reset
@@ -1357,6 +1380,18 @@ export class Level1Scene {
     }
     this._activeDebrisSystems = [];
 
+    // Dispose lava troll rig
+    if (this._trollHandRig) {
+      this._trollHandRig.root.dispose();
+      this._trollHandRig = null;
+      this._trollFingerPivots = null;
+      this._trollHandCreated = false;
+    }
+    for (const mesh of this._trollPillarMeshes) {
+      mesh.dispose();
+    }
+    this._trollPillarMeshes = [];
+
     this._platforms = [];
     this._lavaMaterial = null;
     this._lavaTexture = null;
@@ -1450,6 +1485,11 @@ export class Level1Scene {
       ledgeMat.specularColor = new Color3(0.3, 0.3, 0.3);
       ledgeMat.emissiveColor = new Color3(0.08, 0.07, 0.06);
       ledge.material = ledgeMat;
+
+      // Track base platform meshes for troll destruction
+      if (def.id === 'baseLeft' || def.id === 'baseRight') {
+        this._trollPlatformMeshes[def.id].push(body, ledge);
+      }
     }
   }
 
@@ -1480,8 +1520,9 @@ export class Level1Scene {
 
   _createLava() {
     const lavaWidth = ORTHO_WIDTH + 4;
-    const lavaHeight = 2.0;
-    const lavaY = this._orthoBottom + lavaHeight / 2 + 0.1;
+    const lavaTop = -3.6;  // just below base platform tops (-3.565)
+    const lavaHeight = lavaTop - this._orthoBottom;
+    const lavaY = this._orthoBottom + lavaHeight / 2;
 
     const lava = MeshBuilder.CreatePlane('lava', {
       width: lavaWidth,
@@ -1763,6 +1804,283 @@ export class Level1Scene {
         this.scene.onBeforeRenderObservable.remove(observer);
       }
     });
+  }
+
+  // ---- Lava Troll ----
+
+  _createTrollHand() {
+    if (this._trollHandCreated) {
+      return;
+    }
+    const VS = VOXEL_SIZE * 3;
+    this._trollHandRig = buildRig(this.scene, trollHandModel, VS, false);
+    // Grab-point offset: 20 forearm layers + 2 palm center = 22 voxels
+    this._trollGrabOffset = 22 * VS;
+    // Z=1.0 places the hand fully behind the lava plane (Z=0.5).
+    // Model depth is ±0.315 from root, so front face is at Z≈0.685 — behind lava.
+    this._trollHandRig.root.position = new Vector3(0, -10, 1.0);
+    // Rotate 180° so palm faces away from camera (natural "reaching up" pose)
+    this._trollHandRig.root.rotation.y = Math.PI;
+
+    // Set up finger pivots at each finger base for grab rotation
+    const fingerNames = ['thumb', 'indexFinger', 'middleFinger', 'ringFinger'];
+    this._trollFingerPivots = {};
+    for (const name of fingerNames) {
+      const part = this._trollHandRig.parts[name];
+      if (part && part.mesh) {
+        const pivot = new TransformNode(`trollPivot_${name}`, this.scene);
+        // Pivot at base of finger (relative to palm)
+        pivot.parent = this._trollHandRig.parts.palm.mesh;
+        const partDef = trollHandModel.parts[name];
+        const ox = partDef.offset[0] * VS;
+        const oy = partDef.offset[1] * VS;
+        const oz = partDef.offset[2] * VS;
+        pivot.position = new Vector3(ox, oy, oz);
+        // Re-parent finger mesh to pivot
+        part.mesh.parent = pivot;
+        part.mesh.position = new Vector3(0, 0, 0);
+        this._trollFingerPivots[name] = pivot;
+      }
+    }
+
+    // Set emissive glow on all troll meshes for lava look
+    for (const partName in this._trollHandRig.parts) {
+      const mesh = this._trollHandRig.parts[partName].mesh;
+      if (mesh && mesh.material) {
+        mesh.material.emissiveColor = new Color3(0.5, 0.15, 0.03);
+      }
+    }
+
+    this._trollHandCreated = true;
+  }
+
+  _syncLavaTroll(gameState, dt) {
+    if (!gameState.lavaTroll) {
+      return;
+    }
+    const troll = gameState.lavaTroll;
+
+    // Create hand mesh on first troll activity
+    if ((troll.state !== LT_IDLE || troll.active) && !this._trollHandCreated) {
+      this._createTrollHand();
+    }
+
+    // Destroy base platforms visually when troll punches through
+    if (troll.platformsDestroyed && !this._trollPlatformsDestroyed) {
+      this._destroyBasePlatforms();
+      if (this._audioManager) {
+        this._audioManager.playSfx('troll-crumble');
+      }
+    }
+
+    if (!this._trollHandRig) {
+      return;
+    }
+
+    // Position hand — offset root so sim's positionY = palm grab point
+    this._trollHandRig.root.position.x = troll.positionX;
+    this._trollHandRig.root.position.y = troll.positionY - this._trollGrabOffset;
+
+    // Finger animation based on state
+    let targetFingerAngle = 0;
+    if (troll.state === LT_IDLE || troll.state === LT_REACHING) {
+      targetFingerAngle = 0; // spread open
+    } else if (troll.state === LT_GRABBING) {
+      // Interpolate fingers closing over grab duration
+      const t = Math.min(troll.timer / TROLL_GRAB_FRAMES, 1.0);
+      targetFingerAngle = -1.5 * t;
+    } else if (troll.state === LT_PULLING) {
+      targetFingerAngle = -1.5; // fully closed
+    } else if (troll.state === LT_PUNCH_INTRO) {
+      targetFingerAngle = -1.8; // tight fist
+    } else if (troll.state === LT_RETREATING) {
+      targetFingerAngle = -0.5; // relaxing
+    }
+
+    for (const name in this._trollFingerPivots) {
+      const pivot = this._trollFingerPivots[name];
+      // Smooth interpolation toward target
+      const current = pivot.rotation.x;
+      pivot.rotation.x = current + (targetFingerAngle - current) * Math.min(dt * 8, 1.0);
+    }
+
+    // Pulse emissive color synced with lava
+    const pulse = Math.sin(performance.now() / 1000 * Math.PI * 2 / 4) * 0.15;
+    for (const partName in this._trollHandRig.parts) {
+      const mesh = this._trollHandRig.parts[partName].mesh;
+      if (mesh && mesh.material) {
+        mesh.material.emissiveColor.r = 0.5 + pulse;
+        mesh.material.emissiveColor.g = 0.15 + pulse * 0.3;
+        mesh.material.emissiveColor.b = 0.03;
+      }
+    }
+
+    // Hide hand below lava when idle
+    if (troll.state === LT_IDLE) {
+      this._trollHandRig.root.position.y = -10;
+    }
+
+    // Sound diffing
+    this._syncTrollSounds(gameState);
+    this._trollPrevState = {
+      state: troll.state,
+      platformsDestroyed: troll.platformsDestroyed,
+      targetSlot: troll.targetSlot,
+    };
+  }
+
+  _destroyBasePlatforms() {
+    this._trollPlatformsDestroyed = true;
+
+    // Dispose original base platform meshes
+    for (const key of ['baseLeft', 'baseRight']) {
+      for (const mesh of this._trollPlatformMeshes[key]) {
+        // Spawn debris at platform position before disposing
+        this._spawnPlatformDebris(mesh.position.x, mesh.position.y);
+        mesh.dispose();
+      }
+      this._trollPlatformMeshes[key] = [];
+    }
+
+    // Create smaller pillar meshes at spawn point locations
+    const pillars = [SPAWN_PILLAR_LEFT, SPAWN_PILLAR_RIGHT];
+    for (const pillar of pillars) {
+      const body = MeshBuilder.CreateBox(`pillar_${pillar.id}`, {
+        width: pillar.width,
+        height: pillar.height,
+        depth: 2,
+      }, this.scene);
+      body.position = new Vector3(pillar.x, pillar.y, 0);
+
+      const mat = new StandardMaterial(`pillar_${pillar.id}_mat`, this.scene);
+      mat.diffuseColor = new Color3(0.45, 0.40, 0.35);
+      mat.specularColor = new Color3(0.1, 0.1, 0.1);
+      mat.emissiveColor = new Color3(0.05, 0.04, 0.03);
+      body.material = mat;
+
+      const ledge = MeshBuilder.CreateBox(`pillarLedge_${pillar.id}`, {
+        width: pillar.width + 0.1,
+        height: LEDGE_HEIGHT,
+        depth: 2,
+      }, this.scene);
+      ledge.position = new Vector3(pillar.x, pillar.y + pillar.height / 2 + LEDGE_HEIGHT / 2, -0.01);
+
+      const ledgeMat = new StandardMaterial(`pillarLedge_${pillar.id}_mat`, this.scene);
+      ledgeMat.diffuseColor = new Color3(0.6, 0.58, 0.55);
+      ledgeMat.specularColor = new Color3(0.3, 0.3, 0.3);
+      ledgeMat.emissiveColor = new Color3(0.08, 0.07, 0.06);
+      ledge.material = ledgeMat;
+
+      this._trollPillarMeshes.push(body, ledge);
+    }
+  }
+
+  _spawnPlatformDebris(x, y) {
+    // SPS debris burst — rock cubes flying upward then falling
+    const particleCount = 20;
+    const sps = new SolidParticleSystem('trollDebrisSPS', this.scene, { updatable: true });
+    const template = MeshBuilder.CreateBox('debrisTpl', { size: VOXEL_SIZE * 2 }, this.scene);
+    sps.addShape(template, particleCount);
+    template.dispose();
+
+    const spsMesh = sps.buildMesh();
+    const mat = new StandardMaterial('debrisMat', this.scene);
+    mat.diffuseColor = new Color3(0.45, 0.40, 0.35);
+    mat.emissiveColor = new Color3(0.1, 0.05, 0.02);
+    spsMesh.material = mat;
+
+    // Per-particle velocity and life data
+    const pdata = [];
+    for (let i = 0; i < particleCount; i++) {
+      pdata.push({
+        vx: (Math.random() - 0.5) * 6,
+        vy: 2 + Math.random() * 5,
+        vz: (Math.random() - 0.5) * 2,
+        rotSpeed: (Math.random() - 0.5) * 10,
+        life: 1.0 + Math.random() * 0.5,
+      });
+    }
+
+    sps.initParticles = () => {
+      for (let i = 0; i < sps.nbParticles; i++) {
+        const p = sps.particles[i];
+        p.position.set(
+          x + (Math.random() - 0.5) * 4,
+          y + (Math.random() - 0.5) * 0.3,
+          (Math.random() - 0.5) * 1
+        );
+        p.color = new Color4(0.45, 0.40, 0.35, 1);
+      }
+    };
+    sps.initParticles();
+    sps.setParticles();
+
+    let remaining = particleCount;
+    const observer = this.scene.onBeforeRenderObservable.add(() => {
+      const frameDt = this.engine.getDeltaTime() / 1000;
+      remaining = particleCount;
+      sps.updateParticle = (p) => {
+        const d = pdata[p.idx];
+        d.life -= frameDt;
+        if (d.life <= 0) {
+          p.scaling.setAll(0);
+          remaining--;
+          return p;
+        }
+        p.position.x += d.vx * frameDt;
+        p.position.y += d.vy * frameDt;
+        p.position.z += d.vz * frameDt;
+        d.vy -= 9.8 * frameDt; // gravity
+        p.rotation.x += d.rotSpeed * frameDt;
+        p.rotation.z += d.rotSpeed * 0.7 * frameDt;
+        return p;
+      };
+      sps.setParticles();
+
+      if (remaining <= 0) {
+        this.scene.onBeforeRenderObservable.remove(observer);
+        sps.dispose();
+      }
+    });
+
+    this._activeDebrisSystems.push({ sps, observer });
+  }
+
+  _syncTrollSounds(gameState) {
+    if (!this._audioManager || !gameState.lavaTroll) {
+      return;
+    }
+    const troll = gameState.lavaTroll;
+    const prev = this._trollPrevState;
+    if (!prev) {
+      return;
+    }
+
+    // State transitions
+    if (troll.state !== prev.state) {
+      // Emerge from lava
+      if ((troll.state === LT_REACHING && prev.state === LT_IDLE) ||
+          troll.state === LT_PUNCH_INTRO) {
+        this._audioManager.playSfx('troll-emerge');
+      }
+      // Grab
+      if (troll.state === LT_GRABBING && prev.state === LT_REACHING) {
+        this._audioManager.playSfx('troll-grab');
+      }
+      // Retreat
+      if (troll.state === LT_RETREATING) {
+        // Check if target escaped (was grabbed during reaching/grabbing/pulling)
+        if (prev.state === LT_REACHING || prev.state === LT_GRABBING || prev.state === LT_PULLING) {
+          const targetSlot = prev.targetSlot;
+          const chars = [...gameState.humans, ...gameState.enemies];
+          const target = chars.find(c => c.slotIndex === targetSlot);
+          if (target && target.active && !target.dead) {
+            this._audioManager.playSfx('troll-escape');
+          }
+        }
+        this._audioManager.playSfx('troll-retreat');
+      }
+    }
   }
 
   // ---- Character assembly ----
@@ -2101,6 +2419,8 @@ export class Level1Scene {
         this._syncHUD(state);
         // Sync banners
         this._syncBanners(state);
+        // Sync lava troll
+        this._syncLavaTroll(state, dt);
         // Sync sounds
         this._syncSounds(state);
         // Save state for next-frame diffing

@@ -93,13 +93,39 @@ export const E_BOUNCE_COUNT = 9;
 export const E_PREV_POS_Y = 10; // previous Y position for landing detection
 export const E_HIT_LAVA = 11;
 
+// ---- Lava Troll state ----
+export const LAVA_TROLL_SIZE = 16;
+// Indices within lava troll block:
+export const LT_ACTIVE = 0;
+export const LT_STATE = 1;           // LT_IDLE..LT_PUNCH_INTRO
+export const LT_TARGET_SLOT = 2;     // char index (0..11) being targeted
+export const LT_TARGET_TYPE = 3;     // 0=human, 1=enemy
+export const LT_POS_X = 4;           // fixed-point
+export const LT_POS_Y = 5;           // fixed-point
+export const LT_TIMER = 6;           // frame count
+export const LT_COOLDOWN = 7;        // frame count
+export const LT_ESCAPE_PROGRESS = 8; // flap count toward escape
+export const LT_ESCAPE_THRESHOLD = 9;// flaps needed to break free
+export const LT_SIDE = 10;           // -1=left, 1=right (which side hand emerges)
+export const LT_PLATFORMS_DESTROYED = 11; // 0 or 1
+export const LT_INTRO_DONE = 12;     // 0 or 1
+
+// Lava troll state enum
+export const LT_IDLE = 0;
+export const LT_REACHING = 1;
+export const LT_GRABBING = 2;
+export const LT_PULLING = 3;
+export const LT_RETREATING = 4;
+export const LT_PUNCH_INTRO = 5;
+
 // ---- Compute total size and section offsets ----
 export const HUMANS_OFFSET = GLOBAL_OFFSET + GLOBAL_SIZE;
 export const ENEMIES_OFFSET = HUMANS_OFFSET + MAX_HUMANS * CHAR_SIZE;
 export const ENEMY_AI_OFFSET = ENEMIES_OFFSET + MAX_ENEMIES * CHAR_SIZE;
 export const EGGS_OFFSET = ENEMY_AI_OFFSET + MAX_ENEMIES * AI_SIZE;
-export const TOTAL_INTS = EGGS_OFFSET + MAX_EGGS * EGG_SIZE;
-// ~572 ints = ~2288 bytes (AI_SIZE=6 adds 16 ints)
+export const LAVA_TROLL_OFFSET = EGGS_OFFSET + MAX_EGGS * EGG_SIZE;
+export const TOTAL_INTS = LAVA_TROLL_OFFSET + LAVA_TROLL_SIZE;
+// ~588 ints = ~2352 bytes
 
 // ---- Wave state enum ----
 export const WAVE_SPAWNING = 0;
@@ -115,6 +141,7 @@ export const HATCH_HATCHLING = 3;
 // ---- Player state enum ----
 export const STATE_GROUNDED = 0;
 export const STATE_AIRBORNE = 1;
+export const STATE_GRABBED = 2;
 
 // ---- Fixed-point helpers ----
 export function toFP(val) {

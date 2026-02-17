@@ -25,6 +25,14 @@ import {
   IDLE_TIMER_THRESHOLD,
   FP_PTERO_SPAWN_MARGIN,
   buildPlatformCollisionDataFP,
+  TROLL_WAVE_START, TROLL_GRAB_FRAMES,
+  TROLL_RETREAT_FRAMES, TROLL_COOLDOWN_FRAMES, TROLL_GRAB_CHANCE,
+  TROLL_GRAB_RADIUS_FP,
+  TROLL_PUNCH_RISE_FRAMES, TROLL_PUNCH_TOTAL_FRAMES,
+  FP_TROLL_REACH_ZONE, FP_TROLL_RISE_SPEED,
+  FP_TROLL_PULL_ACCEL, FP_TROLL_FLAP_IMPULSE, FP_TROLL_ESCAPE_DIST,
+  FP_TROLL_ESCAPE_IMPULSE, FP_TROLL_START_Y, FP_TROLL_LAVA_Y,
+  buildReducedPlatformCollisionDataFP,
 } from './physics/constants.js';
 import {
   checkPlatformCollisions, resolveJoust, applyBounce, applyKillToWinner,
@@ -42,6 +50,7 @@ import {
   MAX_HUMANS, MAX_ENEMIES, MAX_EGGS, FP_SCALE,
   TOTAL_INTS, GLOBAL_OFFSET, GLOBAL_SIZE,
   HUMANS_OFFSET, ENEMIES_OFFSET, ENEMY_AI_OFFSET, EGGS_OFFSET,
+  LAVA_TROLL_OFFSET, LAVA_TROLL_SIZE,
   CHAR_SIZE, AI_SIZE, EGG_SIZE,
   G_FRAME, G_RNG_SEED, G_WAVE_NUMBER, G_WAVE_STATE,
   G_SPAWN_TIMER, G_WAVE_TRANSITION_TIMER, G_GAME_MODE, G_GAME_OVER,
@@ -61,9 +70,14 @@ import {
   E_ACTIVE, E_POS_X, E_POS_Y, E_VEL_X, E_VEL_Y,
   E_ON_PLATFORM, E_ENEMY_TYPE, E_HATCH_STATE, E_HATCH_TIMER,
   E_BOUNCE_COUNT, E_PREV_POS_Y, E_HIT_LAVA,
+  LT_ACTIVE, LT_STATE, LT_TARGET_SLOT, LT_TARGET_TYPE,
+  LT_POS_X, LT_POS_Y, LT_TIMER, LT_COOLDOWN,
+  LT_ESCAPE_PROGRESS, LT_ESCAPE_THRESHOLD, LT_SIDE,
+  LT_PLATFORMS_DESTROYED, LT_INTRO_DONE,
+  LT_IDLE, LT_REACHING, LT_GRABBING, LT_PULLING, LT_RETREATING, LT_PUNCH_INTRO,
   WAVE_SPAWNING, WAVE_PLAYING, WAVE_TRANSITION,
   HATCH_FALLING, HATCH_ON_PLATFORM, HATCH_WOBBLING, HATCH_HATCHLING,
-  STATE_GROUNDED, STATE_AIRBORNE,
+  STATE_GROUNDED, STATE_AIRBORNE, STATE_GRABBED,
   toFP, fromFP, velPerFrame,
 } from './physics/stateLayout.js';
 
@@ -98,7 +112,9 @@ export class GameSimulation {
    */
   constructor({ gameMode, seed }) {
     this._gameMode = gameMode || GAME_MODE_TEAM;
-    this._platforms = buildPlatformCollisionDataFP();
+    this._platformsFull = buildPlatformCollisionDataFP();
+    this._platformsReduced = buildReducedPlatformCollisionDataFP();
+    this._platforms = this._platformsFull;
     this._rng = new DeterministicRNG(seed);
 
     // Integer-based working state
@@ -110,6 +126,21 @@ export class GameSimulation {
     this._gameOver = false;
     this._spawnQueue = [];
     this._idleTimer = 0;           // frame count — hurry-up pterodactyl mechanic
+
+    // Lava Troll state (all integers for determinism)
+    this._trollActive = 0;
+    this._trollState = LT_IDLE;
+    this._trollTargetSlot = -1;
+    this._trollTargetType = 0;       // 0=human, 1=enemy
+    this._trollPosX = 0;
+    this._trollPosY = FP_TROLL_START_Y;
+    this._trollTimer = 0;
+    this._trollCooldown = 0;
+    this._trollGrabY = 0;           // Y position when grab started (for escape distance)
+    this._trollEscapeThreshold = 0; // unused (kept for buffer compat)
+    this._trollSide = 1;
+    this._trollPlatformsDestroyed = 0;
+    this._trollIntroDone = 0;
 
     // Character slots: 0..3 = humans, 4..11 = enemies
     // All positions/velocities are FP integers, all timers are frame counts
@@ -226,6 +257,13 @@ export class GameSimulation {
         if (char.respawnTimer <= 0) {
           this._respawnCharacter(char, i);
         }
+        continue;
+      }
+
+      // Grabbed by Lava Troll — skip normal physics
+      // Position and velocity are managed by _updateLavaTroll during PULLING
+      if (char.playerState === 'GRABBED') {
+        char.velocityX = 0;
         continue;
       }
 
@@ -358,6 +396,9 @@ export class GameSimulation {
     // Eggs
     this._updateEggs();
 
+    // Lava Troll
+    this._updateLavaTroll(inputs);
+
     // Wave system
     this._updateWaveSystem();
 
@@ -415,6 +456,22 @@ export class GameSimulation {
     for (let i = 0; i < MAX_EGGS; i++) {
       this._serializeEgg(buf, EGGS_OFFSET + i * EGG_SIZE, this._eggs[i]);
     }
+
+    // Lava Troll
+    const lt = LAVA_TROLL_OFFSET;
+    buf[lt + LT_ACTIVE] = this._trollActive;
+    buf[lt + LT_STATE] = this._trollState;
+    buf[lt + LT_TARGET_SLOT] = this._trollTargetSlot;
+    buf[lt + LT_TARGET_TYPE] = this._trollTargetType;
+    buf[lt + LT_POS_X] = this._trollPosX;
+    buf[lt + LT_POS_Y] = this._trollPosY;
+    buf[lt + LT_TIMER] = this._trollTimer;
+    buf[lt + LT_COOLDOWN] = this._trollCooldown;
+    buf[lt + LT_ESCAPE_PROGRESS] = this._trollGrabY;
+    buf[lt + LT_ESCAPE_THRESHOLD] = this._trollEscapeThreshold;
+    buf[lt + LT_SIDE] = this._trollSide;
+    buf[lt + LT_PLATFORMS_DESTROYED] = this._trollPlatformsDestroyed;
+    buf[lt + LT_INTRO_DONE] = this._trollIntroDone;
 
     return buf.buffer;
   }
@@ -482,6 +539,25 @@ export class GameSimulation {
     for (let i = 0; i < MAX_EGGS; i++) {
       this._deserializeEgg(buf, EGGS_OFFSET + i * EGG_SIZE, this._eggs[i]);
     }
+
+    // Lava Troll
+    const lt = LAVA_TROLL_OFFSET;
+    this._trollActive = buf[lt + LT_ACTIVE];
+    this._trollState = buf[lt + LT_STATE];
+    this._trollTargetSlot = buf[lt + LT_TARGET_SLOT];
+    this._trollTargetType = buf[lt + LT_TARGET_TYPE];
+    this._trollPosX = buf[lt + LT_POS_X];
+    this._trollPosY = buf[lt + LT_POS_Y];
+    this._trollTimer = buf[lt + LT_TIMER];
+    this._trollCooldown = buf[lt + LT_COOLDOWN];
+    this._trollGrabY = buf[lt + LT_ESCAPE_PROGRESS];
+    this._trollEscapeThreshold = buf[lt + LT_ESCAPE_THRESHOLD];
+    this._trollSide = buf[lt + LT_SIDE];
+    this._trollPlatformsDestroyed = buf[lt + LT_PLATFORMS_DESTROYED];
+    this._trollIntroDone = buf[lt + LT_INTRO_DONE];
+    // Restore platform set based on destruction state
+    this._platforms = this._trollPlatformsDestroyed
+      ? this._platformsReduced : this._platformsFull;
 
     this._buildRenderState();
   }
@@ -566,11 +642,205 @@ export class GameSimulation {
     return closest;
   }
 
+  // ---- Lava Troll ----
+
+  _updateLavaTroll(inputs) {
+    if (this._waveNumber < TROLL_WAVE_START) {
+      return;
+    }
+
+    // Cooldown countdown
+    if (this._trollCooldown > 0) {
+      this._trollCooldown -= 1;
+    }
+
+    if (this._trollState === LT_IDLE) {
+      if (!this._trollActive || this._trollCooldown > 0) {
+        return;
+      }
+      // Scan for targets below reach zone (skip if shielded by a platform)
+      let bestSlot = -1;
+      let bestType = 0;
+      let lowestY = 0x7FFFFFFF;
+      for (let i = 0; i < this._chars.length; i++) {
+        const c = this._chars[i];
+        if (!c.active || c.dead || c.materializing) {
+          continue;
+        }
+        if (c.positionY < FP_TROLL_REACH_ZONE && c.positionY < lowestY) {
+          // Check if a platform shields this character from a grab below
+          let shielded = false;
+          for (const plat of this._platforms) {
+            if (plat.top < c.positionY &&
+                c.positionX >= plat.left && c.positionX <= plat.right) {
+              shielded = true;
+              break;
+            }
+          }
+          if (!shielded) {
+            lowestY = c.positionY;
+            bestSlot = i;
+            bestType = i < MAX_HUMANS ? 0 : 1;
+          }
+        }
+      }
+      if (bestSlot >= 0) {
+        // 1 in TROLL_GRAB_CHANCE per cooldown cycle
+        if (this._rng.nextInt(TROLL_GRAB_CHANCE) === 0) {
+          this._trollTargetSlot = bestSlot;
+          this._trollTargetType = bestType;
+          this._trollState = LT_REACHING;
+          this._trollTimer = 0;
+          this._trollPosX = this._chars[bestSlot].positionX;
+          this._trollPosY = FP_TROLL_START_Y;
+          this._trollSide = this._chars[bestSlot].positionX >= 0 ? 1 : -1;
+        } else {
+          // Failed the roll — wait another cooldown cycle
+          this._trollCooldown = TROLL_COOLDOWN_FRAMES;
+        }
+      } else {
+        // No valid target — reset cooldown so we don't spin every frame
+        this._trollCooldown = TROLL_COOLDOWN_FRAMES;
+      }
+    } else if (this._trollState === LT_REACHING) {
+      // Hand rises from lava, tracking target. Target moves freely.
+      this._trollTimer += 1;
+      const target = this._chars[this._trollTargetSlot];
+      if (!target.active || target.dead) {
+        this._trollState = LT_RETREATING;
+        this._trollTimer = 0;
+      } else {
+        // Track target X position
+        this._trollPosX = target.positionX;
+        // Rise toward target Y
+        this._trollPosY += FP_TROLL_RISE_SPEED;
+        // Check if hand has reached the target (close enough in Y)
+        const dy = Math.abs(this._trollPosY - target.positionY);
+        if (dy < TROLL_GRAB_RADIUS_FP) {
+          // Hand reached target — start closing fist
+          this._trollState = LT_GRABBING;
+          this._trollTimer = 0;
+        } else if (target.positionY > FP_TROLL_REACH_ZONE || this._trollPosY > FP_TROLL_REACH_ZONE) {
+          // Target escaped the zone — give up
+          this._trollState = LT_RETREATING;
+          this._trollTimer = 0;
+        }
+      }
+    } else if (this._trollState === LT_GRABBING) {
+      // Fist closing — short animation. Hand stays put, target can escape.
+      this._trollTimer += 1;
+      const target = this._chars[this._trollTargetSlot];
+      if (!target.active || target.dead) {
+        this._trollState = LT_RETREATING;
+        this._trollTimer = 0;
+      } else if (this._trollTimer >= TROLL_GRAB_FRAMES) {
+        // Fist closed — check if target is still within grab radius
+        const dx = Math.abs(this._trollPosX - target.positionX);
+        const dy = Math.abs(this._trollPosY - target.positionY);
+        if (dx < TROLL_GRAB_RADIUS_FP && dy < TROLL_GRAB_RADIUS_FP) {
+          // Grab succeeds — lock the target
+          target.playerState = 'GRABBED';
+          target.currentPlatform = null;
+          target.platformIndex = -1;
+          target.velocityY = 0;
+          this._trollGrabY = target.positionY;
+          this._trollState = LT_PULLING;
+          this._trollTimer = 0;
+        } else {
+          // Target moved away — grab missed
+          this._trollState = LT_RETREATING;
+          this._trollTimer = 0;
+        }
+      }
+    } else if (this._trollState === LT_PULLING) {
+      // Tug of war: hand pulls down, flapping pulls up.
+      // Velocity halved each frame (grip drag) to prevent runaway acceleration.
+      this._trollTimer += 1;
+      const target = this._chars[this._trollTargetSlot];
+      if (!target.active || target.dead) {
+        this._trollState = LT_RETREATING;
+        this._trollTimer = 0;
+      } else {
+        // Velocity damping — halve each frame (grip resistance)
+        target.velocityY = target.velocityY >> 1;
+        // Apply pull-down force
+        target.velocityY -= FP_TROLL_PULL_ACCEL;
+        // Apply flap impulse (humans only)
+        if (this._trollTargetType === 0) {
+          const input = this._decodeInput(inputs[this._trollTargetSlot] || 0);
+          if (input.flap) {
+            target.velocityY += FP_TROLL_FLAP_IMPULSE;
+          }
+        }
+        // Update character position from velocity
+        target.positionY += target.velocityY;
+        // Hand follows the character
+        this._trollPosX = target.positionX;
+        this._trollPosY = target.positionY;
+        // Escape: risen far enough above grab point
+        if (target.positionY > this._trollGrabY + FP_TROLL_ESCAPE_DIST) {
+          target.playerState = 'AIRBORNE';
+          target.velocityY = FP_TROLL_ESCAPE_IMPULSE;
+          this._trollState = LT_RETREATING;
+          this._trollTimer = 0;
+        } else if (target.positionY <= FP_TROLL_LAVA_Y) {
+          // Pulled into lava — kill target
+          target.hitLava = true;
+          target.playerState = 'AIRBORNE';
+          this._lavaDeath(target, this._trollTargetSlot);
+          this._trollState = LT_RETREATING;
+          this._trollTimer = 0;
+        }
+      }
+    } else if (this._trollState === LT_RETREATING) {
+      this._trollTimer += 1;
+      this._trollPosY -= FP_TROLL_RISE_SPEED;
+      if (this._trollTimer >= TROLL_RETREAT_FRAMES) {
+        this._trollState = LT_IDLE;
+        this._trollTimer = 0;
+        this._trollCooldown = TROLL_COOLDOWN_FRAMES;
+        this._trollPosY = FP_TROLL_START_Y;
+      }
+    } else if (this._trollState === LT_PUNCH_INTRO) {
+      this._trollTimer += 1;
+      if (this._trollTimer <= TROLL_PUNCH_RISE_FRAMES) {
+        const progress = this._trollTimer;
+        const totalRise = FP_TROLL_REACH_ZONE - FP_TROLL_START_Y;
+        this._trollPosY = FP_TROLL_START_Y + ((totalRise * progress / TROLL_PUNCH_RISE_FRAMES) | 0);
+      } else if (this._trollTimer === TROLL_PUNCH_RISE_FRAMES + 1) {
+        this._trollPlatformsDestroyed = 1;
+        this._platforms = this._platformsReduced;
+      }
+      if (this._trollTimer > TROLL_PUNCH_RISE_FRAMES + 10) {
+        this._trollPosY -= FP_TROLL_RISE_SPEED;
+      }
+      if (this._trollTimer >= TROLL_PUNCH_TOTAL_FRAMES) {
+        this._trollIntroDone = 1;
+        this._trollActive = 1;
+        this._trollState = LT_IDLE;
+        this._trollTimer = 0;
+        this._trollCooldown = TROLL_COOLDOWN_FRAMES;
+        this._trollPosY = FP_TROLL_START_Y;
+      }
+    }
+  }
+
   // ---- Wave system ----
 
   _startWave(waveNumber) {
     this._waveNumber = waveNumber;
     this._waveState = WAVE_SPAWNING;
+
+    // Lava Troll activation — destroy base platforms and activate troll
+    if (waveNumber >= TROLL_WAVE_START && !this._trollIntroDone) {
+      this._trollPlatformsDestroyed = 1;
+      this._platforms = this._platformsReduced;
+      this._trollIntroDone = 1;
+      this._trollActive = 1;
+      this._trollState = LT_IDLE;
+      this._trollCooldown = TROLL_COOLDOWN_FRAMES;
+      this._trollPosY = FP_TROLL_START_Y;
+    }
 
     // Reset per-wave stats for all active humans
     for (let i = 0; i < MAX_HUMANS; i++) {
@@ -784,6 +1054,11 @@ export class GameSimulation {
 
   _updateWaveSystem() {
     if (this._gameOver) {
+      return;
+    }
+
+    // Pause spawn processing during troll punch intro
+    if (this._trollState === LT_PUNCH_INTRO) {
       return;
     }
 
@@ -1318,7 +1593,8 @@ export class GameSimulation {
     buf[offset + C_POS_Y] = char.positionY;
     buf[offset + C_VEL_X] = char.velocityX;
     buf[offset + C_VEL_Y] = char.velocityY;
-    buf[offset + C_STATE] = char.playerState === 'AIRBORNE' ? STATE_AIRBORNE : STATE_GROUNDED;
+    buf[offset + C_STATE] = char.playerState === 'AIRBORNE' ? STATE_AIRBORNE
+      : (char.playerState === 'GRABBED' ? STATE_GRABBED : STATE_GROUNDED);
     buf[offset + C_FACING_DIR] = char.facingDir;
     buf[offset + C_IS_TURNING] = char.isTurning ? 1 : 0;
     buf[offset + C_TURN_TIMER] = char.turnTimer;
@@ -1355,7 +1631,9 @@ export class GameSimulation {
     char.positionY = buf[offset + C_POS_Y];
     char.velocityX = buf[offset + C_VEL_X];
     char.velocityY = buf[offset + C_VEL_Y];
-    char.playerState = buf[offset + C_STATE] === STATE_AIRBORNE ? 'AIRBORNE' : 'GROUNDED';
+    const stateVal = buf[offset + C_STATE];
+    char.playerState = stateVal === STATE_AIRBORNE ? 'AIRBORNE'
+      : (stateVal === STATE_GRABBED ? 'GRABBED' : 'GROUNDED');
     char.facingDir = buf[offset + C_FACING_DIR];
     char.isTurning = buf[offset + C_IS_TURNING] === 1;
     char.turnTimer = buf[offset + C_TURN_TIMER];
@@ -1504,6 +1782,21 @@ export class GameSimulation {
       humans,
       enemies,
       eggs,
+      lavaTroll: {
+        active: this._trollActive,
+        state: this._trollState,
+        targetSlot: this._trollTargetSlot,
+        targetType: this._trollTargetType,
+        positionX: fromFP(this._trollPosX),
+        positionY: fromFP(this._trollPosY),
+        timer: this._trollTimer,
+        cooldown: this._trollCooldown,
+        grabY: fromFP(this._trollGrabY),
+        escapeThreshold: this._trollEscapeThreshold,
+        side: this._trollSide,
+        platformsDestroyed: this._trollPlatformsDestroyed,
+        introDone: this._trollIntroDone,
+      },
     };
   }
 }

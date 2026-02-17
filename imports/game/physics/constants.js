@@ -115,6 +115,20 @@ export const PTERO_CIRCLE_FRAMES = 60;       // 1s repositioning
 export const IDLE_TIMER_THRESHOLD = 3600;    // 60 seconds before pterodactyl spawns
 export const IDLE_TIMER_WARNING = 3300;      // 55 seconds — audio warning cue (5s before spawn)
 
+// ---- Lava Troll ----
+export const TROLL_WAVE_START = 4;
+export const TROLL_GRAB_FRAMES = 15;        // 0.25s finger close
+export const TROLL_RETREAT_FRAMES = 30;      // 0.5s to sink back
+export const TROLL_COOLDOWN_FRAMES = 120;    // 2s between grab attempts
+export const TROLL_GRAB_CHANCE = 2;          // 1 in N chance to grab when target in range
+export const TROLL_GRAB_RADIUS_FP = toFP(0.8); // how close hand must be to grab
+export const TROLL_PUNCH_RISE_FRAMES = 40;   // intro: fist rises
+export const TROLL_PUNCH_TOTAL_FRAMES = 120; // intro: total sequence
+
+// Spawn pillars replace base platforms after troll destruction
+export const SPAWN_PILLAR_LEFT = { id: 'baseLeft', x: -6.0, y: -3.8, width: 2.5, height: 0.35 };
+export const SPAWN_PILLAR_RIGHT = { id: 'baseRight', x: 6.0, y: -3.8, width: 2.5, height: 0.35 };
+
 // ---- Game modes ----
 export const GAME_MODE_TEAM = 'team';
 export const GAME_MODE_PVP = 'pvp';
@@ -220,6 +234,18 @@ export const FP_PLATFORM_EPSILON = Math.round(0.1 * FP);
 export const FP_EGG_HATCH_LIFT = Math.round(0.5 * FP);
 export const FP_KILL_KNOCK_VX = Math.round(2 * FP);
 
+// ---- Lava Troll FP constants ----
+// Lava visual top matches Level1Scene._createLava() lavaTop
+const LAVA_VISUAL_TOP = -3.6;
+export const FP_TROLL_REACH_ZONE = toFP(LAVA_VISUAL_TOP + 15 * VOXEL_SIZE);  // ~15 voxels above lava top
+export const FP_TROLL_RISE_SPEED = Math.round(9.0 * FP / 60);  // per-frame rise speed
+export const FP_TROLL_PULL_ACCEL = Math.round(1.5 * FP / 60);  // tug-of-war: pull-down per frame (~6 FP)
+export const FP_TROLL_FLAP_IMPULSE = Math.round(0.4 * FP);     // tug-of-war: flap kick (~102 FP)
+export const FP_TROLL_ESCAPE_DIST = toFP(1.5);                 // escape when 1.5 world units above grab point
+export const FP_TROLL_ESCAPE_IMPULSE = Math.round(5.0 * FP);   // upward velocity on escape
+export const FP_TROLL_START_Y = toFP(-7.0);       // below viewport for hidden position
+export const FP_TROLL_LAVA_Y = FP_ORTHO_BOTTOM + FP_LAVA_OFFSET; // death threshold
+
 /**
  * Build platform collision data in fixed-point units.
  * Used by GameSimulation for deterministic physics.
@@ -232,6 +258,25 @@ export function buildPlatformCollisionDataFP() {
     left: toFP(def.x - def.width / 2),
     right: toFP(def.x + def.width / 2),
   }));
+}
+
+/**
+ * Build reduced platform collision data in FP — replaces baseLeft/baseRight
+ * with smaller spawn pillars after the Lava Troll destroys them.
+ */
+export function buildReducedPlatformCollisionDataFP() {
+  const pillars = [SPAWN_PILLAR_LEFT, SPAWN_PILLAR_RIGHT];
+  return PLATFORM_DEFS.map(def => {
+    const pillar = pillars.find(p => p.id === def.id);
+    const src = pillar || def;
+    return {
+      id: src.id,
+      top: toFP(src.y + src.height / 2 + LEDGE_HEIGHT),
+      bottom: toFP(src.y - src.height / 2),
+      left: toFP(src.x - src.width / 2),
+      right: toFP(src.x + src.width / 2),
+    };
+  });
 }
 
 /** Spawn points in FP */

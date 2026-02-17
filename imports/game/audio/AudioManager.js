@@ -55,6 +55,11 @@ const GAME_SFX = [
   { name: 'lava-burst-2', url: '/audio/sfx/environment/lava-burst-2.mp3', pool: 2, volume: 0.3 },
   { name: 'lava-death', url: '/audio/sfx/environment/lava-death.mp3', pool: 1, volume: 0.7 },
   { name: 'vortex-suck', url: '/audio/sfx/environment/vortex-suck.mp3', pool: 1, volume: 0.6 },
+  { name: 'troll-crumble', url: '/audio/sfx/environment/troll-crumble.mp3', pool: 1, volume: 0.8 },
+  { name: 'troll-grab', url: '/audio/sfx/environment/troll-grab.mp3', pool: 1, volume: 0.6 },
+  { name: 'troll-emerge', url: '/audio/sfx/environment/troll-emerge.mp3', pool: 1, volume: 0.5 },
+  { name: 'troll-retreat', url: '/audio/sfx/environment/troll-retreat.mp3', pool: 1, volume: 0.4 },
+  { name: 'troll-escape', url: '/audio/sfx/environment/troll-escape.mp3', pool: 1, volume: 0.6 },
 
   // Bonus
   { name: 'egg-catch-air', url: '/audio/sfx/bonus/egg-catch-air.mp3', pool: 1, volume: 0.6 },
