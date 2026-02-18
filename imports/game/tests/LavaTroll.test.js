@@ -1,6 +1,6 @@
 import assert from 'assert';
 import { GameSimulation } from '../GameSimulation.js';
-import { GAME_MODE_TEAM, TROLL_COOLDOWN_FRAMES, TROLL_GRAB_FRAMES } from '../physics/constants.js';
+import { GAME_MODE_TEAM, TROLL_COOLDOWN_FRAMES, TROLL_GRAB_FRAMES, TROLL_WAVE_START, FP_TROLL_START_Y } from '../physics/constants.js';
 import {
   MAX_HUMANS, TOTAL_INTS, LAVA_TROLL_OFFSET,
   LT_ACTIVE, LT_STATE, LT_PLATFORMS_DESTROYED, LT_INTRO_DONE,
@@ -34,6 +34,21 @@ function fastForwardToWave(sim, targetWave) {
   }
   // Tick once to trigger the wave transition
   sim.tick([0, 0, 0, 0]);
+}
+
+/**
+ * Set up troll as fully active (as if wave >= TROLL_WAVE_START already ran).
+ * This ensures _updateLavaTroll() won't bail on the waveNumber check.
+ */
+function activateTroll(sim) {
+  sim._waveNumber = TROLL_WAVE_START;
+  sim._trollPlatformsDestroyed = 1;
+  sim._platforms = sim._platformsReduced;
+  sim._trollIntroDone = 1;
+  sim._trollActive = 1;
+  sim._trollState = LT_IDLE;
+  sim._trollCooldown = 0;
+  sim._trollPosY = FP_TROLL_START_Y;
 }
 
 /**
@@ -71,8 +86,7 @@ describe('LavaTroll', function () {
       sim.activatePlayer(0, 0);
       sim.startGame();
 
-      // Tick once to build render state
-      sim.tick([0, 0, 0, 0]);
+      fastForwardToWave(sim, TROLL_WAVE_START);
 
       const state = sim.getState();
       assert.strictEqual(state.lavaTroll.introDone, 1);
@@ -85,7 +99,7 @@ describe('LavaTroll', function () {
       sim.activatePlayer(0, 0);
       sim.startGame();
 
-      sim.tick([0, 0, 0, 0]);
+      fastForwardToWave(sim, TROLL_WAVE_START);
 
       assert.strictEqual(sim._trollPlatformsDestroyed, 1);
       assert.strictEqual(sim._platforms, sim._platformsReduced);
@@ -110,6 +124,7 @@ describe('LavaTroll', function () {
       const sim = createSim();
       sim.activatePlayer(0, 0);
       sim.startGame();
+      activateTroll(sim);
 
       // Place player in reach zone permanently
       sim._chars[0].positionX = 0;
@@ -152,6 +167,7 @@ describe('LavaTroll', function () {
         sim.tick([0, 0, 0, 0]);
       }
 
+      activateTroll(sim);
       forceTrollReaching(sim, toFP(-3.8));
 
       // Move player to the right
@@ -172,6 +188,7 @@ describe('LavaTroll', function () {
         sim.tick([0, 0, 0, 0]);
       }
 
+      activateTroll(sim);
       forceTrollReaching(sim, toFP(-3.8));
 
       // Player should NOT be grabbed during reaching
@@ -188,6 +205,7 @@ describe('LavaTroll', function () {
         sim.tick([0, 0, 0, 0]);
       }
 
+      activateTroll(sim);
       forceTrollReaching(sim, toFP(-3.8));
 
       // Move target above the reach zone
@@ -211,6 +229,7 @@ describe('LavaTroll', function () {
       }
 
       // Place player at a Y the hand can reach, force reaching
+      activateTroll(sim);
       const targetY = toFP(-3.8);
       forceTrollReaching(sim, targetY);
 
@@ -243,6 +262,7 @@ describe('LavaTroll', function () {
         sim.tick([0, 0, 0, 0]);
       }
 
+      activateTroll(sim);
       // Set up GRABBING state — hand at target position
       sim._chars[0].positionX = 0;
       sim._chars[0].positionY = toFP(-3.8);
@@ -278,6 +298,7 @@ describe('LavaTroll', function () {
         sim.tick([0, 0, 0, 0]);
       }
 
+      activateTroll(sim);
       // Set up pulling state directly
       sim._chars[0].positionX = 0;
       sim._chars[0].positionY = toFP(-3.5);
@@ -315,6 +336,7 @@ describe('LavaTroll', function () {
         sim.tick([0, 0, 0, 0]);
       }
 
+      activateTroll(sim);
       // Set up pulling state
       sim._chars[0].positionX = 0;
       sim._chars[0].positionY = toFP(-3.5);
@@ -352,6 +374,7 @@ describe('LavaTroll', function () {
         sim.tick([0, 0, 0, 0]);
       }
 
+      activateTroll(sim);
       // Spawn an enemy and set up pulling state
       const enemySlot = MAX_HUMANS;
       sim._chars[enemySlot].active = true;
@@ -394,6 +417,7 @@ describe('LavaTroll', function () {
         sim.tick([0, 0, 0, 0]);
       }
 
+      activateTroll(sim);
       forceTrollReaching(sim, toFP(-3.8));
 
       // Kill the target
@@ -436,7 +460,7 @@ describe('LavaTroll', function () {
       sim.activatePlayer(0, 0);
       sim.startGame();
 
-      sim.tick([0, 0, 0, 0]);
+      fastForwardToWave(sim, TROLL_WAVE_START);
 
       const buf = new Int32Array(sim.serialize());
       assert.strictEqual(buf[LAVA_TROLL_OFFSET + LT_ACTIVE], 1);
@@ -486,6 +510,7 @@ describe('LavaTroll', function () {
         sim.tick([0, 0, 0, 0]);
       }
 
+      activateTroll(sim);
       // Set up a pulled state
       sim._chars[0].positionX = 0;
       sim._chars[0].positionY = toFP(-3.5);
@@ -536,6 +561,7 @@ describe('LavaTroll', function () {
         sim.tick([0, 0, 0, 0]);
       }
 
+      activateTroll(sim);
       // Position player below a platform in the reach zone
       sim._chars[0].positionX = toFP(-5.0);
       sim._chars[0].positionY = toFP(-3.5);
