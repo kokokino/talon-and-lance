@@ -167,6 +167,10 @@ export class Level1Scene {
     this._prevState = null;
     this._localPlayerSlot = 0;
 
+    // Visual palette map: maps human slot index → visual palette index
+    // Used to resolve color conflicts (multiple players picking the same color)
+    this._visualPaletteMap = [0, 1, 2, 3];
+
     // Per-slot visual smoothing for remote players (reduces rollback snap)
     this._smoothedPos = [];
     for (let i = 0; i < 12; i++) {
@@ -313,6 +317,9 @@ export class Level1Scene {
     const now = performance.now();
     const dt = Math.min((now - this._lastDrawTime) / 1000, 0.05);
     this._lastDrawTime = now;
+
+    // Resolve visual palettes before rendering (dedup knight colors)
+    this._resolveVisualPalettes(gameState.humans);
 
     // Sync humans
     for (const human of gameState.humans) {
@@ -623,7 +630,9 @@ export class Level1Scene {
       lanceRig: slot.lanceRig,
       wingMode: charState.wingMode,
       enemyType: charState.enemyType,
-      paletteIndex: charState.paletteIndex,
+      paletteIndex: type === 'human'
+        ? (this._visualPaletteMap[charState.slotIndex] ?? charState.paletteIndex)
+        : charState.paletteIndex,
       jawPivot: slot.jawPivot,
     };
 
@@ -641,7 +650,9 @@ export class Level1Scene {
       lanceRig: slot.lanceRig,
       wingMode: charState.wingMode,
       enemyType: charState.enemyType,
-      paletteIndex: charState.paletteIndex,
+      paletteIndex: type === 'human'
+        ? (this._visualPaletteMap[charState.slotIndex] ?? charState.paletteIndex)
+        : charState.paletteIndex,
     };
     const charIdx = type === 'human' ? 0 : 1;
     const x = charState.positionX;
@@ -2240,6 +2251,42 @@ export class Level1Scene {
     }
   }
 
+  /**
+   * Resolve visual palettes so each active human has a distinct color.
+   * Local player keeps their chosen palette; remote players get reassigned
+   * if there's a conflict.
+   */
+  _resolveVisualPalettes(humans) {
+    const used = new Set();
+
+    // Local player keeps their chosen color
+    for (const human of humans) {
+      if (human.active && human.slotIndex === this._localPlayerSlot) {
+        this._visualPaletteMap[human.slotIndex] = human.paletteIndex;
+        used.add(human.paletteIndex);
+      }
+    }
+
+    // Assign remote players: keep their color if unclaimed, otherwise lowest unused
+    for (const human of humans) {
+      if (!human.active || human.slotIndex === this._localPlayerSlot) {
+        continue;
+      }
+      if (!used.has(human.paletteIndex)) {
+        this._visualPaletteMap[human.slotIndex] = human.paletteIndex;
+        used.add(human.paletteIndex);
+      } else {
+        // Find lowest unused palette
+        let assigned = 0;
+        while (used.has(assigned)) {
+          assigned++;
+        }
+        this._visualPaletteMap[human.slotIndex] = assigned;
+        used.add(assigned);
+      }
+    }
+  }
+
   // ---- Render slot helpers ----
 
   _createRenderSlot() {
@@ -2285,7 +2332,8 @@ export class Level1Scene {
 
     if (type === 'human') {
       slot.birdRig = buildRig(this.scene, ostrichModel, VS, notLit);
-      const mergedPalette = buildKnightPalette(charState.paletteIndex);
+      const visualPalette = this._visualPaletteMap[charState.slotIndex] ?? charState.paletteIndex;
+      const mergedPalette = buildKnightPalette(visualPalette);
       slot.knightRig = buildRig(this.scene, { ...knightModel, palette: mergedPalette }, VS, notLit);
       slot.lanceRig = buildRig(this.scene, lanceModel, VS, notLit);
     } else if (charState.enemyType === ENEMY_TYPE_PTERODACTYL) {
@@ -2423,6 +2471,7 @@ export class Level1Scene {
       // Sync rendering every frame (even when no tick occurred)
       const state = this._soloSimulation.getState();
       if (state) {
+        this._resolveVisualPalettes(state.humans);
         for (const human of state.humans) {
           this._syncCharSlot(human, 'human', dt);
         }
