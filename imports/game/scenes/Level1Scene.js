@@ -1830,10 +1830,10 @@ export class Level1Scene {
     if (this._trollHandCreated) {
       return;
     }
-    const VS = VOXEL_SIZE * 3;
+    const VS = VOXEL_SIZE;
     this._trollHandRig = buildRig(this.scene, trollHandModel, VS, false);
-    // Grab-point offset: 20 forearm layers + 2 palm center = 22 voxels
-    this._trollGrabOffset = 22 * VS;
+    // Grab-point offset: 60 forearm + 6 palm center = 66 voxels (same physical size as old 22 × 3VS)
+    this._trollGrabOffset = 66 * VS;
     // Z=1.0 places the hand fully behind the lava plane (Z=0.5).
     // Model depth is ±0.315 from root, so front face is at Z≈0.685 — behind lava.
     this._trollHandRig.root.position = new Vector3(0, -10, 1.0);
@@ -1841,7 +1841,7 @@ export class Level1Scene {
     this._trollHandRig.root.rotation.y = Math.PI;
 
     // Set up finger pivots at each finger base for grab rotation
-    const fingerNames = ['thumb', 'indexFinger', 'middleFinger', 'ringFinger'];
+    const fingerNames = ['thumb', 'indexFinger', 'middleFinger', 'ringFinger', 'pinkyFinger'];
     this._trollFingerPivots = {};
     for (const name of fingerNames) {
       const part = this._trollHandRig.parts[name];
