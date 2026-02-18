@@ -114,6 +114,7 @@ export class Level1Scene {
 
     // Solo mode simulation (created in create() for non-rendererOnly mode)
     this._soloSimulation = null;
+    this._soloAccumulator = 0;
 
     // Escape overlay
     this._escapeOverlay = null;
@@ -1338,6 +1339,7 @@ export class Level1Scene {
       this._highScoreTracker = null;
     }
     this._soloSimulation = null;
+    this._soloAccumulator = 0;
     if (this._skyBackground) {
       this._skyBackground.dispose();
       this._skyBackground = null;
@@ -2396,34 +2398,42 @@ export class Level1Scene {
     this._animateLava(dt, gameTime);
     this._updateBanner(dt);
 
-    // Solo mode: tick internal simulation and sync rendering
+    // Solo mode: tick internal simulation at fixed 60fps, sync rendering every frame
     if (this._soloSimulation) {
-      const input = this._inputReader
-        ? this._inputReader.sample()
-        : { left: false, right: false, flap: false };
-      const encoded = (input.left ? 0x01 : 0) | (input.right ? 0x02 : 0) | (input.flap ? 0x04 : 0);
-      this._soloSimulation.tick([encoded]);
+      const TICK_MS = 1000 / 60;
+      const MAX_TICKS = 10;
+
+      this._soloAccumulator += dt * 1000;
+
+      // Catastrophic cap: prevent spiral-of-death after tab backgrounding
+      if (this._soloAccumulator > TICK_MS * MAX_TICKS) {
+        this._soloAccumulator = TICK_MS * MAX_TICKS;
+      }
+
+      // Fixed timestep: tick at 60fps regardless of display refresh rate
+      while (this._soloAccumulator >= TICK_MS) {
+        const input = this._inputReader
+          ? this._inputReader.sample()
+          : { left: false, right: false, flap: false };
+        const encoded = (input.left ? 0x01 : 0) | (input.right ? 0x02 : 0) | (input.flap ? 0x04 : 0);
+        this._soloSimulation.tick([encoded]);
+        this._soloAccumulator -= TICK_MS;
+      }
+
+      // Sync rendering every frame (even when no tick occurred)
       const state = this._soloSimulation.getState();
       if (state) {
-        // Sync humans
         for (const human of state.humans) {
           this._syncCharSlot(human, 'human', dt);
         }
-        // Sync enemies
         for (const enemy of state.enemies) {
           this._syncCharSlot(enemy, 'enemy', dt);
         }
-        // Sync eggs
         this._syncEggs(state.eggs, state.humans, dt);
-        // Sync HUD
         this._syncHUD(state);
-        // Sync banners
         this._syncBanners(state);
-        // Sync lava troll
         this._syncLavaTroll(state, dt);
-        // Sync sounds
         this._syncSounds(state);
-        // Save state for next-frame diffing
         this._prevState = this._snapshotState(state);
       }
     }
