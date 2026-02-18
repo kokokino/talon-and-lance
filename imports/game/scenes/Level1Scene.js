@@ -537,6 +537,11 @@ export class Level1Scene {
     if (charState.playerState === 'GRABBED' && slot.birdRig?.root) {
       const shake = Math.sin(performance.now() / 50) * 0.05;
       slot.birdRig.root.position.x = renderX + shake;
+      // Update body Y so knight moves with the hand (simulation keeps them synced)
+      const bParts = slot.birdRig?.parts;
+      if (bParts?.body) {
+        bParts.body.mesh.position.y = renderY;
+      }
       return;
     }
 

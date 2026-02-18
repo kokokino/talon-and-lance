@@ -164,96 +164,96 @@ export const trollHandModel = {
     palm: {
       parent: 'forearm',
       offset: [0, 20, 0],
-      // 7w × 4d × 4h — wide palm with crack detail
+      // 9w × 4d × 4h — wide palm with crack detail
       layers: [
         // y=0 (base of palm)
         [
-          [0, 1, 1, 2, 1, 1, 0],
-          [1, 2, 1, 1, 1, 2, 1],
-          [1, 1, 1, 1, 1, 1, 1],
-          [0, 1, 2, 1, 2, 1, 0],
+          [0, 1, 1, 1, 2, 1, 1, 1, 0],
+          [1, 2, 1, 1, 1, 1, 1, 2, 1],
+          [1, 1, 1, 1, 1, 1, 1, 1, 1],
+          [0, 1, 2, 1, 1, 1, 2, 1, 0],
         ],
         // y=1
         [
-          [0, 2, 1, 1, 1, 2, 0],
-          [1, 1, 3, 1, 3, 1, 1],
-          [1, 3, 1, 1, 1, 3, 1],
-          [0, 2, 1, 1, 1, 2, 0],
+          [0, 2, 1, 1, 1, 1, 1, 2, 0],
+          [1, 1, 3, 1, 1, 1, 3, 1, 1],
+          [1, 3, 1, 1, 1, 1, 1, 3, 1],
+          [0, 2, 1, 1, 1, 1, 1, 2, 0],
         ],
         // y=2
         [
-          [0, 1, 2, 1, 2, 1, 0],
-          [2, 1, 1, 3, 1, 1, 2],
-          [2, 1, 3, 1, 1, 1, 2],
-          [0, 1, 2, 1, 2, 1, 0],
+          [0, 1, 2, 1, 1, 1, 2, 1, 0],
+          [2, 1, 1, 3, 1, 3, 1, 1, 2],
+          [2, 1, 3, 1, 1, 1, 3, 1, 2],
+          [0, 1, 2, 1, 1, 1, 2, 1, 0],
         ],
         // y=3 (top of palm — finger bases)
         [
-          [0, 1, 1, 2, 1, 1, 0],
-          [1, 2, 1, 1, 1, 2, 1],
-          [1, 1, 2, 1, 2, 1, 1],
-          [0, 1, 1, 2, 1, 1, 0],
+          [0, 1, 1, 1, 2, 1, 1, 1, 0],
+          [1, 2, 1, 1, 1, 1, 1, 2, 1],
+          [1, 1, 2, 1, 1, 1, 2, 1, 1],
+          [0, 1, 1, 1, 2, 1, 1, 1, 0],
         ],
       ],
     },
 
     thumb: {
       parent: 'palm',
-      offset: [-3, 1, 0],
-      // 2w × 2d × 4h — stubby thumb with hot tip
+      offset: [-5, 1, 0],
+      // 4w × 2d × 4h — wide thumb with aggressive outward lean
       layers: [
-        // y=0
+        // y=0 (base — rightmost 2 cols filled, near palm)
         [
-          [2, 1],
-          [1, 2],
+          [0, 0, 2, 1],
+          [0, 0, 1, 2],
         ],
         // y=1
         [
-          [1, 2],
-          [2, 1],
+          [0, 1, 2, 0],
+          [0, 2, 1, 0],
         ],
         // y=2
         [
-          [2, 6],
-          [6, 2],
+          [2, 6, 0, 0],
+          [6, 2, 0, 0],
         ],
-        // y=3 (tip)
+        // y=3 (tip — leftmost 2 cols filled, sticking out)
         [
-          [6, 4],
-          [4, 6],
+          [6, 4, 0, 0],
+          [4, 6, 0, 0],
         ],
       ],
     },
 
     indexFinger: {
       parent: 'palm',
-      offset: [-2, 4, 0],
-      // 2w × 2d × 5h
+      offset: [-3, 4, 0],
+      // 3w × 2d × 5h — leans outward (left) via layer shifting
       layers: [
-        // y=0
+        // y=0 (base — right 2 cols filled, toward center)
         [
-          [1, 2],
-          [2, 1],
+          [0, 1, 2],
+          [0, 2, 1],
         ],
         // y=1
         [
-          [2, 1],
-          [1, 2],
+          [0, 2, 1],
+          [0, 1, 2],
         ],
-        // y=2
+        // y=2 (middle — shifting left)
         [
-          [1, 6],
-          [6, 1],
+          [1, 6, 0],
+          [6, 1, 0],
         ],
         // y=3
         [
-          [6, 2],
-          [2, 6],
+          [6, 2, 0],
+          [2, 6, 0],
         ],
-        // y=4 (tip)
+        // y=4 (tip — left 2 cols filled, away from center)
         [
-          [4, 6],
-          [6, 4],
+          [4, 6, 0],
+          [6, 4, 0],
         ],
       ],
     },
@@ -293,33 +293,33 @@ export const trollHandModel = {
 
     ringFinger: {
       parent: 'palm',
-      offset: [2, 4, 0],
-      // 2w × 2d × 5h
+      offset: [3, 4, 0],
+      // 3w × 2d × 5h — leans outward (right) via layer shifting (mirror of index)
       layers: [
-        // y=0
+        // y=0 (base — left 2 cols filled, toward center)
         [
-          [1, 2],
-          [2, 1],
+          [2, 1, 0],
+          [1, 2, 0],
         ],
         // y=1
         [
-          [2, 1],
-          [1, 2],
+          [1, 2, 0],
+          [2, 1, 0],
         ],
-        // y=2
+        // y=2 (middle — shifting right)
         [
-          [1, 6],
-          [6, 1],
+          [0, 6, 1],
+          [0, 1, 6],
         ],
         // y=3
         [
-          [6, 2],
-          [2, 6],
+          [0, 2, 6],
+          [0, 6, 2],
         ],
-        // y=4 (tip)
+        // y=4 (tip — right 2 cols filled, away from center)
         [
-          [4, 6],
-          [6, 4],
+          [0, 6, 4],
+          [0, 4, 6],
         ],
       ],
     },

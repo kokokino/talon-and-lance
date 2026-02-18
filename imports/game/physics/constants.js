@@ -119,7 +119,7 @@ export const IDLE_TIMER_WARNING = 3300;      // 55 seconds — audio warning cue
 export const TROLL_WAVE_START = 4;
 export const TROLL_GRAB_FRAMES = 15;        // 0.25s finger close
 export const TROLL_RETREAT_FRAMES = 30;      // 0.5s to sink back
-export const TROLL_COOLDOWN_FRAMES = 120;    // 2s between grab attempts
+export const TROLL_COOLDOWN_FRAMES = 60;    // 1 second between grab attempts
 export const TROLL_GRAB_CHANCE = 2;          // 1 in N chance to grab when target in range
 export const TROLL_GRAB_RADIUS_FP = toFP(0.8); // how close hand must be to grab
 export const TROLL_PUNCH_RISE_FRAMES = 40;   // intro: fist rises
@@ -237,8 +237,8 @@ export const FP_KILL_KNOCK_VX = Math.round(2 * FP);
 // ---- Lava Troll FP constants ----
 // Lava visual top matches Level1Scene._createLava() lavaTop
 const LAVA_VISUAL_TOP = -3.6;
-export const FP_TROLL_REACH_ZONE = toFP(LAVA_VISUAL_TOP + 15 * VOXEL_SIZE);  // ~15 voxels above lava top
-export const FP_TROLL_RISE_SPEED = Math.round(9.0 * FP / 60);  // per-frame rise speed
+export const FP_TROLL_REACH_ZONE = toFP(LAVA_VISUAL_TOP + 25 * VOXEL_SIZE);  // ~25 voxels above lava top
+export const FP_TROLL_RISE_SPEED = Math.round(15.0 * FP / 60);  // per-frame rise speed
 export const FP_TROLL_PULL_ACCEL = Math.round(1.5 * FP / 60);  // tug-of-war: pull-down per frame (~6 FP)
 export const FP_TROLL_FLAP_IMPULSE = Math.round(0.4 * FP);     // tug-of-war: flap kick (~102 FP)
 export const FP_TROLL_ESCAPE_DIST = toFP(1.5);                 // escape when 1.5 world units above grab point
