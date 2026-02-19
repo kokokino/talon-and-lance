@@ -1327,6 +1327,7 @@ export class GameSimulation {
     if (charIdx >= MAX_HUMANS) {
       char.active = false;
       char.dead = false;
+      this._ais[charIdx - MAX_HUMANS] = null;
       return;
     }
 
