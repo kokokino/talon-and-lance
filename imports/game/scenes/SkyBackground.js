@@ -203,6 +203,36 @@ void main() {
 }
 `;
 
+// ---- GLSL shaders for crescent moon ----
+
+const MOON_VERTEX = `
+precision highp float;
+attribute vec3 position;
+attribute vec2 uv;
+uniform mat4 worldViewProjection;
+varying vec2 vUV;
+void main() {
+  gl_Position = worldViewProjection * vec4(position, 1.0);
+  vUV = uv;
+}
+`;
+
+const MOON_FRAGMENT = `
+precision highp float;
+varying vec2 vUV;
+uniform vec3 moonColor;
+uniform float alpha;
+void main() {
+  vec2 center = vec2(0.5, 0.5);
+  float dist = distance(vUV, center);
+  if (dist > 0.5) { discard; }
+  vec2 shadow = vec2(0.8, 0.5);
+  float shadowDist = distance(vUV, shadow);
+  if (shadowDist < 0.45) { discard; }
+  gl_FragColor = vec4(moonColor, alpha);
+}
+`;
+
 export class SkyBackground {
   /**
    * @param {Scene} scene
@@ -251,6 +281,7 @@ export class SkyBackground {
     this._sunMesh = null;
     this._sunHalo = null;
     this._moonMesh = null;
+    this._moonMaterial = null;
     this._lightningPlane = null;
     this._lightningMaterial = null;
     this._voxelClouds = [];
@@ -300,6 +331,9 @@ export class SkyBackground {
     }
     if (this._moonMesh) {
       this._moonMesh.dispose();
+    }
+    if (this._moonMaterial) {
+      this._moonMaterial.dispose();
     }
     if (this._lightningPlane) {
       this._lightningPlane.dispose();
@@ -365,14 +399,23 @@ export class SkyBackground {
     this._sunMesh.material = sunMat;
     this._sunMesh.position.z = 2.5;
 
-    // Moon disc
+    // Moon disc (crescent shader)
+    Effect.ShadersStore['moonCrescentVertexShader'] = MOON_VERTEX;
+    Effect.ShadersStore['moonCrescentFragmentShader'] = MOON_FRAGMENT;
+
     this._moonMesh = MeshBuilder.CreateDisc('moon', { radius: 0.4, tessellation: 24 }, this._scene);
-    const moonMat = new StandardMaterial('moonMat', this._scene);
-    moonMat.emissiveColor = new Color3(0.7, 0.75, 0.9);
-    moonMat.diffuseColor = new Color3(0, 0, 0);
-    moonMat.specularColor = new Color3(0, 0, 0);
-    moonMat.disableLighting = true;
-    this._moonMesh.material = moonMat;
+    this._moonMaterial = new ShaderMaterial('moonCrescentMat', this._scene, {
+      vertex: 'moonCrescent',
+      fragment: 'moonCrescent',
+    }, {
+      attributes: ['position', 'uv'],
+      uniforms: ['worldViewProjection', 'moonColor', 'alpha'],
+      needAlphaBlending: true,
+    });
+    this._moonMaterial.backFaceCulling = false;
+    this._moonMaterial.setColor3('moonColor', new Color3(0.7, 0.75, 0.9));
+    this._moonMaterial.setFloat('alpha', 1.0);
+    this._moonMesh.material = this._moonMaterial;
     this._moonMesh.position.z = 2.5;
 
     // Halo disc behind sun (depth-tested alternative to GlowLayer)
@@ -441,7 +484,7 @@ export class SkyBackground {
       } else if (moonPhase > 0.9) {
         moonAlpha = (1 - moonPhase) / 0.1;
       }
-      this._moonMesh.visibility = moonAlpha;
+      this._moonMaterial.setFloat('alpha', moonAlpha);
       this._moonMesh.setEnabled(true);
     } else {
       this._moonMesh.setEnabled(false);
