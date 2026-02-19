@@ -286,6 +286,43 @@ describe('LavaTroll', function () {
       assert.strictEqual(sim._chars[0].playerState, 'AIRBORNE',
         'Player should remain airborne after missed grab');
     });
+
+    it('hand tracks target X during grab animation', function () {
+      const sim = createSim();
+      sim.activatePlayer(0, 0);
+      sim.startGame();
+
+      for (let i = 0; i < 200; i++) {
+        sim.tick([0, 0, 0, 0]);
+      }
+
+      activateTroll(sim);
+      // Set up GRABBING state — hand at target position
+      sim._chars[0].positionX = 0;
+      sim._chars[0].positionY = toFP(-3.8);
+      sim._chars[0].playerState = 'AIRBORNE';
+      sim._chars[0].dead = false;
+      sim._chars[0].materializing = false;
+      sim._trollState = LT_GRABBING;
+      sim._trollTargetSlot = 0;
+      sim._trollTargetType = 0;
+      sim._trollTimer = 0;
+      sim._trollPosX = 0;
+      sim._trollPosY = toFP(-3.8);
+
+      // Move player far to the right each frame during fist close
+      for (let i = 0; i < TROLL_GRAB_FRAMES; i++) {
+        sim._chars[0].positionX = toFP(3.0 + i * 0.5);
+        sim._chars[0].positionY = toFP(-3.8); // keep Y steady
+        sim.tick([0, 0, 0, 0]);
+      }
+
+      // Hand should have tracked X and grabbed successfully
+      assert.strictEqual(sim._trollState, LT_PULLING,
+        'Grab should succeed because hand tracked target X');
+      assert.strictEqual(sim._chars[0].playerState, 'GRABBED',
+        'Player should be grabbed after X-tracking grab');
+    });
   });
 
   describe('tug of war escape', function () {

@@ -116,12 +116,12 @@ export const IDLE_TIMER_THRESHOLD = 3600;    // 60 seconds before pterodactyl sp
 export const IDLE_TIMER_WARNING = 3300;      // 55 seconds — audio warning cue (5s before spawn)
 
 // ---- Lava Troll ----
-export const TROLL_WAVE_START = 4;
-export const TROLL_GRAB_FRAMES = 15;        // 0.25s finger close
+export const TROLL_WAVE_START = 1;//4;
+export const TROLL_GRAB_FRAMES = 10;        // 0.167s finger close
 export const TROLL_RETREAT_FRAMES = 30;      // 0.5s to sink back
 export const TROLL_COOLDOWN_FRAMES = 60;    // 1 second between grab attempts
 export const TROLL_GRAB_CHANCE = 2;          // 1 in N chance to grab when target in range
-export const TROLL_GRAB_RADIUS_FP = toFP(0.8); // how close hand must be to grab
+export const TROLL_GRAB_RADIUS_FP = toFP(1.0); // how close hand must be to grab
 export const TROLL_PUNCH_RISE_FRAMES = 40;   // intro: fist rises
 export const TROLL_PUNCH_TOTAL_FRAMES = 120; // intro: total sequence
 

@@ -731,29 +731,32 @@ export class GameSimulation {
         }
       }
     } else if (this._trollState === LT_GRABBING) {
-      // Fist closing — short animation. Hand stays put, target can escape.
+      // Fist closing — short animation. Hand tracks X, target can escape via Y.
       this._trollTimer += 1;
       const target = this._chars[this._trollTargetSlot];
       if (!target.active || target.dead) {
         this._trollState = LT_RETREATING;
         this._trollTimer = 0;
-      } else if (this._trollTimer >= TROLL_GRAB_FRAMES) {
-        // Fist closed — check if target is still within grab radius
-        const dx = Math.abs(this._trollPosX - target.positionX);
-        const dy = Math.abs(this._trollPosY - target.positionY);
-        if (dx < TROLL_GRAB_RADIUS_FP && dy < TROLL_GRAB_RADIUS_FP) {
-          // Grab succeeds — lock the target
-          target.playerState = 'GRABBED';
-          target.currentPlatform = null;
-          target.platformIndex = -1;
-          target.velocityY = 0;
-          this._trollGrabY = target.positionY;
-          this._trollState = LT_PULLING;
-          this._trollTimer = 0;
-        } else {
-          // Target moved away — grab missed
-          this._trollState = LT_RETREATING;
-          this._trollTimer = 0;
+      } else {
+        // Continue tracking target X while fingers close
+        this._trollPosX = target.positionX;
+        if (this._trollTimer >= TROLL_GRAB_FRAMES) {
+          // Fist closed — check if target is still within grab radius
+          const dy = Math.abs(this._trollPosY - target.positionY);
+          if (dy < TROLL_GRAB_RADIUS_FP) {
+            // Grab succeeds — lock the target
+            target.playerState = 'GRABBED';
+            target.currentPlatform = null;
+            target.platformIndex = -1;
+            target.velocityY = 0;
+            this._trollGrabY = target.positionY;
+            this._trollState = LT_PULLING;
+            this._trollTimer = 0;
+          } else {
+            // Target moved away — grab missed
+            this._trollState = LT_RETREATING;
+            this._trollTimer = 0;
+          }
         }
       }
     } else if (this._trollState === LT_PULLING) {
