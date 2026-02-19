@@ -1323,8 +1323,10 @@ export class GameSimulation {
   }
 
   _respawnCharacter(char, charIdx) {
-    // Enemies don't respawn
+    // Enemies don't respawn — free the slot so hatching eggs can reuse it
     if (charIdx >= MAX_HUMANS) {
+      char.active = false;
+      char.dead = false;
       return;
     }
 
