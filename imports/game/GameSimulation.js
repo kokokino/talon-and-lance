@@ -33,6 +33,7 @@ import {
   FP_TROLL_PULL_ACCEL, FP_TROLL_FLAP_IMPULSE, FP_TROLL_ESCAPE_DIST,
   FP_TROLL_ESCAPE_IMPULSE, FP_TROLL_START_Y, FP_TROLL_LAVA_Y,
   buildReducedPlatformCollisionDataFP,
+  INITIAL_PATROL_MIN, INITIAL_PATROL_RANGE,
 } from './physics/constants.js';
 import {
   checkPlatformCollisions, resolveJoust, applyBounce, applyKillToWinner,
@@ -66,7 +67,7 @@ import {
   C_NEXT_LIFE_SCORE, C_PALETTE_INDEX, C_PLAYER_DIED_WAVE, C_ENEMY_TYPE, C_HIT_LAVA, C_PLATFORM_INDEX,
   C_BOUNCE_COUNT, C_EDGE_BUMP_COUNT,
   AI_DIR_TIMER, AI_CURRENT_DIR, AI_FLAP_ACCUM, AI_ENEMY_TYPE,
-  AI_JAW_TIMER, AI_PTERO_PHASE,
+  AI_JAW_TIMER, AI_PTERO_PHASE, AI_PHASE_TIMER,
   E_ACTIVE, E_POS_X, E_POS_Y, E_VEL_X, E_VEL_Y,
   E_ON_PLATFORM, E_ENEMY_TYPE, E_HATCH_STATE, E_HATCH_TIMER,
   E_BOUNCE_COUNT, E_PREV_POS_Y, E_HIT_LAVA,
@@ -449,6 +450,7 @@ export class GameSimulation {
         buf[offset + AI_ENEMY_TYPE] = ai.enemyType;
         buf[offset + AI_JAW_TIMER] = ai._jawTimer;
         buf[offset + AI_PTERO_PHASE] = ai._pteroPhase;
+        buf[offset + AI_PHASE_TIMER] = ai._phaseTimer;
       }
     }
 
@@ -523,12 +525,14 @@ export class GameSimulation {
           this._ais[i]._flapAccum = buf[offset + AI_FLAP_ACCUM];
           this._ais[i]._jawTimer = buf[offset + AI_JAW_TIMER];
           this._ais[i]._pteroPhase = buf[offset + AI_PTERO_PHASE];
+          this._ais[i]._phaseTimer = buf[offset + AI_PHASE_TIMER];
         } else {
           this._ais[i]._dirTimer = buf[offset + AI_DIR_TIMER];
           this._ais[i]._currentDir = buf[offset + AI_CURRENT_DIR];
           this._ais[i]._flapAccum = buf[offset + AI_FLAP_ACCUM];
           this._ais[i]._jawTimer = buf[offset + AI_JAW_TIMER];
           this._ais[i]._pteroPhase = buf[offset + AI_PTERO_PHASE];
+          this._ais[i]._phaseTimer = buf[offset + AI_PHASE_TIMER];
         }
       } else {
         this._ais[i] = null;
@@ -947,7 +951,7 @@ export class GameSimulation {
     char.joustCooldown = 0;
     char.materializing = true;
     char.materializeTimer = 0;
-    char.materializeDuration = MATERIALIZE_FRAMES;
+    char.materializeDuration = MATERIALIZE_QUICK_FRAMES;
     char.materializeQuickEnd = false;
     char.enemyType = enemyType;
     char.isFlapping = false;
@@ -963,6 +967,14 @@ export class GameSimulation {
     const initialDirTimer = 90 + this._rng.nextInt(90); // ~1.5s + random up to 1.5s in frames
     const initialDir = this._rng.nextInt(2) === 1 ? 1 : -1;
     this._ais[slotIdx] = new EnemyAI(enemyType, initialDirTimer, initialDir);
+
+    // Initialize patrol state for non-pterodactyl enemies
+    if (enemyType !== ENEMY_TYPE_PTERODACTYL) {
+      const pIdx = platform ? this._platforms.indexOf(platform) : 0;
+      this._ais[slotIdx]._jawTimer = pIdx >= 0 ? pIdx : 0;
+      this._ais[slotIdx]._phaseTimer = INITIAL_PATROL_MIN + this._rng.nextInt(INITIAL_PATROL_RANGE);
+    }
+
     return slotIdx;
   }
 

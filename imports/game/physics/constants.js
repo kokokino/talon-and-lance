@@ -225,6 +225,37 @@ export const FP_PTERO_SPAWN_MARGIN = Math.round(2.0 * FP);
 // ---- Pterodactyl platform avoidance margin (FP) ----
 export const FP_PTERO_AVOID_MARGIN = Math.round(1.0 * FP);
 
+// ---- Patrol AI phase durations (frames at 60fps) ----
+// Patrol: walk on platform before attacking
+export const PATROL_MIN_BOUNDER = 180;    // 3s
+export const PATROL_RANGE_BOUNDER = 120;  // +0-2s random
+export const PATROL_MIN_HUNTER = 120;     // 2s
+export const PATROL_RANGE_HUNTER = 120;   // +0-2s random
+export const PATROL_MIN_SHADOW = 90;      // 1.5s
+export const PATROL_RANGE_SHADOW = 90;    // +0-1.5s random
+
+// Attack: fight player before returning to a platform
+export const ATTACK_MIN_BOUNDER = 180;    // 3s
+export const ATTACK_RANGE_BOUNDER = 180;  // +0-3s random
+export const ATTACK_MIN_HUNTER = 180;     // 3s
+export const ATTACK_RANGE_HUNTER = 120;   // +0-2s random
+export const ATTACK_MIN_SHADOW = 120;     // 2s
+export const ATTACK_RANGE_SHADOW = 120;   // +0-2s random
+
+// Return: navigate back to a platform (safety timeout)
+export const RETURN_TIMEOUT = 300;        // 5s
+
+// Ceiling avoidance — suppress flaps above this Y (just above top platform at y=3.2)
+export const FP_CEILING_AVOID = toFP(3.5);
+
+// Return navigation thresholds
+export const FP_RETURN_X_TOLERANCE = toFP(1.5);
+export const FP_RETURN_ABOVE_MARGIN = toFP(0.5);
+
+// Initial patrol duration for freshly spawned enemies
+export const INITIAL_PATROL_MIN = 60;     // 1s
+export const INITIAL_PATROL_RANGE = 60;   // +0-1s random
+
 // ---- Misc FP thresholds ----
 export const FP_LAVA_OFFSET = Math.round(1.0 * FP);
 export const FP_CEILING_GAP = Math.round(0.1 * FP);

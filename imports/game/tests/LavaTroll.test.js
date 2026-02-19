@@ -75,8 +75,8 @@ function forceTrollReaching(sim, targetY) {
 describe('LavaTroll', function () {
   describe('state layout', function () {
     it('TOTAL_INTS includes lava troll section', function () {
-      assert.strictEqual(TOTAL_INTS, 588);
-      assert.strictEqual(LAVA_TROLL_OFFSET, 572);
+      assert.strictEqual(TOTAL_INTS, 596);
+      assert.strictEqual(LAVA_TROLL_OFFSET, 580);
     });
   });
 

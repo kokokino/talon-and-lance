@@ -105,11 +105,14 @@ export function resolveJoust(charA, charB, idxA, idxB, gameMode, numHumanSlots) 
     return null;
   }
 
-  // Skip if either is dead, materializing, invincible, or in joust cooldown
+  // Skip if either is dead, materializing, grabbed, invincible, or in joust cooldown
   if (charA.dead || charB.dead) {
     return null;
   }
   if (charA.materializing || charB.materializing) {
+    return null;
+  }
+  if (charA.playerState === 'GRABBED' || charB.playerState === 'GRABBED') {
     return null;
   }
   if (charA.invincible || charB.invincible) {

@@ -67,13 +67,17 @@ export const C_BOUNCE_COUNT = 32;
 export const C_EDGE_BUMP_COUNT = 33;
 
 // ---- Enemy AI state slot (parallel to enemy character slots) ----
-export const AI_SIZE = 6;
+export const AI_SIZE = 7;
 export const AI_DIR_TIMER = 0;       // fixed-point
 export const AI_CURRENT_DIR = 1;     // -1 or 1
 export const AI_FLAP_ACCUM = 2;      // fixed-point
 export const AI_ENEMY_TYPE = 3;      // mirrors C_ENEMY_TYPE for AI lookup
 export const AI_JAW_TIMER = 4;       // pterodactyl jaw open/close cycle timer (frame count)
 export const AI_PTERO_PHASE = 5;     // pterodactyl behavior phase (0=ENTER, 1=SWOOP, 2=PULL_UP, 3=CIRCLE)
+export const AI_PHASE_TIMER = 6;     // patrol phase countdown timer (frame count)
+// Aliased fields — reuse ptero-only slots 4-5 for non-ptero patrol state:
+export const AI_TARGET_PLATFORM = 4; // non-ptero: target platform index (0-7) [alias of AI_JAW_TIMER]
+export const AI_PATROL_PHASE = 5;    // non-ptero: patrol phase 0/1/2 [alias of AI_PTERO_PHASE]
 
 // ---- Pterodactyl enemy type ----
 export const ENEMY_TYPE_PTERODACTYL = 3;
@@ -125,7 +129,7 @@ export const ENEMY_AI_OFFSET = ENEMIES_OFFSET + MAX_ENEMIES * CHAR_SIZE;
 export const EGGS_OFFSET = ENEMY_AI_OFFSET + MAX_ENEMIES * AI_SIZE;
 export const LAVA_TROLL_OFFSET = EGGS_OFFSET + MAX_EGGS * EGG_SIZE;
 export const TOTAL_INTS = LAVA_TROLL_OFFSET + LAVA_TROLL_SIZE;
-// ~588 ints = ~2352 bytes
+// ~596 ints = ~2384 bytes (AI_SIZE=7 adds 8 ints for MAX_ENEMIES=8)
 
 // ---- Wave state enum ----
 export const WAVE_SPAWNING = 0;

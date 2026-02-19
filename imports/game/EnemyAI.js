@@ -1,6 +1,8 @@
 // Enemy AI — produces input decisions for enemy characters
 // Returns { left, right, flap } matching player input format.
 // Three behavior types: Bounder (random), Hunter (tracker), Shadow Lord (predator).
+// Non-pterodactyl enemies use a 3-phase patrol state machine (PATROL → ATTACK → RETURN).
+// Pterodactyl AI is unchanged — 4-phase direct velocity control.
 // All randomness flows through the DeterministicRNG passed to decide().
 // All timers are frame counts (integers). All thresholds are FP integers.
 
@@ -18,6 +20,16 @@ import {
   PTERO_ENTER_FRAMES, PTERO_SWOOP_FRAMES,
   PTERO_PULL_UP_FRAMES, PTERO_CIRCLE_FRAMES,
   FP_CHAR_HALF_WIDTH, FP_FEET_OFFSET, FP_HEAD_OFFSET,
+  FP_ORTHO_WIDTH,
+  FP_CEILING_AVOID,
+  FP_RETURN_X_TOLERANCE, FP_RETURN_ABOVE_MARGIN,
+  RETURN_TIMEOUT,
+  PATROL_MIN_BOUNDER, PATROL_RANGE_BOUNDER,
+  PATROL_MIN_HUNTER, PATROL_RANGE_HUNTER,
+  PATROL_MIN_SHADOW, PATROL_RANGE_SHADOW,
+  ATTACK_MIN_BOUNDER, ATTACK_RANGE_BOUNDER,
+  ATTACK_MIN_HUNTER, ATTACK_RANGE_HUNTER,
+  ATTACK_MIN_SHADOW, ATTACK_RANGE_SHADOW,
 } from './physics/constants.js';
 
 // FP thresholds (precomputed)
@@ -30,7 +42,13 @@ const FP_LAVA_AVOID = Math.round(2.5 * FP_SCALE);          // 640
 const FP_FALL_SPEED_THRESHOLD = Math.round(4.0 * FP_SCALE); // 1024
 const FP_FALL_SPEED_FAST = Math.round(5.0 * FP_SCALE);     // 1280
 
-// Frame-count timer intervals
+// Patrol edge margin — reverse direction when center is this close to platform edge
+const FP_PATROL_EDGE_MARGIN = Math.round(1.0 * FP_SCALE);  // 256 FP = 1.0 world unit
+
+// Return phase flap interval (frames between flap attempts)
+const RETURN_FLAP_INTERVAL = 10;
+
+// Frame-count timer intervals (attack phase)
 const DIR_CHANGE_FRAMES = 90;          // 1.5s * 60
 const BOUNDER_FLAP_INTERVAL = 12;     // 0.2s * 60
 const HUNTER_FLAP_INTERVAL = 9;       // 0.15s * 60
@@ -43,15 +61,26 @@ const PTERO_PHASE_PULL_UP = 2;
 const PTERO_PHASE_CIRCLE = 3;
 const PTERO_PHASE_EXIT = 4;
 
+// Non-ptero patrol phase constants (stored in _pteroPhase field, aliased as _patrolPhase)
+const PHASE_PATROL = 0;
+const PHASE_ATTACK = 1;
+const PHASE_RETURN = 2;
+
 export class EnemyAI {
   constructor(enemyType, initialDirTimer, initialCurrentDir) {
     this.enemyType = enemyType;
     this._dirTimer = initialDirTimer;     // frame count
     this._currentDir = initialCurrentDir;
     this._flapAccum = 0;                  // frame count
-    // Pterodactyl-specific state
-    this._jawTimer = 0;                   // jaw open/close cycle timer
-    this._pteroPhase = PTERO_PHASE_ENTER; // behavior phase
+    this._phaseTimer = 0;                 // patrol phase countdown (non-ptero); unused for ptero
+    if (enemyType === ENEMY_TYPE_PTERODACTYL) {
+      this._jawTimer = 0;                   // jaw open/close cycle timer
+      this._pteroPhase = PTERO_PHASE_ENTER; // pterodactyl behavior phase
+    } else {
+      // Non-ptero: aliased fields for patrol state machine
+      this._jawTimer = 0;              // aliased: target platform index (set by caller)
+      this._pteroPhase = PHASE_PATROL; // aliased: patrol phase (0=PATROL, 1=ATTACK, 2=RETURN)
+    }
   }
 
   /**
@@ -60,26 +89,215 @@ export class EnemyAI {
    * @param {Object|null} player — player character state (FP integers, null if dead)
    * @param {number} orthoBottomFP — bottom of the view (FP integer)
    * @param {DeterministicRNG} rng — seedable PRNG for determinism
-   * @param {Array|null} platforms — platform collision data (FP), passed to pterodactyl only
+   * @param {Array} platforms — platform collision data (FP)
    * @returns {{ left: boolean, right: boolean, flap: boolean }}
    */
   decide(enemy, player, orthoBottomFP, rng, platforms) {
-    if (this.enemyType === ENEMY_TYPE_BOUNDER) {
-      return this._decideBounder(enemy, player, orthoBottomFP, rng);
-    }
-    if (this.enemyType === ENEMY_TYPE_HUNTER) {
-      return this._decideHunter(enemy, player, orthoBottomFP, rng);
-    }
+    // Pterodactyl: completely separate AI, unchanged
     if (this.enemyType === ENEMY_TYPE_PTERODACTYL) {
       return this._decidePterodactyl(enemy, player, orthoBottomFP, rng, platforms);
     }
-    return this._decideShadowLord(enemy, player, orthoBottomFP, rng);
+
+    // Non-ptero: dispatch based on patrol phase
+    if (this._pteroPhase === PHASE_PATROL) {
+      return this._decidePatrol(enemy, rng, platforms);
+    }
+    if (this._pteroPhase === PHASE_RETURN) {
+      return this._decideReturn(enemy, orthoBottomFP, rng, platforms);
+    }
+    return this._decideAttack(enemy, player, orthoBottomFP, rng, platforms);
+  }
+
+  // ---- Patrol state machine phases ----
+
+  /**
+   * PATROL — Walk on platform, reverse at edges. No flapping.
+   * Transitions to ATTACK when timer expires, or RETURN if airborne.
+   */
+  _decidePatrol(enemy, rng, platforms) {
+    let left = false;
+    let right = false;
+
+    // Countdown phase timer
+    this._phaseTimer -= 1;
+    if (this._phaseTimer <= 0) {
+      this._pteroPhase = PHASE_ATTACK;
+      this._phaseTimer = this._getAttackDuration(rng);
+      return { left: false, right: false, flap: false };
+    }
+
+    // If airborne (fell off edge or knocked off), transition to RETURN
+    if (enemy.playerState === 'AIRBORNE') {
+      this._pteroPhase = PHASE_RETURN;
+      this._phaseTimer = RETURN_TIMEOUT;
+      return { left: false, right: false, flap: false };
+    }
+
+    // Walk in current direction
+    if (this._currentDir > 0) {
+      right = true;
+    } else {
+      left = true;
+    }
+
+    // Reverse direction at platform edges
+    const platIdx = this._jawTimer;
+    if (platforms && platIdx >= 0 && platIdx < platforms.length) {
+      const plat = platforms[platIdx];
+      if (enemy.positionX >= plat.right - FP_PATROL_EDGE_MARGIN) {
+        this._currentDir = -1;
+        left = true;
+        right = false;
+      } else if (enemy.positionX <= plat.left + FP_PATROL_EDGE_MARGIN) {
+        this._currentDir = 1;
+        left = false;
+        right = true;
+      }
+    }
+
+    return { left, right, flap: false };
   }
 
   /**
-   * Bounder — Wanderer: random movement, occasional flaps, avoids lava.
+   * ATTACK — Fight the player using type-specific logic.
+   * Ceiling avoidance suppresses flaps above threshold.
+   * Transitions to RETURN when timer expires.
    */
-  _decideBounder(enemy, player, orthoBottomFP, rng) {
+  _decideAttack(enemy, player, orthoBottomFP, rng, platforms) {
+    // Countdown phase timer
+    this._phaseTimer -= 1;
+    if (this._phaseTimer <= 0) {
+      this._jawTimer = this._pickTargetPlatform(rng, platforms);
+      this._pteroPhase = PHASE_RETURN;
+      this._phaseTimer = RETURN_TIMEOUT;
+      return { left: false, right: false, flap: false };
+    }
+
+    // Type-specific attack logic
+    let result;
+    if (this.enemyType === ENEMY_TYPE_BOUNDER) {
+      result = this._decideBounderAttack(enemy, player, orthoBottomFP, rng);
+    } else if (this.enemyType === ENEMY_TYPE_HUNTER) {
+      result = this._decideHunterAttack(enemy, player, orthoBottomFP, rng);
+    } else {
+      result = this._decideShadowLordAttack(enemy, player, orthoBottomFP, rng);
+    }
+
+    // Ceiling avoidance: suppress flap above threshold to prevent clustering at top
+    if (result.flap && enemy.positionY > FP_CEILING_AVOID) {
+      result.flap = false;
+    }
+
+    return result;
+  }
+
+  /**
+   * RETURN — Navigate toward target platform and land.
+   * Transitions to PATROL on landing, or ATTACK on safety timeout.
+   */
+  _decideReturn(enemy, orthoBottomFP, rng, platforms) {
+    let flap = false;
+    let left = false;
+    let right = false;
+
+    // Safety timeout — go back to ATTACK if can't land in time
+    this._phaseTimer -= 1;
+    if (this._phaseTimer <= 0) {
+      this._pteroPhase = PHASE_ATTACK;
+      this._phaseTimer = this._getAttackDuration(rng);
+      return { left: false, right: false, flap: false };
+    }
+
+    // If grounded, check whether we landed on the target platform
+    if (enemy.playerState === 'GROUNDED') {
+      const landedOn = enemy.platformIndex >= 0 ? enemy.platformIndex : -1;
+      if (landedOn === this._jawTimer) {
+        // Landed on target — patrol here
+        this._pteroPhase = PHASE_PATROL;
+        this._phaseTimer = this._getPatrolDuration(rng);
+        return { left: false, right: false, flap: false };
+      }
+      // Landed on wrong platform — check if target is above or below
+      const landedPlat = platforms[landedOn];
+      const targetPlat = (platforms && this._jawTimer >= 0 && this._jawTimer < platforms.length)
+        ? platforms[this._jawTimer] : null;
+      if (targetPlat && landedPlat && targetPlat.top < landedPlat.top) {
+        // Target is below — walk toward nearest edge to fall off (no flap, no re-roll)
+        const platCenterX = (landedPlat.left + landedPlat.right) >> 1;
+        if (enemy.positionX < platCenterX) {
+          return { left: true, right: false, flap: false };
+        }
+        return { left: false, right: true, flap: false };
+      }
+      // Target is above or same level — flap to take off
+      this._jawTimer = this._pickDifferentPlatform(rng, platforms, landedOn);
+      return { left: false, right: false, flap: true };
+    }
+
+    // Navigate toward target platform
+    const platIdx = this._jawTimer;
+    let targetPlatTop = 0;
+    if (platforms && platIdx >= 0 && platIdx < platforms.length) {
+      const plat = platforms[platIdx];
+      targetPlatTop = plat.top;
+      const platCenterX = (plat.left + plat.right) >> 1;
+
+      // Screen-wrap-aware horizontal distance
+      let dx = platCenterX - enemy.positionX;
+      const halfWidth = FP_ORTHO_WIDTH >> 1;
+      if (dx > halfWidth) {
+        dx -= FP_ORTHO_WIDTH;
+      } else if (dx < -halfWidth) {
+        dx += FP_ORTHO_WIDTH;
+      }
+
+      // Move horizontally toward platform center
+      if (dx > FP_RETURN_X_TOLERANCE) {
+        right = true;
+      } else if (dx < -FP_RETURN_X_TOLERANCE) {
+        left = true;
+      }
+
+      const horizontallyAligned = Math.abs(dx) <= FP_RETURN_X_TOLERANCE;
+      const feetY = enemy.positionY - FP_FEET_OFFSET;
+
+      if (feetY < plat.top) {
+        // Below platform — flap to gain altitude
+        this._flapAccum += 1;
+        if (this._flapAccum > RETURN_FLAP_INTERVAL) {
+          this._flapAccum = 0;
+          flap = true;
+        }
+      } else if (horizontallyAligned) {
+        // Above platform and aligned — coast down to land (no flap)
+      } else {
+        // Above platform but not aligned — descend while moving
+        // Only brake for dangerously fast falls
+        if (enemy.velocityY < -FP_FALL_SPEED_FAST) {
+          flap = true;
+        }
+      }
+    }
+
+    // Lava avoidance (always active during return)
+    if (enemy.positionY < orthoBottomFP + FP_LAVA_AVOID) {
+      flap = true;
+    }
+
+    // Anti-fall (only when at or below target to allow descent from above)
+    if (enemy.positionY <= targetPlatTop && enemy.velocityY < -FP_FALL_SPEED_THRESHOLD) {
+      flap = true;
+    }
+
+    return { left, right, flap };
+  }
+
+  // ---- Type-specific attack behaviors ----
+
+  /**
+   * Bounder attack — Wanderer: random movement, occasional flaps, avoids lava.
+   */
+  _decideBounderAttack(enemy, player, orthoBottomFP, rng) {
     let flap = false;
     let left = false;
     let right = false;
@@ -120,15 +338,15 @@ export class EnemyAI {
   }
 
   /**
-   * Hunter — Tracker: seeks player horizontally, tries to gain height advantage.
+   * Hunter attack — Tracker: seeks player horizontally, tries to gain height advantage.
    */
-  _decideHunter(enemy, player, orthoBottomFP, rng) {
+  _decideHunterAttack(enemy, player, orthoBottomFP, rng) {
     let flap = false;
     let left = false;
     let right = false;
 
     if (!player) {
-      return this._decideBounder(enemy, player, orthoBottomFP, rng);
+      return this._decideBounderAttack(enemy, player, orthoBottomFP, rng);
     }
 
     // Move toward player horizontally (FP comparison)
@@ -171,15 +389,15 @@ export class EnemyAI {
   }
 
   /**
-   * Shadow Lord — Predator: aggressively hunts player from above, leads target.
+   * Shadow Lord attack — Predator: aggressively hunts player from above, leads target.
    */
-  _decideShadowLord(enemy, player, orthoBottomFP, rng) {
+  _decideShadowLordAttack(enemy, player, orthoBottomFP, rng) {
     let flap = false;
     let left = false;
     let right = false;
 
     if (!player) {
-      return this._decideBounder(enemy, player, orthoBottomFP, rng);
+      return this._decideBounderAttack(enemy, player, orthoBottomFP, rng);
     }
 
     // Lead the player's movement: predictedX = playerX + playerVelX * 0.3
@@ -228,6 +446,64 @@ export class EnemyAI {
 
     return { left, right, flap };
   }
+
+  // ---- Patrol helpers ----
+
+  /**
+   * Pick a random platform guaranteed different from excludeIndex.
+   * Maps [0, N-2] into [0, N-1] while skipping the excluded index.
+   */
+  _pickDifferentPlatform(rng, platforms, excludeIndex) {
+    if (!platforms || platforms.length <= 1) {
+      return 0;
+    }
+    const pick = rng.nextInt(platforms.length - 1);
+    if (pick >= excludeIndex) {
+      return pick + 1;
+    }
+    return pick;
+  }
+
+  /**
+   * Pick a random target platform (uniform distribution).
+   * Deterministic via shared RNG so all clients agree in multiplayer.
+   */
+  _pickTargetPlatform(rng, platforms) {
+    if (!platforms || platforms.length === 0) {
+      return 0;
+    }
+    return rng.nextInt(platforms.length);
+  }
+
+  /**
+   * Random patrol duration based on enemy type.
+   * Harder enemies patrol for shorter durations before attacking.
+   */
+  _getPatrolDuration(rng) {
+    if (this.enemyType === ENEMY_TYPE_BOUNDER) {
+      return PATROL_MIN_BOUNDER + rng.nextInt(PATROL_RANGE_BOUNDER);
+    }
+    if (this.enemyType === ENEMY_TYPE_HUNTER) {
+      return PATROL_MIN_HUNTER + rng.nextInt(PATROL_RANGE_HUNTER);
+    }
+    return PATROL_MIN_SHADOW + rng.nextInt(PATROL_RANGE_SHADOW);
+  }
+
+  /**
+   * Random attack duration based on enemy type.
+   * Harder enemies attack for shorter durations before returning to patrol.
+   */
+  _getAttackDuration(rng) {
+    if (this.enemyType === ENEMY_TYPE_BOUNDER) {
+      return ATTACK_MIN_BOUNDER + rng.nextInt(ATTACK_RANGE_BOUNDER);
+    }
+    if (this.enemyType === ENEMY_TYPE_HUNTER) {
+      return ATTACK_MIN_HUNTER + rng.nextInt(ATTACK_RANGE_HUNTER);
+    }
+    return ATTACK_MIN_SHADOW + rng.nextInt(ATTACK_RANGE_SHADOW);
+  }
+
+  // ---- Pterodactyl AI (unchanged) ----
 
   /**
    * Pterodactyl — 4-phase state machine with direct velocity control.
