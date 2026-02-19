@@ -198,7 +198,6 @@ export class Level1Scene {
       this._eggRenderSlots.push({
         rig: null,
         prevActive: false,
-        prevHitLava: false,
         prevOnPlatform: false,
         prevHatchState: 0,
         // Hatchling rendering state
@@ -421,7 +420,6 @@ export class Level1Scene {
     for (const egg of gameState.eggs) {
       eggs[egg.slotIndex] = {
         active: true,
-        hitLava: egg.hitLava,
         hatchState: egg.hatchState,
         bounceCount: egg.bounceCount,
         onPlatform: egg.onPlatform,
@@ -694,21 +692,25 @@ export class Level1Scene {
     for (let i = 0; i < this._eggRenderSlots.length; i++) {
       const eggSlot = this._eggRenderSlots[i];
       if (eggSlot.prevActive && !activeSlots.has(i)) {
-        // Egg/hatchling was removed
-        if (eggSlot.prevHitLava) {
-          this._spawnLavaBurst();
-        } else if (eggSlot.prevHatchState !== HATCH_WOBBLING && eggSlot.prevHatchState !== HATCH_HATCHLING) {
-          // Not lava, not hatching/mounting — egg was collected
+        // Egg/hatchling was removed — determine why
+        const wasEgg = eggSlot.prevHatchState !== HATCH_WOBBLING && eggSlot.prevHatchState !== HATCH_HATCHLING;
+        const wasHatchling = eggSlot.prevHatchState === HATCH_HATCHLING;
+
+        if (collectorSlotIndex >= 0 && wasEgg) {
+          // Egg was collected by a player
           if (eggSlot.rig && eggSlot.rig.root) {
             const pos = eggSlot.rig.root.position;
             this._spawnEggCollectEffect(pos.x, pos.y, collectorSlotIndex);
           }
-        } else if (eggSlot.prevHatchState === HATCH_HATCHLING && collectorSlotIndex >= 0) {
-          // Hatchling was collected by a player (not mounting into enemy)
+        } else if (collectorSlotIndex >= 0 && wasHatchling) {
+          // Hatchling was collected by a player
           if (eggSlot.hatchlingRoot) {
             const pos = eggSlot.hatchlingRoot.position;
             this._spawnEggCollectEffect(pos.x, pos.y, collectorSlotIndex);
           }
+        } else if (wasEgg || wasHatchling) {
+          // No collector — egg/hatchling fell into lava
+          this._spawnLavaBurst();
         }
         if (eggSlot.rig) {
           this._disposeEggRig(eggSlot.rig);
@@ -716,7 +718,6 @@ export class Level1Scene {
         }
         this._disposeHatchlingMeshes(eggSlot);
         eggSlot.prevActive = false;
-        eggSlot.prevHitLava = false;
         eggSlot.prevOnPlatform = false;
         eggSlot.prevHatchState = 0;
       }
@@ -781,7 +782,6 @@ export class Level1Scene {
       }
 
       eggSlot.prevActive = true;
-      eggSlot.prevHitLava = egg.hitLava || false;
       eggSlot.prevOnPlatform = egg.onPlatform || false;
       eggSlot.prevHatchState = egg.hatchState || 0;
     }
@@ -1717,26 +1717,6 @@ export class Level1Scene {
     }
   }
 
-  _findClosestHumanSlot(eggX, eggY) {
-    let closest = null;
-    let closestDist = Infinity;
-    for (let i = 0; i < MAX_HUMANS; i++) {
-      const slot = this._renderSlots[i];
-      if (!slot.birdRig || !slot.birdRig.root) {
-        continue;
-      }
-      const pos = slot.birdRig.root.position;
-      const dx = pos.x - eggX;
-      const dy = pos.y - eggY;
-      const dist = dx * dx + dy * dy;
-      if (dist < closestDist) {
-        closestDist = dist;
-        closest = slot;
-      }
-    }
-    return closest;
-  }
-
   _spawnEggCollectEffect(x, y, collectorSlotIndex) {
     // Part A — Gold sparkle particles
     const tex = new DynamicTexture('eggCollectTex', 64, this.scene, false);
@@ -1777,49 +1757,37 @@ export class Level1Scene {
     ps.disposeOnStop = true;
     ps.start();
 
-    // Part B — Golden glow on the human who actually collected the egg
-    const slot = collectorSlotIndex >= 0
-      ? this._renderSlots[collectorSlotIndex]
-      : this._findClosestHumanSlot(x, y);
+    // Part B — Golden glow on the collector
+    if (collectorSlotIndex < 0) {
+      return;
+    }
+    const slot = this._renderSlots[collectorSlotIndex];
     if (!slot) {
       return;
     }
 
-    // Capture original emissive colors
-    const originals = [];
-    const rigs = [slot.birdRig, slot.knightRig, slot.lanceRig];
-    for (const rig of rigs) {
-      if (!rig) {
-        continue;
-      }
-      for (const part of Object.values(rig.parts)) {
-        if (part.mesh && part.mesh.material) {
-          originals.push({
-            material: part.mesh.material,
-            color: part.mesh.material.emissiveColor.clone(),
-          });
-        }
-      }
+    // Cancel any in-progress flash before starting a new one
+    if (slot.eggFlashObserver) {
+      this.scene.onBeforeRenderObservable.remove(slot.eggFlashObserver);
+      slot.eggFlashObserver = null;
+      this._setSlotEmissive(slot, new Color3(1, 1, 1));
     }
 
     // Apply golden tint
-    this._setSlotEmissive(slot, new Color3(1.0, 0.85, 0.3));
+    const golden = new Color3(1.0, 0.85, 0.3);
+    const white = new Color3(1, 1, 1);
+    this._setSlotEmissive(slot, golden);
 
-    // Lerp back to original over 0.8s
+    // Lerp back to white (default emissive) over 0.8s
     const duration = 0.8;
     let elapsed = 0;
-    const observer = this.scene.onBeforeRenderObservable.add(() => {
+    slot.eggFlashObserver = this.scene.onBeforeRenderObservable.add(() => {
       elapsed += this.scene.getEngine().getDeltaTime() / 1000;
       const t = Math.min(elapsed / duration, 1.0);
-      for (const entry of originals) {
-        entry.material.emissiveColor = Color3.Lerp(
-          new Color3(1.0, 0.85, 0.3),
-          entry.color,
-          t
-        );
-      }
+      this._setSlotEmissive(slot, Color3.Lerp(golden, white, t));
       if (t >= 1.0) {
-        this.scene.onBeforeRenderObservable.remove(observer);
+        this.scene.onBeforeRenderObservable.remove(slot.eggFlashObserver);
+        slot.eggFlashObserver = null;
       }
     });
   }
@@ -2319,6 +2287,8 @@ export class Level1Scene {
       // Vortex leave effect
       vortexing: false,
       vortexObserver: null,
+      // Egg collection flash effect
+      eggFlashObserver: null,
       // Idle animation state
       idleTime: 0,
       idleBlend: 0,
@@ -2366,6 +2336,11 @@ export class Level1Scene {
   }
 
   _disposeSlotMeshes(slot) {
+    if (slot.eggFlashObserver) {
+      this.scene?.onBeforeRenderObservable?.remove(slot.eggFlashObserver);
+      slot.eggFlashObserver = null;
+    }
+
     if (slot.materializeParticles) {
       slot.materializeParticles.stop();
       slot.materializeParticles.dispose();
