@@ -390,18 +390,18 @@ export class MultiplayerManager {
     console.log('[MultiplayerManager] Peer connected:', peerId, 'slot:', playerSlot);
 
     if (this._session) {
+      // Clear disconnect state so _gatherInputs() stops feeding DISCONNECT_BIT.
+      // Must happen on ALL peers, not just authority.
+      this._session.disconnectedSlots.delete(playerSlot);
+      this._session.peerDisconnected[playerSlot] = false;
       this._session.setPeerConnected(playerSlot, true);
       this._session.peerSynchronized[playerSlot] = true;
       this._session.peerLastRecvTime[playerSlot] = Date.now();
 
-      // Only the authority modifies autoInputSlots and resets queues here.
-      // Non-authority peers will receive STATE_SYNC which calls resetToFrame(),
-      // and then remove the slot from autoInput in the STATE_SYNC handler.
-      if (this._playerSlot === this._resyncAuthority) {
-        this._session.autoInputSlots.delete(playerSlot);
-        this._session.inputQueues[playerSlot].reset();
-        this._session.inputQueues[playerSlot].confirmedFrame = this._simulation._frame - 1;
-      }
+      // All peers clear autoInput and reset the queue (not just authority).
+      this._session.autoInputSlots.delete(playerSlot);
+      this._session.inputQueues[playerSlot].reset();
+      this._session.inputQueues[playerSlot].confirmedFrame = this._simulation._frame - 1;
     }
 
     // Only the resync authority activates joining players and sends state sync.
@@ -411,13 +411,16 @@ export class MultiplayerManager {
     // _isJoining is checked instead of _waitingForSync to avoid a race condition:
     // if STATE_SYNC and peer-connected arrive in the same animation frame,
     // drainMessages() clears _waitingForSync before drainPeerEvents() runs.
-    // _isJoining is only cleared HERE, after the check, so it's race-free.
+    // _isJoining is cleared at the end of drainPeerEvents() (after all events
+    // processed AND state sync received), so it's race-free.
     if (this._playerSlot === this._resyncAuthority && !this._isJoining) {
       // Host: activate the joiner in the simulation, send state, start rollback
       const room = GameRooms.findOne(this._roomId);
       const playerData = room?.players.find(p => p.peerJsId === peerId);
       const palette = playerData?.paletteIndex ?? 0;
-      this._simulation.activatePlayer(playerSlot, palette);
+      if (!this._simulation._chars[playerSlot].active) {
+        this._simulation.activatePlayer(playerSlot, palette);
+      }
 
       const stateBuffer = this._simulation.serialize();
       const frame = this._simulation._frame;
@@ -440,11 +443,6 @@ export class MultiplayerManager {
       }
     }
 
-    // Clear joiner flag after first peer connection so this client can act as
-    // authority for future joins (e.g., a third player joining later).
-    if (this._isJoining) {
-      this._isJoining = false;
-    }
     // Non-authority peers: STATE_SYNC handler will update state
   }
 
@@ -591,6 +589,13 @@ export class MultiplayerManager {
       } catch (err) {
         console.error('[MultiplayerManager] Peer event error:', event.type, err);
       }
+    }
+
+    // Clear joiner flag only after ALL events processed AND state sync
+    // received. Prevents the joiner from acting as authority when multiple
+    // peer connections arrive in the same drain cycle.
+    if (this._isJoining && !this._waitingForSync && this._session) {
+      this._isJoining = false;
     }
   }
 
