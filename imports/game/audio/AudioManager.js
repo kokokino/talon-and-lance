@@ -104,6 +104,11 @@ export class AudioManager {
     this._sfxRobin = new Map();
     this._gameSfxLoaded = false;
     this._lavaAmbientSound = null;
+    this._introSound = null;
+    this._introEnded = false;
+    this._introEpoch = 0;
+    this._introFadeTimer = null;
+    this._introFadeInterval = null;
   }
 
   /**
@@ -245,9 +250,116 @@ export class AudioManager {
   }
 
   /**
+   * Play the vocal intro theme on the instructions screen.
+   * Stops the current menu music first. When the intro ends naturally,
+   * restores the preferred menu track.
+   */
+  async playIntroTheme() {
+    // Stop current menu music
+    if (this._currentSound) {
+      this._currentSound.stop();
+      this._currentSound.dispose();
+      this._currentSound = null;
+    }
+
+    // Clean up any existing intro sound defensively
+    this._clearIntroFade();
+    if (this._introSound) {
+      this._introSound.stop();
+      this._introSound.dispose();
+      this._introSound = null;
+    }
+
+    this._introEnded = false;
+    this._introEpoch++;
+    const epoch = this._introEpoch;
+
+    const sound = await CreateStreamingSoundAsync(
+      'introTheme',
+      '/audio/intro-theme.mp3',
+      { loop: false, autoplay: true }
+    );
+
+    // User cancelled or another playIntroTheme call happened during async load
+    if (this._introEnded || this._introEpoch !== epoch) {
+      sound.stop();
+      sound.dispose();
+      return;
+    }
+
+    this._introSound = sound;
+    sound.onEndedObservable.addOnce(() => {
+      if (!this._introEnded) {
+        this._clearIntroFade();
+        this._introEnded = true;
+        this._introSound = null;
+        this._playTrack(this._trackIndex);
+      }
+    });
+
+    // Begin fading at 25s so it's silent by 30s
+    const FADE_START_MS = 25000;
+    const FADE_DURATION_MS = 5000;
+    const FADE_STEP_MS = 50;
+    this._introFadeTimer = setTimeout(() => {
+      this._introFadeTimer = null;
+      const steps = FADE_DURATION_MS / FADE_STEP_MS;
+      let step = 0;
+      this._introFadeInterval = setInterval(() => {
+        step++;
+        if (!this._introSound || this._introEnded) {
+          this._clearIntroFade();
+          return;
+        }
+        const vol = Math.max(0, 1 - step / steps);
+        this._introSound.volume = vol;
+      }, FADE_STEP_MS);
+    }, FADE_START_MS);
+  }
+
+  _clearIntroFade() {
+    if (this._introFadeTimer !== null) {
+      clearTimeout(this._introFadeTimer);
+      this._introFadeTimer = null;
+    }
+    if (this._introFadeInterval !== null) {
+      clearInterval(this._introFadeInterval);
+      this._introFadeInterval = null;
+    }
+  }
+
+  /**
+   * Stop the intro theme. If it was playing, restore the preferred menu track.
+   */
+  stopIntroTheme() {
+    const wasPlaying = !!this._introSound && !this._introEnded;
+    this._introEnded = true;
+    this._introEpoch++;
+    this._clearIntroFade();
+
+    if (this._introSound) {
+      this._introSound.stop();
+      this._introSound.dispose();
+      this._introSound = null;
+    }
+
+    if (wasPlaying) {
+      this._playTrack(this._trackIndex);
+    }
+  }
+
+  /**
    * Stop music, dispose all SFX and audio engine.
    */
   dispose() {
+    this._introEnded = true;
+    this._clearIntroFade();
+    if (this._introSound) {
+      this._introSound.stop();
+      this._introSound.dispose();
+      this._introSound = null;
+    }
+
     if (this._lavaAmbientSound) {
       this._lavaAmbientSound.stop();
       this._lavaAmbientSound.dispose();

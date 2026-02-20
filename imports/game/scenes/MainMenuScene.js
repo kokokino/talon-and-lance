@@ -1089,6 +1089,10 @@ export class MainMenuScene {
     this._instructionsBackdrop.isVisible = true;
     this._instructionsPanel.isVisible = true;
 
+    if (this._audioManager) {
+      this._audioManager.playIntroTheme();
+    }
+
     // Keyboard listener — any key starts, Escape goes back
     this._instructionsKeyHandler = (e) => {
       if (this._menuState !== 'instructions') {
@@ -1110,6 +1114,9 @@ export class MainMenuScene {
     if (this._instructionsKeyHandler) {
       window.removeEventListener('keydown', this._instructionsKeyHandler);
       this._instructionsKeyHandler = null;
+    }
+    if (this._audioManager) {
+      this._audioManager.stopIntroTheme();
     }
     if (this._instructionsBackdrop) {
       this._instructionsBackdrop.isVisible = false;
@@ -1306,6 +1313,9 @@ export class MainMenuScene {
   _handleCancel() {
     if (this._menuState === 'instructions') {
       this._audioManager.playSfx('ui-cancel');
+      if (this._audioManager) {
+        this._audioManager.stopIntroTheme();
+      }
       this._showModeSelect();
     } else if (this._menuState === 'modeSelect' || this._menuState === 'highScores') {
       this._audioManager.playSfx('ui-cancel');
