@@ -270,11 +270,7 @@ export const BabylonPage = {
 
   _cleanupMultiplayer() {
     if (this._multiplayerManager) {
-      try {
-        this._multiplayerManager.destroy();
-      } catch (e) {
-        console.warn('[BabylonPage] Error during multiplayer cleanup:', e);
-      }
+      this._multiplayerManager.destroy();
       this._multiplayerManager = null;
     }
   },

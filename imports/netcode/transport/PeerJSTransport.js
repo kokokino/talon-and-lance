@@ -102,11 +102,7 @@ export class PeerJSTransport extends Transport {
       if (connection._connectTimeout) {
         clearTimeout(connection._connectTimeout);
       }
-      try {
-        connection.close();
-      } catch (e) {
-        // PeerJS throws if DataChannel was never created
-      }
+      connection.close();
       this.connections.delete(peerId);
       this.lastHeartbeat.delete(peerId);
     }
@@ -140,11 +136,7 @@ export class PeerJSTransport extends Transport {
     }
 
     if (this.peer) {
-      try {
-        this.peer.destroy();
-      } catch (e) {
-        // PeerJS may throw during cleanup
-      }
+      this.peer.destroy();
       this.peer = null;
     }
   }

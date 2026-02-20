@@ -14,7 +14,7 @@ import { TimeSync } from './TimeSync.js';
 const DEFAULT_MAX_PREDICTION = 30;
 const DEFAULT_INPUT_DELAY = 3;
 const DEFAULT_DISCONNECT_TIMEOUT = 5000;
-export const CHECKSUM_INTERVAL = 60; // frames between checksum exchanges
+const CHECKSUM_INTERVAL = 60; // frames between checksum exchanges
 
 export class RollbackSession {
   constructor(config) {
