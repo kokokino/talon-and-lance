@@ -8,7 +8,7 @@ import { GameSimulation } from './GameSimulation.js';
 import { GameLoop } from './GameLoop.js';
 import { InputReader } from './InputReader.js';
 import { InputEncoder, MessageType } from '../netcode/InputEncoder.js';
-import { RollbackSession } from '../netcode/RollbackSession.js';
+import { RollbackSession, CHECKSUM_INTERVAL } from '../netcode/RollbackSession.js';
 import { TransportManager } from '../netcode/transport/TransportManager.js';
 import { GameRooms } from '../lib/collections/gameRooms.js';
 import { MAX_HUMANS } from './physics/stateLayout.js';
@@ -434,11 +434,14 @@ export class MultiplayerManager {
       if (this._gameLoop.soloMode) {
         this._setupRollbackSession();
       } else if (this._session) {
-        // Reset host session to match the peers who received STATE_SYNC.
-        // Without this, the host's input queues for existing peers have
-        // stale confirmedFrames that cause prediction gap mismatches and
-        // rollback issues after the join.
-        this._session.resetToFrame(frame);
+        // Don't call resetToFrame — that wipes ALL input queues and causes
+        // cascading prediction-gap freezes on peers. The reconnecting player's
+        // queue was already reset above. Just clear stale checksums and
+        // invalidate old saved states (they don't have the newly activated player).
+        this._session.stateBuffer.reset();
+        this._session.stateBuffer.save(frame, stateBuffer);
+        this._session.remoteChecksums.clear();
+        this._session.checksumSuppressUntilFrame = frame + CHECKSUM_INTERVAL;
         this._seedRecentLocalInputs(frame);
       }
     }
@@ -669,13 +672,33 @@ export class MultiplayerManager {
             if (this._gameLoop.soloMode) {
               this._setupRollbackSession();
             } else if (this._session) {
-              this._session.resetToFrame(msg.frame);
-              this._seedRecentLocalInputs(msg.frame);
-              // Ensure all connected peers are removed from autoInput
+              // Clear disconnect/autoInput for connected peers so rollback
+              // resimulation doesn't feed DISCONNECT_BIT for reconnected players.
               for (const [, slot] of this._connectedPeers) {
+                this._session.disconnectedSlots.delete(slot);
+                this._session.peerDisconnected[slot] = false;
                 this._session.autoInputSlots.delete(slot);
               }
-              console.warn('[MultiplayerManager] Resync received, reset to frame', msg.frame);
+
+              // Rollback-based state injection: save the authoritative state
+              // and trigger a rollback instead of resetToFrame. This preserves
+              // existing input queues and avoids prediction gap growth that
+              // causes cascading freezes.
+              this._session.stateBuffer.save(msg.frame, msg.stateData);
+              if (msg.frame < this._session.currentFrame) {
+                this._session.needsRollback = true;
+                if (this._session.rollbackTargetFrame < 0 || msg.frame < this._session.rollbackTargetFrame) {
+                  this._session.rollbackTargetFrame = msg.frame;
+                }
+              } else {
+                // Authority is at or ahead of us — load state directly
+                this._simulation.deserialize(msg.stateData);
+                this._session.currentFrame = msg.frame;
+                this._session.stateBuffer.save(msg.frame, msg.stateData);
+              }
+              this._session.remoteChecksums.clear();
+              this._session.checksumSuppressUntilFrame = msg.frame + CHECKSUM_INTERVAL;
+              console.warn('[MultiplayerManager] Resync via rollback to frame', msg.frame);
             }
           }
         } else if (msgType === MessageType.CHECKSUM) {
