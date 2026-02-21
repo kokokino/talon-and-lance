@@ -152,11 +152,9 @@ export class PeerJSTransport extends Transport {
 
   _setupConnection(connection) {
     const peerId = connection.peer;
-    console.log('[PeerJS] _setupConnection: peerId=%s (existing=%s)', peerId?.slice(-6), this.connections.has(peerId));
     this.connections.set(peerId, connection);
 
     connection.on('open', () => {
-      console.log('[PeerJS] connection OPEN: peerId=%s', peerId?.slice(-6));
 
       // Handle connection race: both sides call connect() simultaneously, so
       // for each peer we may have an outgoing AND an incoming connection.
@@ -212,7 +210,6 @@ export class PeerJSTransport extends Transport {
     });
 
     connection.on('close', () => {
-      console.log('[PeerJS] connection CLOSED: peerId=%s', peerId?.slice(-6));
       // Only act if this is still the active connection for this peer
       // (an incoming connection may have replaced it)
       if (this.connections.get(peerId) === connection) {
@@ -248,7 +245,6 @@ export class PeerJSTransport extends Transport {
           // Check for dead connections
           const lastRecv = this.lastHeartbeat.get(peerId) || 0;
           if (lastRecv > 0 && (now - lastRecv) > HEARTBEAT_TIMEOUT) {
-            console.warn('[PeerJS] Heartbeat timeout: peerId=%s lastRecv=%dms ago', peerId?.slice(-6), now - lastRecv);
             connection.close();
             this.connections.delete(peerId);
             this.lastHeartbeat.delete(peerId);
