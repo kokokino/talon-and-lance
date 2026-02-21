@@ -56,6 +56,7 @@ export class MultiplayerManager {
     this._resyncAuthority = 0; // lowest active slot is the resync authority
     this._waitingForSync = false;
     this._isJoining = false; // true when joining existing room; cleared on STATE_SYNC receipt or join timeout
+    this._earlyStateSyncBuffer = []; // STATE_SYNCs that arrived before peer maps were populated (WebRTC faster than DDP race)
     this._joinTimeoutId = null;
     this._joiningOverlay = null;
     this._heartbeatInterval = null;
@@ -105,19 +106,13 @@ export class MultiplayerManager {
     // Tell the renderer which slot is the local player (for HUD)
     this._renderer._localPlayerSlot = this._playerSlot;
 
-    // If joining an existing room, show overlay and defer rendering until STATE_SYNC
+    // If joining an existing room, show overlay and defer rendering until STATE_SYNC.
+    // Join timeout is started AFTER transport initialization (below) to avoid
+    // wasting 2-6 seconds of budget on PeerJS broker connection + setPeerJsId.
     if (!result.isNewRoom) {
       this._waitingForSync = true;
       this._isJoining = true;
       this._showJoiningOverlay();
-      this._joinTimeoutId = setTimeout(() => {
-        this._hideJoiningOverlay();
-        this._isJoining = false;
-        if (this._waitingForSync && this._gameLoop) {
-          this._gameLoop.renderer = this._renderer;
-          this._waitingForSync = false;
-        }
-      }, 15000);
     }
 
     // Create game simulation with room's shared seed (from method result, not minimongo)
@@ -173,6 +168,20 @@ export class MultiplayerManager {
     const simulatedLatencyMs = parseInt(new URL(window.location.href).searchParams.get('latency') || '0', 10) || 0;
     const localPeerId = await this._transport.initialize(serverUrl, this._roomId, Meteor.userId(), { simulatedLatencyMs });
     await Meteor.callAsync('rooms.setPeerJsId', this._roomId, localPeerId);
+
+    // Start join timeout now that transport is initialized and peer ID is published.
+    // Peers can discover us from this point, so the full 15s budget goes to
+    // WebRTC signaling + STATE_SYNC delivery.
+    if (this._isJoining) {
+      this._joinTimeoutId = setTimeout(() => {
+        this._hideJoiningOverlay();
+        this._isJoining = false;
+        if (this._waitingForSync && this._gameLoop) {
+          this._gameLoop.renderer = this._renderer;
+          this._waitingForSync = false;
+        }
+      }, 15000);
+    }
 
     // Set up message handler
     this._transport.onReceive((peerId, data) => {
@@ -415,6 +424,15 @@ export class MultiplayerManager {
 
     }
 
+    // Drain any STATE_SYNCs that arrived before peer maps were populated
+    if (this._earlyStateSyncBuffer.length > 0) {
+      const buffered = this._earlyStateSyncBuffer;
+      this._earlyStateSyncBuffer = [];
+      for (const entry of buffered) {
+        this._incomingMessageBuffer.push(entry);
+      }
+    }
+
     // Only the resync authority activates joining players and sends state sync.
     // This prevents multiple peers from independently activating the same joiner
     // at different simulation frames (which would diverge RNG state).
@@ -438,6 +456,28 @@ export class MultiplayerManager {
       for (const [pid] of this._connectedPeers) {
         this._transport.send(pid, syncMsg);
       }
+
+      // Schedule retransmissions with fresh state for reliability.
+      // STATE_SYNC is sent on unreliable DataChannels — a single packet drop
+      // means the joiner never receives it. Two delayed retransmissions at 1s
+      // and 3s give the joiner multiple chances to receive state.
+      const _retransmitPeerId = peerId;
+      const _retransmit = (delayMs) => {
+        setTimeout(() => {
+          if (this._destroyed || !this._connectedPeers.has(_retransmitPeerId)) {
+            return;
+          }
+          if (this._playerSlot !== this._resyncAuthority) {
+            return;
+          }
+          const freshState = this._simulation.serialize();
+          const freshFrame = this._simulation._frame;
+          const freshMsg = InputEncoder.encodeStateSyncMessage(freshFrame, freshState);
+          this._transport.send(_retransmitPeerId, freshMsg);
+        }, delayMs);
+      };
+      _retransmit(1000);
+      _retransmit(3000);
 
       if (this._gameLoop.soloMode) {
         this._setupRollbackSession();
@@ -649,6 +689,11 @@ export class MultiplayerManager {
           // unless no STATE_SYNC has been received from any peer within 5s (fallback)
           const senderSlot = this._connectedPeers.get(peerId) ?? this._pendingPeers.get(peerId);
           if (senderSlot === undefined) {
+            // Buffer STATE_SYNC from unknown peers when joining — the DDP subscription
+            // may not have populated peer maps yet (WebRTC faster than DDP race).
+            if (this._isJoining && this._earlyStateSyncBuffer.length < 4) {
+              this._earlyStateSyncBuffer.push({ peerId, data });
+            }
             continue;
           }
           if (senderSlot !== this._resyncAuthority) {

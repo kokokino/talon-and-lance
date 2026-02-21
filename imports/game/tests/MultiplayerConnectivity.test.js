@@ -41,6 +41,7 @@ class MockMultiplayerPeer {
     this._connectedPeers = new Map(); // peerId -> playerSlot
     this._preSessionInputBuffer = [];
     this._incomingPeerEvents = [];
+    this._earlyStateSyncBuffer = []; // STATE_SYNCs before peer maps populated
 
     // Authority
     this._resyncAuthority = playerSlot; // lowest active slot
@@ -122,6 +123,15 @@ class MockMultiplayerPeer {
       this.session.disconnectedSlots.delete(playerSlot);
       this.session.inputQueues[playerSlot].reset();
       this.session.inputQueues[playerSlot].confirmedFrame = this.simulation._frame - 1;
+    }
+
+    // Drain any STATE_SYNCs that arrived before peer maps were populated
+    if (this._earlyStateSyncBuffer.length > 0) {
+      const buffered = this._earlyStateSyncBuffer;
+      this._earlyStateSyncBuffer = [];
+      for (const entry of buffered) {
+        this.receiveStateSyncFromTransport(entry.peerId, entry.frame, entry.stateBuffer);
+      }
     }
 
     // Only the resync authority activates joining players and sends state sync.
@@ -327,6 +337,24 @@ class MockMultiplayerPeer {
     }
 
     return true;
+  }
+
+  // Mirrors production drainMessages() STATE_SYNC handling.
+  // Unlike receiveStateSync() which takes senderSlot directly, this method
+  // takes a peerId and looks it up in _connectedPeers / _pendingPeers — exactly
+  // as the production code does. This exposes the race condition where the sender
+  // is not yet in any peer map.
+  receiveStateSyncFromTransport(peerId, frame, stateBuffer) {
+    const senderSlot = this._connectedPeers.get(peerId) ?? this._pendingPeers.get(peerId);
+    if (senderSlot === undefined) {
+      if (this._isJoining && this._earlyStateSyncBuffer.length < 4) {
+        this._earlyStateSyncBuffer.push({ peerId, frame, stateBuffer });
+        return 'buffered';
+      }
+      this._lastDroppedStateSync = { peerId, frame, reason: 'unknown-sender' };
+      return false;
+    }
+    return this.receiveStateSync(frame, stateBuffer, senderSlot);
   }
 
   // Buffer a remote input (may arrive before session exists)
@@ -1139,6 +1167,96 @@ describe('Multiplayer Connectivity', function () {
       const joinerBuf = new Int32Array(joiner.simulation.serialize());
       const report = compareStates(hostBuf, joinerBuf, 'post-duplicate-sync');
       assert.strictEqual(report, null, report || 'States should match after duplicate STATE_SYNC');
+    });
+
+    it('reconnecting joiner receives STATE_SYNC even when authority is not yet in peer maps', function () {
+      // Models the production race condition:
+      // 1. Authority (warm subscription) discovers joiner's new peerId immediately
+      // 2. Authority connects via WebRTC and sends STATE_SYNC
+      // 3. STATE_SYNC arrives at joiner BEFORE joiner's own DDP subscription
+      //    has fired (authority's peerId not in _pendingPeers or _connectedPeers)
+      // 4. STATE_SYNC should still be accepted — not silently dropped
+
+      // Set up 4-player game
+      const peers = new Map();
+      for (let i = 0; i < 4; i++) {
+        peers.set(i, new MockMultiplayerPeer(i));
+      }
+
+      peers.get(0).initSolo();
+      for (let i = 0; i < 10; i++) {
+        peers.get(0).tickSolo(0);
+      }
+
+      // All players join normally
+      for (let i = 1; i <= 3; i++) {
+        peers.get(i).initAsJoiner();
+        peers.get(0).addPendingPeer(`peer-${i}`, i);
+        peers.get(0).connectPeer(`peer-${i}`);
+      }
+      peers.get(0).drainPeerEvents();
+
+      const state = peers.get(0).simulation.serialize();
+      const frame = peers.get(0).simulation._frame;
+      for (let i = 1; i <= 3; i++) {
+        for (let j = 0; j <= 3; j++) {
+          if (j !== i) {
+            peers.get(i).addPendingPeer(`peer-${j}`, j);
+            peers.get(i).connectPeer(`peer-${j}`);
+          }
+        }
+        peers.get(i).drainPeerEvents();
+        peers.get(i).receiveStateSync(frame, state, 0);
+      }
+
+      // P1 disconnects
+      for (const [slot, peer] of peers) {
+        if (slot !== 1) {
+          peer.disconnectPeer('peer-1');
+          peer.drainPeerEvents();
+        }
+      }
+
+      // Remaining 3 tick
+      for (let i = 0; i < 30; i++) {
+        peers.get(0).tickMultiplayer(0);
+      }
+
+      // === P1 RECONNECTS — modeling the race condition ===
+
+      // Authority (P0) side: discovers P1's new peerId, connects, sends STATE_SYNC
+      peers.get(0).addPendingPeer('peer-1-new', 1);
+      peers.get(0).connectPeer('peer-1-new');
+      peers.get(0).drainPeerEvents();
+
+      // P1 side: fresh joiner state
+      const p1 = peers.get(1);
+      p1._isJoining = true;
+      p1._waitingForSync = true;
+      p1.soloMode = true;
+      p1.session = null;
+
+      // KEY: P1's DDP subscription has NOT arrived yet.
+      // P0's peerId is NOT in P1's _pendingPeers or _connectedPeers.
+      // No addPendingPeer() or connectPeer() called on P1 — this models the
+      // real race where WebRTC is faster than DDP subscription propagation.
+
+      // Authority sends STATE_SYNC — arrives via transport (peerId lookup path)
+      const rejoinState = peers.get(0).simulation.serialize();
+      const rejoinFrame = peers.get(0).simulation._frame;
+      const result = p1.receiveStateSyncFromTransport('peer-0-new', rejoinFrame, rejoinState);
+
+      // STATE_SYNC should be buffered (not dropped) when authority not in peer maps
+      assert.strictEqual(result, 'buffered', 'STATE_SYNC should be buffered when authority not in peer maps');
+
+      // DDP subscription finally arrives — peer maps get populated
+      p1.addPendingPeer('peer-0-new', 0);
+      p1.connectPeer('peer-0-new');
+      p1.drainPeerEvents(); // Promotes peer and replays buffered STATE_SYNC
+
+      // Now the joiner should have transitioned
+      assert.ok(!p1._isJoining, 'Joiner should no longer be _isJoining');
+      assert.ok(p1.session, 'Joiner should have a rollback session');
     });
 
     it('4-player: one disconnects and rejoins, 3 continue', function () {
