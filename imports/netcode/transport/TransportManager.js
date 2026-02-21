@@ -34,6 +34,21 @@ export class TransportManager {
       this._handleP2PFailure(peerId);
     };
 
+    // Wire up P2P disconnect — fires when a PeerJS connection closes or heartbeat times out.
+    // If this peer was using P2P transport, notify the consumer so it can handle the disconnect.
+    this.p2pTransport.onDisconnected = (peerId) => {
+      const transportType = this.peerTransports.get(peerId);
+      if (transportType === 'p2p') {
+        console.log('[TM] P2P connection lost for peerId=%s — notifying disconnect', peerId?.slice(-6));
+        this.peerTransports.delete(peerId);
+        this.connectedPeers.delete(peerId);
+        if (this.onPeerDisconnected) {
+          this.onPeerDisconnected(peerId);
+        }
+      }
+      // If this peer uses relay, the PeerJS close is expected (ghost connection from before relay)
+    };
+
     // Wire up P2P receive handler
     this.p2pTransport.onReceive((peerId, data) => {
       if (this.receiveCallback) {
@@ -87,6 +102,7 @@ export class TransportManager {
   // Disconnect from a specific peer
   disconnect(peerId) {
     const transportType = this.peerTransports.get(peerId);
+    console.log('[TM] disconnect: peerId=%s transport=%s', peerId?.slice(-6), transportType ?? 'none');
 
     if (transportType === 'p2p') {
       this.p2pTransport.disconnect(peerId);
@@ -165,17 +181,24 @@ export class TransportManager {
   // --- Private ---
 
   _connectToPeer(peerId) {
+    console.log('[TM] _connectToPeer: peerId=%s (attempting P2P)', peerId?.slice(-6));
     // Try P2P first
     this.p2pTransport.connect(peerId);
 
     // Set up a timeout to check if P2P succeeded
     const timeout = setTimeout(() => {
+      // Guard: early poll may have already connected this peer
+      if (this.connectedPeers.has(peerId)) {
+        return;
+      }
       if (this.p2pTransport.isConnected(peerId)) {
+        console.log('[TM] P2P timeout check: CONNECTED peerId=%s', peerId?.slice(-6));
         this.peerTransports.set(peerId, 'p2p');
         this.connectedPeers.add(peerId);
         this.pendingConnections.delete(peerId);
         this._notifyPeerConnected(peerId);
       } else {
+        console.log('[TM] P2P timeout check: FAILED peerId=%s — falling back to relay', peerId?.slice(-6));
         // P2P didn't connect in time — fall back to relay
         this._handleP2PFailure(peerId);
       }
@@ -187,6 +210,7 @@ export class TransportManager {
     // Poll a few times in the first 3 seconds
     const checkInterval = setInterval(() => {
       if (this.p2pTransport.isConnected(peerId) && !this.connectedPeers.has(peerId)) {
+        console.log('[TM] Early poll: P2P connected peerId=%s', peerId?.slice(-6));
         clearInterval(checkInterval);
         clearTimeout(timeout);
         this.peerTransports.set(peerId, 'p2p');
@@ -203,8 +227,10 @@ export class TransportManager {
   async _handleP2PFailure(peerId) {
     // Already connected via some transport
     if (this.connectedPeers.has(peerId)) {
+      console.log('[TM] _handleP2PFailure: peerId=%s already connected, skipping', peerId?.slice(-6));
       return;
     }
+    console.log('[TM] _handleP2PFailure: peerId=%s — initializing relay fallback', peerId?.slice(-6));
 
     // Initialize relay transport if not yet done
     if (!this.relayTransport) {
@@ -236,6 +262,8 @@ export class TransportManager {
   }
 
   _notifyPeerConnected(peerId) {
+    console.log('[TM] _notifyPeerConnected: peerId=%s transport=%s connectedPeers=%d expected=%d',
+      peerId?.slice(-6), this.peerTransports.get(peerId), this.connectedPeers.size, this.expectedPeers.size);
     if (this.onPeerConnected) {
       this.onPeerConnected(peerId);
     }

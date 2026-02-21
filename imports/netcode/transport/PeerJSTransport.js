@@ -16,6 +16,7 @@ export class PeerJSTransport extends Transport {
     this.connections = new Map(); // peerId -> DataConnection
     this.receiveCallback = null;
     this.onFallbackNeeded = null; // callback(peerId) when P2P fails
+    this.onDisconnected = null; // callback(peerId) when a connection closes/dies
     this.lastHeartbeat = new Map(); // peerId -> timestamp
     this.heartbeatInterval = null;
     this.localPeerId = null;
@@ -86,7 +87,13 @@ export class PeerJSTransport extends Transport {
     const timeout = setTimeout(() => {
       if (!connection.open) {
         connection.close();
-        this.connections.delete(peerId);
+        // Only delete the map entry if it still points to THIS (outgoing) connection.
+        // An incoming connection from the same peer may have replaced it in the map;
+        // deleting that would orphan a working connection and cause isConnected()
+        // to return false even though data still flows.
+        if (this.connections.get(peerId) === connection) {
+          this.connections.delete(peerId);
+        }
         if (this.onFallbackNeeded) {
           this.onFallbackNeeded(peerId);
         }
@@ -145,9 +152,31 @@ export class PeerJSTransport extends Transport {
 
   _setupConnection(connection) {
     const peerId = connection.peer;
+    console.log('[PeerJS] _setupConnection: peerId=%s (existing=%s)', peerId?.slice(-6), this.connections.has(peerId));
     this.connections.set(peerId, connection);
 
     connection.on('open', () => {
+      console.log('[PeerJS] connection OPEN: peerId=%s', peerId?.slice(-6));
+
+      // Handle connection race: both sides call connect() simultaneously, so
+      // for each peer we may have an outgoing AND an incoming connection.
+      // _setupConnection stores the latest one in the map, but the earlier one
+      // may open first. Ensure the map always points to an open connection.
+      const current = this.connections.get(peerId);
+      if (current !== connection) {
+        if (!current || !current.open) {
+          // Map entry isn't open yet; this connection opened first — use it
+          if (current) {
+            current.close();
+          }
+          this.connections.set(peerId, connection);
+        } else {
+          // Map already has an open connection; close this duplicate
+          connection.close();
+          return;
+        }
+      }
+
       // Configure the underlying DataChannel for binary
       if (connection.dataChannel) {
         connection.dataChannel.binaryType = 'arraybuffer';
@@ -183,11 +212,20 @@ export class PeerJSTransport extends Transport {
     });
 
     connection.on('close', () => {
-      this.connections.delete(peerId);
-      this.lastHeartbeat.delete(peerId);
+      console.log('[PeerJS] connection CLOSED: peerId=%s', peerId?.slice(-6));
+      // Only act if this is still the active connection for this peer
+      // (an incoming connection may have replaced it)
+      if (this.connections.get(peerId) === connection) {
+        this.connections.delete(peerId);
+        this.lastHeartbeat.delete(peerId);
+        if (this.onDisconnected) {
+          this.onDisconnected(peerId);
+        }
+      }
     });
 
-    connection.on('error', () => {
+    connection.on('error', (err) => {
+      console.error('[PeerJS] connection ERROR: peerId=%s err=%s', peerId?.slice(-6), err?.type || err?.message || err);
       this.connections.delete(peerId);
       this.lastHeartbeat.delete(peerId);
       if (this.onFallbackNeeded) {
@@ -210,9 +248,13 @@ export class PeerJSTransport extends Transport {
           // Check for dead connections
           const lastRecv = this.lastHeartbeat.get(peerId) || 0;
           if (lastRecv > 0 && (now - lastRecv) > HEARTBEAT_TIMEOUT) {
+            console.warn('[PeerJS] Heartbeat timeout: peerId=%s lastRecv=%dms ago', peerId?.slice(-6), now - lastRecv);
             connection.close();
             this.connections.delete(peerId);
             this.lastHeartbeat.delete(peerId);
+            if (this.onDisconnected) {
+              this.onDisconnected(peerId);
+            }
           }
         }
       }

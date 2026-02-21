@@ -155,6 +155,29 @@ export class RollbackSession {
     // Check if we've predicted too far ahead
     const predictionGap = this.currentFrame - this._getMinConfirmedFrame();
     if (predictionGap >= this.maxPredictionWindow) {
+      // Log periodically using wall clock to avoid missing stalls at non-divisible frames
+      const now = Date.now();
+      if (!this._lastStallLogTime || (now - this._lastStallLogTime) >= 1000) {
+        this._lastStallLogTime = now;
+        const slotDetails = [];
+        for (let i = 0; i < this.numPlayers; i++) {
+          if (i === this.localPlayerIndex) {
+            continue;
+          }
+          slotDetails.push(`slot${i}:{confirmed:${this.inputQueues[i].confirmedFrame},auto:${this.autoInputSlots.has(i)},disc:${this.disconnectedSlots.has(i)},conn:${this.peerConnected[i]}}`);
+        }
+        console.warn('[RollbackSession] STALLED — predictionGap=%d >= max=%d currentFrame=%d | %s',
+          predictionGap, this.maxPredictionWindow, this.currentFrame, slotDetails.join(' '));
+      }
+
+      // Wall-clock disconnect detection while stalled.
+      // The normal _checkDisconnects() is frame-based and runs after advanceFrame,
+      // but when the prediction gap stalls us, frames stop advancing and
+      // _checkDisconnects never runs — creating a deadlock where we wait for
+      // inputs from a peer that is gone. Use peerLastRecvTime (wall clock) to
+      // break the deadlock.
+      this._checkDisconnectsWallClock();
+
       return requests; // wait for remote inputs to catch up
     }
 
@@ -453,6 +476,37 @@ export class RollbackSession {
     }
   }
 
+  // Wall-clock disconnect detection for use during prediction gap stalls.
+  // The normal _checkDisconnects() is frame-based and only runs after a successful
+  // advanceFrame. During a stall, frames don't advance so it never triggers —
+  // creating a deadlock. This method uses peerLastRecvTime (updated on every
+  // incoming message) to detect peers that have truly gone silent.
+  _checkDisconnectsWallClock() {
+    const now = Date.now();
+    for (let i = 0; i < this.numPlayers; i++) {
+      if (i === this.localPlayerIndex) {
+        continue;
+      }
+      if (this.peerDisconnected[i]) {
+        continue;
+      }
+      if (this.autoInputSlots.has(i)) {
+        continue;
+      }
+      if (!this.peerConnected[i]) {
+        continue;
+      }
+
+      const lastRecv = this.peerLastRecvTime[i];
+      if (lastRecv > 0 && (now - lastRecv) > this.disconnectTimeout) {
+        console.warn('[RollbackSession] Wall-clock disconnect: slot %d silent for %dms (threshold=%dms)',
+          i, now - lastRecv, this.disconnectTimeout);
+        this.peerDisconnected[i] = true;
+        this.events.push({ type: 'Disconnected', peer: i });
+      }
+    }
+  }
+
   // Check if all non-local peers are synchronized
   _allPeersSynchronized() {
     for (let i = 0; i < this.numPlayers; i++) {
@@ -469,6 +523,8 @@ export class RollbackSession {
   // Reset frame-related state to a specific frame (used when receiving authoritative state from host).
   // Preserves running, peer connection state, and autoInputSlots.
   resetToFrame(frame) {
+    console.log('[RollbackSession] resetToFrame(%d) — was at frame %d, autoInputSlots=%s disconnectedSlots=%s',
+      frame, this.currentFrame, JSON.stringify([...this.autoInputSlots]), JSON.stringify([...this.disconnectedSlots]));
     this.currentFrame = frame;
     this.syncFrame = frame - 1;
     this.lastSavedFrame = frame - 1;

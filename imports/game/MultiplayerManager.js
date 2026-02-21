@@ -46,7 +46,8 @@ export class MultiplayerManager {
     this._session = null;
     this._roomSubscription = null;
     this._roomComputation = null;
-    this._connectedPeers = new Map(); // peerId -> playerSlot
+    this._connectedPeers = new Map(); // peerId -> playerSlot (only ACTUALLY connected peers)
+    this._pendingPeers = new Map(); // peerId -> playerSlot (initiated connection, not yet connected)
     this._preSessionInputBuffer = [];
     this._incomingMessageBuffer = [];
     this._incomingPeerEvents = [];
@@ -54,7 +55,7 @@ export class MultiplayerManager {
     this._lastResyncReceivedTime = 0;
     this._resyncAuthority = 0; // lowest active slot is the resync authority
     this._waitingForSync = false;
-    this._isJoining = false; // true when joining existing room; cleared after first peer connect
+    this._isJoining = false; // true when joining existing room; cleared on STATE_SYNC receipt or join timeout
     this._joinTimeoutId = null;
     this._joiningOverlay = null;
     this._heartbeatInterval = null;
@@ -100,6 +101,9 @@ export class MultiplayerManager {
     this._roomId = result.roomId;
     this._playerSlot = result.playerSlot;
 
+    console.log('[MM] _initializeGame roomId=%s slot=%d isNewRoom=%s seed=%d',
+      result.roomId, result.playerSlot, result.isNewRoom ?? 'new', result.gameSeed);
+
     // Tell the renderer which slot is the local player (for HUD)
     this._renderer._localPlayerSlot = this._playerSlot;
 
@@ -110,6 +114,7 @@ export class MultiplayerManager {
       this._showJoiningOverlay();
       this._joinTimeoutId = setTimeout(() => {
         this._hideJoiningOverlay();
+        this._isJoining = false;
         if (this._waitingForSync && this._gameLoop) {
           this._gameLoop.renderer = this._renderer;
           this._waitingForSync = false;
@@ -164,6 +169,8 @@ export class MultiplayerManager {
     this._gameLoop.postTickDrain = () => this.drainPeerEvents();
     this._gameLoop.start();
 
+    console.log('[MM] Game loop started, soloMode=%s waitingForSync=%s', this._gameLoop.soloMode, this._waitingForSync);
+
     // Initialize transport and register PeerJS ID
     this._transport = new TransportManager();
     const serverUrl = Meteor.absoluteUrl();
@@ -172,6 +179,7 @@ export class MultiplayerManager {
       console.log('[MultiplayerManager] Simulated latency:', simulatedLatencyMs, 'ms RTT');
     }
     const localPeerId = await this._transport.initialize(serverUrl, this._roomId, Meteor.userId(), { simulatedLatencyMs });
+    console.log('[MM] Transport initialized, localPeerId=%s', localPeerId);
     await Meteor.callAsync('rooms.setPeerJsId', this._roomId, localPeerId);
 
     // Set up message handler
@@ -199,6 +207,10 @@ export class MultiplayerManager {
    * Clean up everything.
    */
   destroy() {
+    console.log('[MM] destroy() called — roomId=%s slot=%d connectedPeers=%s session=%s',
+      this._roomId, this._playerSlot,
+      JSON.stringify([...this._connectedPeers.entries()]),
+      this._session ? 'active' : 'null');
     this._destroyed = true;
 
     if (this._heartbeatInterval) {
@@ -259,6 +271,7 @@ export class MultiplayerManager {
     this._simulation = null;
     this._session = null;
     this._incomingPeerEvents = [];
+    this._pendingPeers.clear();
   }
 
   /**
@@ -338,13 +351,19 @@ export class MultiplayerManager {
       }
 
       // Check for new players
+      const playerSummary = room.players.map(p => `slot${p.slot}:${p.userId?.slice(-4)}:peer=${p.peerJsId?.slice(-6) ?? 'null'}`);
+      console.log('[MM] Room autorun — players=[%s] connectedPeers=%s',
+        playerSummary.join(', '),
+        JSON.stringify([...this._connectedPeers.entries()].map(([pid, s]) => `slot${s}:${pid.slice(-6)}`)));
+
       for (const player of room.players) {
         if (player.userId === Meteor.userId()) {
           continue; // skip self
         }
 
-        // If this player has a PeerJS ID and we haven't connected yet
-        if (player.peerJsId && !this._connectedPeers.has(player.peerJsId)) {
+        // If this player has a PeerJS ID and we haven't connected or started connecting
+        if (player.peerJsId && !this._connectedPeers.has(player.peerJsId) && !this._pendingPeers.has(player.peerJsId)) {
+          console.log('[MM] New peer detected — slot=%d peerId=%s', player.slot, player.peerJsId);
           this._connectToPeer(player);
         }
       }
@@ -372,51 +391,75 @@ export class MultiplayerManager {
 
   async _connectToPeer(player) {
     if (this._destroyed || !this._transport) {
+      console.warn('[MM] _connectToPeer skipped — destroyed=%s transport=%s', this._destroyed, !!this._transport);
       return;
     }
 
-    this._connectedPeers.set(player.peerJsId, player.slot);
+    console.log('[MM] _connectToPeer slot=%d peerId=%s', player.slot, player.peerJsId);
+    // Track as pending until transport confirms the connection is open.
+    // Do NOT add to _connectedPeers yet — that would cause _setupRollbackSession
+    // to exclude the slot from autoInputSlots before inputs can actually arrive.
+    this._pendingPeers.set(player.peerJsId, player.slot);
 
     // Initiate WebRTC connection
     this._transport.connectToPeers([player.peerJsId]);
   }
 
   _handlePeerConnected(peerId) {
-    const playerSlot = this._connectedPeers.get(peerId);
+    // Promote from pending to connected
+    let playerSlot = this._connectedPeers.get(peerId);
     if (playerSlot === undefined) {
+      playerSlot = this._pendingPeers.get(peerId);
+      if (playerSlot === undefined) {
+        console.warn('[MM] _handlePeerConnected — unknown peerId=%s (not in connectedPeers or pendingPeers)', peerId);
+        return;
+      }
+      this._pendingPeers.delete(peerId);
+      this._connectedPeers.set(peerId, playerSlot);
+    } else {
+      // Already connected — duplicate notification, ignore
+      console.warn('[MM] _handlePeerConnected — duplicate for peerId=%s slot=%d, ignoring', peerId?.slice(-6), playerSlot);
       return;
     }
 
-    console.log('[MultiplayerManager] Peer connected:', peerId, 'slot:', playerSlot);
+    console.log('[MM] PEER CONNECTED peerId=%s slot=%d | localSlot=%d authority=%d isJoining=%s soloMode=%s session=%s',
+      peerId, playerSlot, this._playerSlot, this._resyncAuthority, this._isJoining, this._gameLoop?.soloMode, this._session ? 'active' : 'null');
 
     if (this._session) {
+      console.log('[MM]   session state BEFORE: autoInputSlots=%s disconnectedSlots=%s confirmedFrames=%s currentFrame=%d',
+        JSON.stringify([...this._session.autoInputSlots]),
+        JSON.stringify([...this._session.disconnectedSlots]),
+        this._session.inputQueues.map((q, i) => `slot${i}:${q.confirmedFrame}`).join(','),
+        this._session.currentFrame);
+
       this._session.setPeerConnected(playerSlot, true);
       this._session.peerSynchronized[playerSlot] = true;
       this._session.peerLastRecvTime[playerSlot] = Date.now();
 
-      // Only the authority modifies autoInputSlots and resets queues here.
-      // Non-authority peers will receive STATE_SYNC which calls resetToFrame(),
-      // and then remove the slot from autoInput in the STATE_SYNC handler.
-      if (this._playerSlot === this._resyncAuthority) {
-        this._session.autoInputSlots.delete(playerSlot);
-        this._session.inputQueues[playerSlot].reset();
-        this._session.inputQueues[playerSlot].confirmedFrame = this._simulation._frame - 1;
-      }
+      this._session.autoInputSlots.delete(playerSlot);
+      this._session.disconnectedSlots.delete(playerSlot);
+      this._session.inputQueues[playerSlot].reset();
+      this._session.inputQueues[playerSlot].confirmedFrame = this._simulation._frame - 1;
+      console.log('[MM]   removed slot %d from autoInput, reset queue to frame %d', playerSlot, this._simulation._frame - 1);
+
+      console.log('[MM]   session state AFTER: autoInputSlots=%s disconnectedSlots=%s',
+        JSON.stringify([...this._session.autoInputSlots]),
+        JSON.stringify([...this._session.disconnectedSlots]));
     }
 
     // Only the resync authority activates joining players and sends state sync.
     // This prevents multiple peers from independently activating the same joiner
     // at different simulation frames (which would diverge RNG state).
     // The joiner waits to receive STATE_SYNC before transitioning to multiplayer.
-    // _isJoining is checked instead of _waitingForSync to avoid a race condition:
-    // if STATE_SYNC and peer-connected arrive in the same animation frame,
-    // drainMessages() clears _waitingForSync before drainPeerEvents() runs.
-    // _isJoining is only cleared HERE, after the check, so it's race-free.
+    // _isJoining stays true until STATE_SYNC arrives, keeping us in soloMode
+    // so the STATE_SYNC handler's soloMode branch runs correctly (adopts authority,
+    // sets up rollback session from the right frame).
     if (this._playerSlot === this._resyncAuthority && !this._isJoining) {
       // Host: activate the joiner in the simulation, send state, start rollback
       const room = GameRooms.findOne(this._roomId);
       const playerData = room?.players.find(p => p.peerJsId === peerId);
       const palette = playerData?.paletteIndex ?? 0;
+      console.log('[MM]   AUTHORITY activating joiner slot=%d palette=%d frame=%d', playerSlot, palette, this._simulation._frame);
       this._simulation.activatePlayer(playerSlot, palette);
 
       const stateBuffer = this._simulation.serialize();
@@ -424,37 +467,47 @@ export class MultiplayerManager {
       const syncMsg = InputEncoder.encodeStateSyncMessage(frame, stateBuffer);
       // Broadcast STATE_SYNC to ALL connected peers (including joiner)
       // so existing peers see the new player activation (Issue B).
+      const recipients = [...this._connectedPeers.keys()];
+      console.log('[MM]   Broadcasting STATE_SYNC frame=%d to %d peers: %s', frame, recipients.length, recipients.map(p => p.slice(-6)).join(','));
       for (const [pid] of this._connectedPeers) {
         this._transport.send(pid, syncMsg);
       }
 
       if (this._gameLoop.soloMode) {
+        console.log('[MM]   Setting up rollback session (was solo)');
         this._setupRollbackSession();
       } else if (this._session) {
-        // Reset host session to match the peers who received STATE_SYNC.
-        // Without this, the host's input queues for existing peers have
-        // stale confirmedFrames that cause prediction gap mismatches and
-        // rollback issues after the join.
+        console.log('[MM]   Resetting existing session to frame %d', frame);
         this._session.resetToFrame(frame);
         this._seedRecentLocalInputs(frame);
       }
+    } else {
+      console.log('[MM]   NOT authority or isJoining — skipping activation (authority=%d, local=%d, isJoining=%s)',
+        this._resyncAuthority, this._playerSlot, this._isJoining);
     }
 
-    // Clear joiner flag after first peer connection so this client can act as
-    // authority for future joins (e.g., a third player joining later).
-    if (this._isJoining) {
-      this._isJoining = false;
-    }
-    // Non-authority peers: STATE_SYNC handler will update state
+    // _isJoining is NOT cleared here. It stays true until STATE_SYNC arrives
+    // (or join timeout fires). This prevents premature session setup when
+    // multiple peers connect before the authority sends STATE_SYNC.
   }
 
   _handlePeerDisconnected(peerId) {
-    const playerSlot = this._connectedPeers.get(peerId);
-    if (playerSlot === undefined) {
+    // Could be in _pendingPeers if WebRTC never completed
+    if (this._pendingPeers.has(peerId)) {
+      console.log('[MM] _handlePeerDisconnected — removing pending peer peerId=%s slot=%d',
+        peerId?.slice(-6), this._pendingPeers.get(peerId));
+      this._pendingPeers.delete(peerId);
       return;
     }
 
-    console.log('[MultiplayerManager] Peer disconnected:', peerId, 'slot:', playerSlot);
+    const playerSlot = this._connectedPeers.get(peerId);
+    if (playerSlot === undefined) {
+      console.warn('[MM] _handlePeerDisconnected — unknown peerId=%s (not in connectedPeers or pendingPeers)', peerId);
+      return;
+    }
+
+    console.log('[MM] PEER DISCONNECTED peerId=%s slot=%d | localSlot=%d authority=%d remainingPeers=%d',
+      peerId, playerSlot, this._playerSlot, this._resyncAuthority, this._connectedPeers.size - 1);
 
     // Do NOT call deactivatePlayer() directly — it mutates game state outside
     // the rollback flow. Instead, mark the slot as disconnected so that
@@ -464,6 +517,12 @@ export class MultiplayerManager {
 
     // Mark slot as disconnected + auto-input in session and clear stale checksums
     if (this._session) {
+      console.log('[MM]   session state BEFORE disconnect: autoInputSlots=%s disconnectedSlots=%s confirmedFrames=%s currentFrame=%d',
+        JSON.stringify([...this._session.autoInputSlots]),
+        JSON.stringify([...this._session.disconnectedSlots]),
+        this._session.inputQueues.map((q, i) => `slot${i}:${q.confirmedFrame}`).join(','),
+        this._session.currentFrame);
+
       this._session.disconnectedSlots.add(playerSlot);
       this._session.peerDisconnected[playerSlot] = true;
       this._session.autoInputSlots.add(playerSlot);
@@ -474,24 +533,41 @@ export class MultiplayerManager {
           this._session.remoteChecksums.delete(frame);
         }
       }
+
+      console.log('[MM]   session state AFTER disconnect: autoInputSlots=%s disconnectedSlots=%s',
+        JSON.stringify([...this._session.autoInputSlots]),
+        JSON.stringify([...this._session.disconnectedSlots]));
+    } else {
+      console.log('[MM]   no session active during disconnect');
     }
+
+    // Tear down the transport connection. For transport-initiated disconnects this
+    // is a no-op (TransportManager already cleaned up). For wall-clock disconnects
+    // this is critical: the PeerJS connection is still alive and must be closed so
+    // that a fresh reconnection attempt can create a new connection and fire 'open'.
+    this._transport.disconnect(peerId);
 
     this._connectedPeers.delete(peerId);
 
     // If the disconnected peer was the resync authority, promote the
     // lowest remaining active slot (local player or connected peer).
     if (playerSlot === this._resyncAuthority) {
+      const oldAuthority = this._resyncAuthority;
       this._recomputeResyncAuthority();
-      console.log('[MultiplayerManager] Resync authority migrated to slot', this._resyncAuthority);
+      console.log('[MM]   Resync authority migrated: slot %d -> slot %d', oldAuthority, this._resyncAuthority);
     }
 
     // If no more remote players, transition back to solo.
     // Directly deactivate the leaving player because solo mode feeds
     // neutral input (0) — DISCONNECT_BIT would never be processed.
     if (this._connectedPeers.size === 0 && this._gameLoop) {
+      console.log('[MM]   No peers left — transitioning to solo mode');
       this._simulation.deactivatePlayer(playerSlot);
       this._gameLoop.transitionToSolo();
       this._session = null;
+    } else {
+      console.log('[MM]   Remaining peers: %s',
+        JSON.stringify([...this._connectedPeers.entries()].map(([pid, s]) => `slot${s}:${pid.slice(-6)}`)));
     }
   }
 
@@ -510,6 +586,7 @@ export class MultiplayerManager {
         lowest = slot;
       }
     }
+    console.log('[MM] _recomputeResyncAuthority: activeSlots=%s -> authority=%d', JSON.stringify([...activeSlots]), lowest);
     this._resyncAuthority = lowest;
   }
 
@@ -533,6 +610,11 @@ export class MultiplayerManager {
       }
     }
 
+    console.log('[MM] _setupRollbackSession: localSlot=%d startFrame=%d autoInputSlots=%s connectedPeers=%s',
+      this._playerSlot, this._simulation._frame,
+      JSON.stringify([...autoSlots]),
+      JSON.stringify([...this._connectedPeers.entries()].map(([pid, s]) => `slot${s}:${pid.slice(-6)}`)));
+
     this._session = new RollbackSession({
       numPlayers: MAX_HUMANS,
       localPlayerIndex: this._playerSlot,
@@ -552,6 +634,7 @@ export class MultiplayerManager {
     this._session.running = true;
 
     // Drain any input messages that arrived before the session was created
+    console.log('[MM]   Draining %d pre-session buffered messages', this._preSessionInputBuffer.length);
     for (const msg of this._preSessionInputBuffer) {
       const inputs = msg.inputs || [{ frame: msg.frame, input: msg.input }];
       for (let i = inputs.length - 1; i >= 0; i--) {
@@ -563,6 +646,7 @@ export class MultiplayerManager {
     this._preSessionInputBuffer = [];
 
     this._gameLoop.transitionToMultiplayer(this._session, this._transport);
+    console.log('[MM]   Transitioned to multiplayer mode');
   }
 
   _handleTransportMessage(peerId, data) {
@@ -581,6 +665,10 @@ export class MultiplayerManager {
   drainPeerEvents() {
     const peerEvents = this._incomingPeerEvents;
     this._incomingPeerEvents = [];
+    if (peerEvents.length > 0) {
+      console.log('[MM] drainPeerEvents: %d events — %s', peerEvents.length,
+        peerEvents.map(e => `${e.type}:${e.peerId?.slice(-6)}`).join(', '));
+    }
     for (const event of peerEvents) {
       try {
         if (event.type === 'connected') {
@@ -627,8 +715,11 @@ export class MultiplayerManager {
         } else if (msgType === MessageType.STATE_SYNC) {
           // Only accept STATE_SYNC from the current resync authority,
           // unless no STATE_SYNC has been received from any peer within 5s (fallback)
-          const senderSlot = this._connectedPeers.get(peerId);
+          const senderSlot = this._connectedPeers.get(peerId) ?? this._pendingPeers.get(peerId);
+          console.log('[MM] Received STATE_SYNC from peerId=%s senderSlot=%s authority=%d localFrame=%d',
+            peerId?.slice(-6), senderSlot, this._resyncAuthority, this._simulation?._frame);
           if (senderSlot === undefined) {
+            console.warn('[MM]   Ignoring STATE_SYNC from unknown peer');
             continue;
           }
           if (senderSlot !== this._resyncAuthority) {
@@ -650,6 +741,20 @@ export class MultiplayerManager {
             // Received state sync from host — load it
             this._lastResyncReceivedTime = Date.now();
             this._simulation.deserialize(msg.stateData);
+
+            // Clear joiner flag now that we have authoritative state
+            if (this._isJoining) {
+              console.log('[MM]   Clearing _isJoining flag (STATE_SYNC received)');
+              this._isJoining = false;
+            }
+
+            // If received state has our slot inactive (e.g., we just rejoined
+            // and the state is from before we existed), re-activate so we can play.
+            if (!this._simulation._chars[this._playerSlot].active) {
+              console.log('[MM]   Re-activating local slot %d (was inactive in received state)', this._playerSlot);
+              this._simulation.activatePlayer(this._playerSlot, this._paletteIndex);
+            }
+
             // Reveal the game now that we have correct state
             if (this._waitingForSync) {
               this._gameLoop.renderer = this._renderer;
@@ -662,6 +767,12 @@ export class MultiplayerManager {
             }
             // Set up rollback from this frame
             if (this._gameLoop.soloMode) {
+              // Adopt the STATE_SYNC sender as authority. This prevents split-brain:
+              // the joiner (who may be the lowest-numbered slot) won't claim authority
+              // until the old authority disconnects. All peers agree because the old
+              // authority sent this STATE_SYNC to everyone.
+              this._resyncAuthority = senderSlot;
+              console.log('[MM]   Adopting authority from STATE_SYNC sender: slot %d', senderSlot);
               this._setupRollbackSession();
             } else if (this._session) {
               this._session.resetToFrame(msg.frame);
@@ -676,7 +787,7 @@ export class MultiplayerManager {
         } else if (msgType === MessageType.CHECKSUM) {
           if (this._session) {
             const msg = InputEncoder.decodeChecksumMessage(buffer);
-            const peerSlot = this._connectedPeers.get(peerId);
+            const peerSlot = this._connectedPeers.get(peerId) ?? this._pendingPeers.get(peerId);
             if (peerSlot !== undefined) {
               this._session.addRemoteChecksum(peerSlot, msg.frame, msg.checksum);
               this._session.peerLastRecvTime[peerSlot] = Date.now();
@@ -684,7 +795,7 @@ export class MultiplayerManager {
           }
         } else if (msgType === MessageType.QUALITY_REPORT) {
           const msg = InputEncoder.decode(buffer);
-          const peerSlot = this._connectedPeers.get(peerId);
+          const peerSlot = this._connectedPeers.get(peerId) ?? this._pendingPeers.get(peerId);
           if (peerSlot !== undefined && this._session) {
             // Record remote peer's frame advantage vs us
             this._session.timeSync.updateRemoteAdvantage(peerSlot, msg.frameAdvantage);
@@ -696,20 +807,26 @@ export class MultiplayerManager {
           const sentTime = this._qualitySentTimes.get(peerId);
           if (sentTime) {
             const rtt = Date.now() - sentTime;
-            const peerSlot = this._connectedPeers.get(peerId);
+            const peerSlot = this._connectedPeers.get(peerId) ?? this._pendingPeers.get(peerId);
             if (peerSlot !== undefined && this._session) {
               this._session.timeSync.updateRoundTripTime(peerSlot, rtt);
             }
             this._qualitySentTimes.delete(peerId);
           }
         } else if (msgType === MessageType.RESYNC_REQUEST) {
-          // A peer's STATE_SYNC was too stale — send them a fresh one
+          // A peer's STATE_SYNC was too stale — send them a fresh one.
+          // Rate-limit to at most once per 3 seconds to prevent resync storms
+          // (can happen when peers are at very different frame counts).
           if (this._playerSlot === this._resyncAuthority && this._transport) {
-            const stateBuffer = this._simulation.serialize();
-            const frame = this._simulation._frame;
-            const syncMsg = InputEncoder.encodeStateSyncMessage(frame, stateBuffer);
-            this._transport.send(peerId, syncMsg);
-            console.warn('[MultiplayerManager] Fresh STATE_SYNC sent to', peerId, 'at frame', frame, '(resync request)');
+            const now = Date.now();
+            if (!this._lastResyncTime || (now - this._lastResyncTime) > 3000) {
+              this._lastResyncTime = now;
+              const stateBuffer = this._simulation.serialize();
+              const frame = this._simulation._frame;
+              const syncMsg = InputEncoder.encodeStateSyncMessage(frame, stateBuffer);
+              this._transport.send(peerId, syncMsg);
+              console.warn('[MultiplayerManager] Fresh STATE_SYNC sent to', peerId?.slice(-6), 'at frame', frame, '(resync request)');
+            }
           }
         }
       } catch (err) {
