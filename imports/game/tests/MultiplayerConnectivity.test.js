@@ -48,6 +48,10 @@ class MockMultiplayerPeer {
     // Wall-clock disconnect tracking
     this._disconnectTimeout = 5000; // ms
 
+    // STATE_SYNC tracking for retransmission tests
+    this._stateSyncsSent = [];
+    this._pendingRetransmits = [];
+
     // Input RNG for solo ticks
     this._inputRng = new DeterministicRNG(100 + playerSlot * 100);
   }
@@ -130,7 +134,12 @@ class MockMultiplayerPeer {
       const frame = this.simulation._frame;
 
       // Record outgoing STATE_SYNC for test verification
-      this._lastStateSyncSent = { frame, stateBuffer, recipients: [...this._connectedPeers.keys()] };
+      const syncRecord = { frame, stateBuffer, recipients: [...this._connectedPeers.keys()] };
+      this._lastStateSyncSent = syncRecord;
+      this._stateSyncsSent.push(syncRecord);
+
+      // Schedule retransmissions (mirrors production setTimeout retransmits)
+      this._pendingRetransmits.push({ peerId, playerSlot });
 
       if (this.soloMode) {
         this._setupRollbackSession();
@@ -140,6 +149,29 @@ class MockMultiplayerPeer {
     }
 
     // _isJoining is NOT cleared here (bug #1 fix)
+  }
+
+  // Drain pending retransmissions (mirrors production setTimeout retransmits).
+  // In production, these fire at 1s and 3s delays. In tests, we call this
+  // explicitly to simulate the timers firing.
+  processRetransmissions() {
+    const pending = this._pendingRetransmits;
+    this._pendingRetransmits = [];
+    for (const { peerId, playerSlot } of pending) {
+      if (!this._connectedPeers.has(peerId)) {
+        continue;
+      }
+      if (this.playerSlot !== this._resyncAuthority) {
+        continue;
+      }
+      const freshState = this.simulation.serialize();
+      const freshFrame = this.simulation._frame;
+      this._stateSyncsSent.push({
+        frame: freshFrame,
+        stateBuffer: freshState,
+        recipients: [peerId],
+      });
+    }
   }
 
   // Mirrors MultiplayerManager._handlePeerDisconnected (lines 456-515)
@@ -1002,6 +1034,111 @@ describe('Multiplayer Connectivity', function () {
       const joinerBuf = new Int32Array(joiner.simulation.serialize());
       const report = compareStates(hostBuf, joinerBuf, 'post-rejoin');
       assert.strictEqual(report, null, report || 'States should match after rejoin');
+    });
+
+    it('authority retransmits STATE_SYNC for reconnecting peers', function () {
+      // Set up 3-player game (P0 host, P1, P2)
+      const host = new MockMultiplayerPeer(0);
+      host.initSolo();
+      for (let i = 0; i < 10; i++) {
+        host.tickSolo(0);
+      }
+
+      // P1 and P2 join
+      host.addPendingPeer('peer-1', 1);
+      host.addPendingPeer('peer-2', 2);
+      host.connectPeer('peer-1');
+      host.connectPeer('peer-2');
+      host.drainPeerEvents();
+
+      assert.ok(host._stateSyncsSent.length >= 1, 'Should have at least 1 STATE_SYNC sent');
+      const initialCount = host._stateSyncsSent.length;
+      const initialFrame = host._stateSyncsSent[0].frame;
+
+      // P1 disconnects, host continues for 30 frames
+      host.disconnectPeer('peer-1');
+      host.drainPeerEvents();
+      for (let i = 0; i < 30; i++) {
+        host.tickMultiplayer(0);
+      }
+
+      // P1 reconnects with new peer ID
+      host.addPendingPeer('peer-1-new', 1);
+      host.connectPeer('peer-1-new');
+      host.drainPeerEvents();
+
+      // Should have at least one more STATE_SYNC for the reconnect
+      assert.ok(host._stateSyncsSent.length > initialCount,
+        'Should have sent STATE_SYNC for reconnecting peer');
+
+      // Simulate retransmission timers firing
+      host.processRetransmissions();
+
+      // Should have additional retransmission entries
+      assert.ok(host._stateSyncsSent.length > initialCount + 1,
+        `Should have retransmission entries (got ${host._stateSyncsSent.length}, expected > ${initialCount + 1})`);
+
+      // Retransmission should have a frame >= the initial send (fresh state, not stale)
+      const lastSync = host._stateSyncsSent[host._stateSyncsSent.length - 1];
+      const reconnectSync = host._stateSyncsSent[initialCount];
+      assert.ok(lastSync.frame >= reconnectSync.frame,
+        'Retransmission frame should be >= initial reconnect frame');
+    });
+
+    it('duplicate STATE_SYNC reception is idempotent', function () {
+      // Host and joiner connect, exchange STATE_SYNC, both tick in multiplayer
+      const host = new MockMultiplayerPeer(0);
+      host.initSolo();
+      for (let i = 0; i < 10; i++) {
+        host.tickSolo(0);
+      }
+
+      const joiner = new MockMultiplayerPeer(1);
+      joiner.initAsJoiner();
+
+      // Connect
+      host.addPendingPeer('peer-1', 1);
+      host.connectPeer('peer-1');
+      host.drainPeerEvents();
+
+      joiner.addPendingPeer('peer-0', 0);
+      joiner.connectPeer('peer-0');
+      joiner.drainPeerEvents();
+
+      // Initial STATE_SYNC
+      const stateBuffer1 = host.simulation.serialize();
+      const frame1 = host.simulation._frame;
+      const accepted1 = joiner.receiveStateSync(frame1, stateBuffer1, 0);
+      assert.ok(accepted1, 'First STATE_SYNC should be accepted');
+      assert.ok(joiner.session, 'Session should exist after first STATE_SYNC');
+
+      // Both tick for 10 frames
+      for (let i = 0; i < 10; i++) {
+        host.tickMultiplayer(0);
+        joiner.tickMultiplayer(0);
+      }
+
+      // Host sends a SECOND STATE_SYNC (simulating retransmission)
+      const stateBuffer2 = host.simulation.serialize();
+      const frame2 = host.simulation._frame;
+      const accepted2 = joiner.receiveStateSync(frame2, stateBuffer2, 0);
+      assert.ok(accepted2, 'Duplicate STATE_SYNC should be accepted (idempotent)');
+
+      // Joiner should still have a valid session
+      assert.ok(joiner.session, 'Session should still exist after duplicate STATE_SYNC');
+      assert.ok(!joiner.soloMode, 'Should still be in multiplayer mode');
+
+      // Both tick more — should not crash or desync
+      for (let i = 0; i < 10; i++) {
+        host.tickMultiplayer(0);
+        joiner.tickMultiplayer(0);
+      }
+
+      // States should match after host sends fresh state and both tick from it
+      const hostBuf = new Int32Array(host.simulation.serialize());
+      const joinerBuf = new Int32Array(joiner.simulation.serialize());
+      const report = compareStates(hostBuf, joinerBuf, 'post-duplicate-sync');
+      assert.strictEqual(report, null, report || 'States should match after duplicate STATE_SYNC');
     });
 
     it('4-player: one disconnects and rejoins, 3 continue', function () {
